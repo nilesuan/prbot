@@ -1,0 +1,37 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowBedrockInvoke",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": "arn:aws:bedrock:*:*:inference-profile/us.anthropic.*"
+    },
+    {
+      "Sid": "AllowSecretsManagerRead",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:*:secret:prbot/*"
+    },
+    {
+      "Sid": "DenyExpensiveOperations",
+      "Effect": "Deny",
+      "Action": [
+        "bedrock:CreateModelCustomizationJob",
+        "bedrock:CreateProvisionedModelThroughput",
+        "bedrock:DeleteModelInvocationLoggingConfiguration",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:PutSecretValue",
+        "iam:*",
+        "s3:DeleteBucket",
+        "ec2:RunInstances"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prbot"
+version = "0.1.0"
+description = "Security-hardened PR/MR review bot"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28,<1",
+    "boto3>=1.36,<2",
+    "pydantic>=2.10,<3",
+    "tenacity>=9.0,<10",
+    "structlog>=25.1,<26",
+]
+
+[project.scripts]
+prbot = "prbot.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prbot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "error",
+    "ignore::ResourceWarning",
+]
+
+[tool.ruff]
+target-version = "py312"
+src = ["src"]
+extend-exclude = ["*.json"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.coverage.run]
+source = ["prbot"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.25,<1",
+    "pytest-cov>=6,<7",
+    "ruff>=0.9,<1",
+    "moto[secretsmanager]>=5,<6",
+    "respx>=0.22,<1",
+]

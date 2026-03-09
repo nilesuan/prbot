@@ -1,0 +1,20 @@
+# prbot configuration file
+# Place in the repository root or pass via --config
+
+[prbot]
+confidence_threshold = 70
+blocker_threshold = 70
+max_diff_tokens = 100_000
+budget_limit_usd = 5.00
+timeout_seconds = 300
+draft_behavior = "skip"
+
+# Glob patterns for files to exclude from review
+excluded_patterns = [
+    "*.lock",
+    "*.min.js",
+    "*.min.css",
+    "vendor/**",
+    "node_modules/**",
+    "*.generated.*",
+]
