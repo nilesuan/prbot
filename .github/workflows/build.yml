@@ -56,6 +56,7 @@ jobs:
 
       # Build and push (push only on main/tags, not PRs)
       - name: Build and push
+        id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83  # v6.18.0
         with:
           context: .
@@ -86,6 +87,6 @@ jobs:
         env:
           COSIGN_REGISTRY: ${{ env.REGISTRY }}
           COSIGN_IMAGE: ${{ env.IMAGE_NAME }}
-          COSIGN_DIGEST: ${{ steps.meta.outputs.digest }}
+          COSIGN_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           cosign sign --yes "${COSIGN_REGISTRY}/${COSIGN_IMAGE}@${COSIGN_DIGEST}"
