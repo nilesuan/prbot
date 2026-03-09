@@ -1,0 +1,6 @@
+{
+  "Error": {
+    "Code": "ThrottlingException",
+    "Message": "Rate exceeded"
+  }
+}

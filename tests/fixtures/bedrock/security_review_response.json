@@ -1,0 +1,18 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "text": "{\"findings\":[{\"check_id\":\"S-INPUT-01\",\"title\":\"SQL injection in query builder\",\"description\":\"User input is concatenated directly into SQL query without parameterization.\",\"file_path\":\"src/db.py\",\"line_start\":42,\"line_end\":45,\"severity\":\"critical\",\"confidence\":90,\"suggestion\":\"Use parameterized queries instead of string concatenation.\"}]}"
+        }
+      ]
+    }
+  },
+  "usage": {
+    "inputTokens": 1500,
+    "outputTokens": 180,
+    "totalTokens": 1680
+  },
+  "stopReason": "end_turn"
+}

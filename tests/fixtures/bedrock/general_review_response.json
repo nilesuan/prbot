@@ -1,0 +1,18 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "text": "{\"findings\":[{\"check_id\":\"Q-ARCH-01\",\"title\":\"Missing separation of concerns\",\"description\":\"The module mixes HTTP handling with business logic.\",\"file_path\":\"src/example.py\",\"line_start\":10,\"line_end\":25,\"severity\":\"medium\",\"confidence\":75,\"suggestion\":\"Extract business logic into a separate service class.\"}]}"
+        }
+      ]
+    }
+  },
+  "usage": {
+    "inputTokens": 1500,
+    "outputTokens": 200,
+    "totalTokens": 1700
+  },
+  "stopReason": "end_turn"
+}
