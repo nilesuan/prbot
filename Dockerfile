@@ -7,7 +7,7 @@
 FROM python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac3b5b87e593bf0 AS builder
 
 # Install uv — pinned by version + digest (G-12)
-COPY --from=ghcr.io/astral-sh/uv:0.5.11@sha256:0ac957607303916420297a4c9c213bb33fbd3c888f9cd7f4f7273596ebf42b85 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.10.9@sha256:10902f58a1606787602f303954cea099626a4adb02acbac4c69920fe9d278f82 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
@@ -15,7 +15,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 
 # Install dependencies with hash verification
-RUN uv sync --frozen --no-dev --verify-hashes --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy source code and prompts
 COPY src/ src/
