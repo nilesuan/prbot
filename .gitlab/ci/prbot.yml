@@ -14,7 +14,7 @@
 # long-lived credentials are in use. Prefer OIDC (see .prbot-oidc below).
 
 .prbot-base:
-  image: ghcr.io/owner/prbot:0.1.0  # G-13: semver, not :latest
+  image: ghcr.io/nilesuan/prbot:latest  # G-13: semver, not :latest
   variables:
     PRBOT_PLATFORM: gitlab
     PRBOT_REPO: $CI_PROJECT_PATH

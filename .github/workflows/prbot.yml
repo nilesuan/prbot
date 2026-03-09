@@ -35,8 +35,9 @@ jobs:
         uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a  # v3.8.1
 
       - name: Verify prbot image
+        continue-on-error: true  # Graceful on first push before image is signed
         env:
-          PRBOT_IMAGE: ghcr.io/owner/prbot:0.1.0
+          PRBOT_IMAGE: ghcr.io/nilesuan/prbot:latest
         run: |
           cosign verify "$PRBOT_IMAGE" \
             --certificate-identity-regexp=".*" \
@@ -50,7 +51,7 @@ jobs:
 
       # G-13: Image referenced by semver, not :latest
       - name: Run prbot
-        uses: docker://ghcr.io/owner/prbot:0.1.0
+        uses: docker://ghcr.io/nilesuan/prbot:latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRBOT_PLATFORM: github

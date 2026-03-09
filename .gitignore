@@ -28,5 +28,5 @@ venv/
 htmlcov/
 .pytest_cache/
 
-# uv
-uv.lock
+# uv cache
+.uv/

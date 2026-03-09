@@ -4,10 +4,10 @@
 # S86: No build tools in final image
 
 # --- Builder stage ---
-FROM python:3.12-slim@sha256:af4e85f1f51d3b8f2721583e1b0917a18a3f2d58e5e1db2e0f4f8f3e1a0b5c7d AS builder
+FROM python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac3b5b87e593bf0 AS builder
 
 # Install uv — pinned by version + digest (G-12)
-COPY --from=ghcr.io/astral-sh/uv:0.5.11@sha256:5b1b3d8e4f2a9c7d6e8f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.5.11@sha256:0ac957607303916420297a4c9c213bb33fbd3c888f9cd7f4f7273596ebf42b85 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
@@ -22,10 +22,10 @@ COPY src/ src/
 COPY prompts/ prompts/
 
 # Install the project itself
-RUN uv sync --frozen --no-dev --no-install-workspace --no-editable
+RUN uv sync --frozen --no-dev --no-editable
 
 # --- Runtime stage ---
-FROM python:3.12-slim@sha256:af4e85f1f51d3b8f2721583e1b0917a18a3f2d58e5e1db2e0f4f8f3e1a0b5c7d
+FROM python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac3b5b87e593bf0
 
 # Create non-root user
 RUN groupadd --gid 1000 prbot && \
