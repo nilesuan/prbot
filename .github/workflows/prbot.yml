@@ -1,0 +1,58 @@
+# prbot Review (Same-Repo) — story-6-5, story-7-4
+#
+# Exit codes:
+#   0 — Review passed (APPROVE or COMMENT verdict)
+#   1 — Review found blockers (REQUEST_CHANGES)
+#   2 — Configuration error
+#   3 — Infrastructure error
+#
+# Security: No untrusted user input in run: commands.
+# All actions SHA-pinned (NG-15). Image verified with Cosign (G-13).
+name: prbot Review (Same-Repo)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: prbot-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: PR Review
+    runs-on: ubuntu-latest
+    # Skip fork PRs — handled by prbot-fork.yml
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      # G-13: Verify container image signature before running
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a  # v3.8.1
+
+      - name: Verify prbot image
+        env:
+          PRBOT_IMAGE: ghcr.io/owner/prbot:0.1.0
+        run: |
+          cosign verify "$PRBOT_IMAGE" \
+            --certificate-identity-regexp=".*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
+        with:
+          role-to-assume: ${{ vars.PRBOT_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.PRBOT_AWS_REGION || 'us-east-1' }}
+
+      # G-13: Image referenced by semver, not :latest
+      - name: Run prbot
+        uses: docker://ghcr.io/owner/prbot:0.1.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRBOT_PLATFORM: github
+          PRBOT_REPO: ${{ github.repository }}
+          PRBOT_PR_NUMBER: ${{ github.event.pull_request.number }}

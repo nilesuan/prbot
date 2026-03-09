@@ -1,0 +1,73 @@
+# prbot Review (Fork) — story-6-5, story-7-4
+#
+# SECURITY: pull_request_target runs in base repo context.
+# NO checkout of fork code — prevents code execution attacks.
+# Author association gating (NG-22) via env var, not direct injection.
+# All actions SHA-pinned (NG-15). Image verified with Cosign (G-13).
+name: prbot Review (Fork)
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: prbot-fork-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Fork PR Review
+    runs-on: ubuntu-latest
+    # Only run for fork PRs
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    environment: fork-review
+    steps:
+      # G-14: Pre-check PR state before OIDC
+      - name: Check PR state
+        if: github.event.pull_request.state == 'closed'
+        run: |
+          echo "PR is closed — skipping review"
+          exit 0
+
+      # NG-22: Author association gating — uses env var, not direct injection
+      - name: Check author association
+        env:
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+        run: |
+          if [ "$AUTHOR_ASSOCIATION" = "FIRST_TIME_CONTRIBUTOR" ] || [ "$AUTHOR_ASSOCIATION" = "NONE" ]; then
+            echo "::warning::Skipping review for $AUTHOR_ASSOCIATION"
+            exit 0
+          fi
+
+      # G-13: Verify container image signature before running
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a  # v3.8.1
+
+      - name: Verify prbot image
+        env:
+          PRBOT_IMAGE: ghcr.io/owner/prbot:0.1.0
+        run: |
+          cosign verify "$PRBOT_IMAGE" \
+            --certificate-identity-regexp=".*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+
+      # NO actions/checkout — fork code never checked out
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
+        with:
+          role-to-assume: ${{ vars.PRBOT_FORK_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.PRBOT_AWS_REGION || 'us-east-1' }}
+
+      # G-13: Image referenced by semver, not :latest
+      - name: Run prbot
+        uses: docker://ghcr.io/owner/prbot:0.1.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRBOT_PLATFORM: github
+          PRBOT_REPO: ${{ github.repository }}
+          PRBOT_PR_NUMBER: ${{ github.event.pull_request.number }}

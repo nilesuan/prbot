@@ -1,0 +1,23 @@
+# Build context exclusions (story-7-1)
+.git
+.github
+.gitlab
+.claude
+.venv
+__pycache__
+*.pyc
+
+# Documentation (except prompts/*.md)
+*.md
+!prompts/*.md
+
+# Tests and development
+tests/
+research/
+skill/
+dist/
+build/
+.coverage
+.pytest_cache
+.ruff_cache
+.mypy_cache

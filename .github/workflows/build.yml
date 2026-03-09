@@ -1,0 +1,89 @@
+# Container build, scan, and publish workflow (story-7-2)
+# Builds multi-stage Docker image, scans with Trivy, signs with Cosign
+#
+# Security: All inputs used in run: commands are from trusted GitHub context
+# (github.repository, github.actor, github.sha) — not user-controlled PR data.
+# All third-party actions are SHA-pinned (NG-15).
+name: Container Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write  # For Cosign keyless signing
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: Build & Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2  # v3.10.0
+
+      # Login to GHCR — skip for PRs (no push)
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3.4.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Extract metadata for tags and labels
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804  # v5.7.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
+      # Build and push (push only on main/tags, not PRs)
+      - name: Build and push
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198e19c3bc6614  # v6.18.0
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Trivy vulnerability scan (NG-19)
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947e7f5d99c4b5ede07  # v0.28.0
+        with:
+          image-ref: ${{ steps.meta.outputs.tags }}
+          exit-code: "1"
+          severity: "CRITICAL,HIGH"
+          format: "table"
+
+      # Cosign keyless signing — push events only
+      - name: Install Cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a  # v3.8.1
+
+      - name: Sign image
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_REGISTRY: ${{ env.REGISTRY }}
+          COSIGN_IMAGE: ${{ env.IMAGE_NAME }}
+          COSIGN_DIGEST: ${{ steps.meta.outputs.digest }}
+        run: |
+          cosign sign --yes "${COSIGN_REGISTRY}/${COSIGN_IMAGE}@${COSIGN_DIGEST}"

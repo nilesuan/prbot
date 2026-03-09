@@ -1,0 +1,63 @@
+# prbot GitLab CI/CD job template (story-6-5, story-7-4)
+#
+# Include in .gitlab-ci.yml:
+#   include:
+#     - local: '.gitlab/ci/prbot.yml'
+#
+# Exit codes:
+#   0 — Review passed (APPROVE or COMMENT verdict)
+#   1 — Review found blockers (REQUEST_CHANGES)
+#   2 — Configuration error
+#   3 — Infrastructure error
+#
+# G-15: If AWS_ACCESS_KEY_ID is set without AWS_SESSION_TOKEN,
+# long-lived credentials are in use. Prefer OIDC (see .prbot-oidc below).
+
+.prbot-base:
+  image: ghcr.io/owner/prbot:0.1.0  # G-13: semver, not :latest
+  variables:
+    PRBOT_PLATFORM: gitlab
+    PRBOT_REPO: $CI_PROJECT_PATH
+    PRBOT_PR_NUMBER: $CI_MERGE_REQUEST_IID
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  allow_failure: true
+
+# Option 1: OIDC authentication (recommended) — G4-06
+# Uses GitLab id_tokens with AWS STS AssumeRoleWithWebIdentity
+.prbot-oidc:
+  extends: .prbot-base
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+  variables:
+    AWS_REGION: ${PRBOT_AWS_REGION}
+    AWS_ROLE_ARN: ${PRBOT_AWS_ROLE_ARN}
+  before_script:
+    - >
+      export $(
+        aws sts assume-role-with-web-identity
+        --role-arn "$AWS_ROLE_ARN"
+        --role-session-name "prbot-gitlab-${CI_PIPELINE_ID}"
+        --web-identity-token "$GITLAB_OIDC_TOKEN"
+        --duration-seconds 900
+        --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]'
+        --output text
+        | awk '{print "AWS_ACCESS_KEY_ID="$1" AWS_SECRET_ACCESS_KEY="$2" AWS_SESSION_TOKEN="$3}'
+      )
+
+prbot-review:
+  extends: .prbot-oidc
+  stage: test
+  script:
+    - prbot --platform gitlab --repo "$CI_PROJECT_PATH" --pr "$CI_MERGE_REQUEST_IID"
+
+# Option 2: Static credentials (NOT recommended)
+# G-15: Long-lived credentials lack session token rotation.
+# prbot will emit a warning if AWS_ACCESS_KEY_ID is set without AWS_SESSION_TOKEN.
+# .prbot-static:
+#   extends: .prbot-base
+#   variables:
+#     AWS_ACCESS_KEY_ID: ${PRBOT_AWS_ACCESS_KEY_ID}
+#     AWS_SECRET_ACCESS_KEY: ${PRBOT_AWS_SECRET_ACCESS_KEY}
+#     AWS_REGION: ${PRBOT_AWS_REGION}
