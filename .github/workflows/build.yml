@@ -56,7 +56,7 @@ jobs:
 
       # Build and push (push only on main/tags, not PRs)
       - name: Build and push
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198e19c3bc6614  # v6.18.0
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83  # v6.18.0
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
@@ -68,7 +68,7 @@ jobs:
 
       # Trivy vulnerability scan (NG-19)
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947e7f5d99c4b5ede07  # v0.28.0
+        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2  # 0.28.0
         with:
           image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
           exit-code: "1"
