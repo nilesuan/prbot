@@ -399,13 +399,13 @@ class TestParseFindings:
                 },
             },
         }
-        findings = _parse_findings(response, "general")
-        assert len(findings) == 0
+        with pytest.raises(ValueError, match="non-JSON response"):
+            _parse_findings(response, "general")
 
     def test_empty_content(self) -> None:
         response = {"output": {"message": {"content": []}}}
-        findings = _parse_findings(response, "general")
-        assert len(findings) == 0
+        with pytest.raises(ValueError, match="no text content"):
+            _parse_findings(response, "general")
 
 
 class TestExtractTokenUsage:

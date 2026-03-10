@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -126,6 +127,15 @@ async def _run_single_agent(
                 token_usage=token_usage,
                 latency_ms=latency_ms,
                 model_id=model_id,
+            )
+
+        except ValueError as e:
+            logger.error(str(e))
+            return AgentError(
+                agent=agent_name,
+                error_type="invalid_response",
+                message=str(e),
+                retryable=False,
             )
 
         except TimeoutError:
@@ -260,17 +270,16 @@ def _parse_findings(
             break
 
     if not text:
-        logger.warning("Agent %s returned no text content", agent_name)
-        return []
-
-    # Parse JSON
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning(
-            "Agent %s returned non-JSON response", agent_name,
+        raise ValueError(
+            f"Agent {agent_name} returned no text content"
         )
-        return []
+
+    # Parse JSON — try raw first, then extract from markdown code blocks
+    data = _try_parse_json(text)
+    if data is None:
+        raise ValueError(
+            f"Agent {agent_name} returned non-JSON response: {text[:500]}"
+        )
 
     raw_findings = data.get("findings", [])
     if not isinstance(raw_findings, list):
@@ -344,6 +353,52 @@ def _parse_findings(
         ))
 
     return findings
+
+
+def _try_parse_json(text: str) -> dict[str, Any] | None:
+    """Try to parse JSON from raw text or markdown-fenced code blocks.
+
+    Claude models often wrap JSON in ```json ... ``` fences or add preamble.
+    This extracts the JSON object from common response formats.
+    """
+    # Try raw parse first
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+
+    # Try extracting from markdown code fences: ```json ... ``` or ``` ... ```
+    match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(1))
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    # Try finding the first { ... } block (outermost braces)
+    start = text.find("{")
+    if start != -1:
+        # Find matching closing brace by counting
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        data = json.loads(text[start:i + 1])
+                        if isinstance(data, dict):
+                            return data
+                    except json.JSONDecodeError:
+                        pass
+                    break
+
+    return None
 
 
 def _classify_error(error: Exception) -> str:
