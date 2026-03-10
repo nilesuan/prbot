@@ -401,12 +401,8 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     model_id=a_cfg["model_id"],
                     status="success",
                     finding_count=len(outcome.findings),
-                    input_tokens=outcome.token_usage.get(
-                        "inputTokens", 0,
-                    ),
-                    output_tokens=outcome.token_usage.get(
-                        "outputTokens", 0,
-                    ),
+                    input_tokens=outcome.token_usage.input_tokens,
+                    output_tokens=outcome.token_usage.output_tokens,
                     latency_ms=outcome.latency_ms,
                 ))
             else:
