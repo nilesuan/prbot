@@ -81,8 +81,8 @@ class PrBotConfig(BaseModel, frozen=True):
     allowed_regions: list[str] = Field(default_factory=lambda: ["ap-southeast-2"])
     confidence_threshold: int = Field(default=70, ge=0, le=100)
     blocker_threshold: int = Field(default=70, ge=0, le=100)
-    general_model_id: str = "us.anthropic.claude-sonnet-4-20250514"
-    security_model_id: str = "us.anthropic.claude-opus-4-0-20250514"
+    general_model_id: str = "au.anthropic.claude-sonnet-4-6"
+    security_model_id: str = "au.anthropic.claude-opus-4-6-v1"
     max_diff_tokens: int = Field(default=100_000, gt=0)
     budget_limit_usd: float = Field(default=5.00, gt=0)
     timeout_seconds: int = Field(default=300, gt=0)

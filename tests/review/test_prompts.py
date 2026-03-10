@@ -31,15 +31,15 @@ class TestLoadCheckSpec:
         assert "S-INPUT" in spec
 
     def test_rejects_path_traversal(self) -> None:
-        with pytest.raises(ConfigError, match="path traversal"):
+        with pytest.raises(ConfigError, match="Invalid agent name"):
             load_check_spec("../../../etc/passwd")
 
     def test_rejects_slash_in_name(self) -> None:
-        with pytest.raises(ConfigError, match="path traversal"):
+        with pytest.raises(ConfigError, match="Invalid agent name"):
             load_check_spec("foo/bar")
 
     def test_rejects_nonexistent_agent(self) -> None:
-        with pytest.raises(ConfigError, match="not found"):
+        with pytest.raises(ConfigError, match="Invalid agent name"):
             load_check_spec("nonexistent_agent_xyz")
 
 

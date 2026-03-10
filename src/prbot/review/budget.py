@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 
 # Per-million-token pricing (USD)
 PRICING: dict[str, dict[str, float]] = {
+    "au.anthropic.claude-sonnet-4-6": {
+        "input": 3.00,
+        "output": 15.00,
+    },
+    "au.anthropic.claude-opus-4-6-v1": {
+        "input": 15.00,
+        "output": 75.00,
+    },
     "us.anthropic.claude-sonnet-4-20250514": {
         "input": 3.00,
         "output": 15.00,

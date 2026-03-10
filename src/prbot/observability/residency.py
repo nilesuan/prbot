@@ -29,6 +29,11 @@ _AP_REGIONS = frozenset({
     "ap-south-1", "ap-south-2", "ap-east-1",
 })
 
+# AU cross-region inference profiles route within Australia (ap-southeast-2)
+_AU_REGIONS = frozenset({
+    "ap-southeast-2",
+})
+
 
 def _get_profile_region_group(model_id: str) -> str | None:
     """Extract geographic prefix from inference profile model ID.
@@ -37,14 +42,14 @@ def _get_profile_region_group(model_id: str) -> str | None:
     """
     if "." in model_id:
         prefix = model_id.split(".")[0]
-        if prefix in ("us", "eu", "ap"):
+        if prefix in ("us", "eu", "ap", "au"):
             return prefix
     return None
 
 
 def _region_in_group(region: str, group: str) -> bool:
     """Check if a region belongs to a geographic group."""
-    groups = {"us": _US_REGIONS, "eu": _EU_REGIONS, "ap": _AP_REGIONS}
+    groups = {"us": _US_REGIONS, "eu": _EU_REGIONS, "ap": _AP_REGIONS, "au": _AU_REGIONS}
     return region in groups.get(group, set())
 
 

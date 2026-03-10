@@ -7,6 +7,7 @@ datamarking integration (story-6-1), and path sanitization (NG-33).
 
 from __future__ import annotations
 
+import importlib.resources
 import logging
 import os
 import re
@@ -17,65 +18,52 @@ from prbot.vcs.models import PRDiff, PRMetadata
 
 logger = logging.getLogger(__name__)
 
-# Default prompts directory — relative to project root
-_DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "prompts"
-
 # Token estimation: ~4 chars per token, 1.5x safety multiplier (GAP-12)
 _CHARS_PER_TOKEN = 4
 _SAFETY_MULTIPLIER = 1.5
 
-
-def _resolve_prompts_dir() -> Path:
-    """Resolve the prompts directory with security validation (G-19).
-
-    Priority: PRBOT_PROMPTS_DIR env var > default location.
-    Validates: no symlinks, path exists, contains expected files.
-    """
-    env_dir = os.environ.get("PRBOT_PROMPTS_DIR")
-    prompts_dir = Path(env_dir).resolve() if env_dir else _DEFAULT_PROMPTS_DIR.resolve()
-
-    if not prompts_dir.is_dir():
-        raise ConfigError(
-            f"Prompts directory not found: {prompts_dir}"
-        )
-
-    return prompts_dir
+# Valid agent names — used for path traversal prevention and validation
+_VALID_AGENTS = frozenset({"general", "security"})
 
 
 def load_check_spec(agent: str) -> str:
     """Load check specification for a review agent (G-19).
 
+    Priority: PRBOT_PROMPTS_DIR env var > package data (importlib.resources).
+
     Args:
         agent: Agent name ('general' or 'security').
 
     Returns:
-        Contents of prompts/{agent}.md.
+        Contents of {agent}.md prompt file.
 
     Raises:
-        ConfigError: If path validation fails or file not found.
+        ConfigError: If agent name is invalid or file not found.
     """
-    # Validate agent name — prevent path traversal
-    if "/" in agent or "\\" in agent or ".." in agent:
+    if agent not in _VALID_AGENTS:
         raise ConfigError(
-            f"Invalid agent name (path traversal attempt): {agent!r}"
+            f"Invalid agent name: {agent!r} (expected one of {sorted(_VALID_AGENTS)})"
         )
 
-    prompts_dir = _resolve_prompts_dir()
-    spec_path = (prompts_dir / f"{agent}.md").resolve()
+    # Allow override via env var for custom prompt directories
+    env_dir = os.environ.get("PRBOT_PROMPTS_DIR")
+    if env_dir:
+        prompts_dir = Path(env_dir).resolve()
+        if not prompts_dir.is_dir():
+            raise ConfigError(f"Prompts directory not found: {prompts_dir}")
+        spec_path = (prompts_dir / f"{agent}.md").resolve()
+        if not str(spec_path).startswith(str(prompts_dir)):
+            raise ConfigError(
+                f"Path traversal detected: {agent!r} resolves outside prompts directory"
+            )
+        if not spec_path.is_file():
+            raise ConfigError(f"Check spec not found: {spec_path}")
+        return spec_path.read_text(encoding="utf-8")
 
-    # Ensure resolved path is within prompts directory
-    if not str(spec_path).startswith(str(prompts_dir)):
-        raise ConfigError(
-            f"Path traversal detected: {agent!r} resolves outside "
-            f"prompts directory"
-        )
-
-    if not spec_path.is_file():
-        raise ConfigError(
-            f"Check spec not found: {spec_path}"
-        )
-
-    return spec_path.read_text(encoding="utf-8")
+    # Default: load from package data
+    files = importlib.resources.files("prbot.prompts")
+    resource = files.joinpath(f"{agent}.md")
+    return resource.read_text(encoding="utf-8")
 
 
 def sanitize_path_for_prompt(path: str) -> str:

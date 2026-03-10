@@ -17,9 +17,8 @@ COPY pyproject.toml uv.lock ./
 # Install dependencies with hash verification
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Copy source code and prompts
+# Copy source code (prompts are package data in src/prbot/prompts/)
 COPY src/ src/
-COPY prompts/ prompts/
 
 # Install the project itself
 RUN uv sync --frozen --no-dev --no-editable
@@ -33,9 +32,8 @@ RUN groupadd --gid 1000 prbot && \
 
 WORKDIR /app
 
-# Copy virtual environment and prompts from builder
+# Copy virtual environment from builder (prompts are bundled as package data)
 COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /app/prompts /app/prompts
 
 # Set environment
 ENV PATH="/app/.venv/bin:$PATH" \
@@ -49,4 +47,4 @@ USER prbot
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD python -c "import prbot" || exit 1
 
-ENTRYPOINT ["prbot"]
+CMD ["prbot"]

@@ -43,7 +43,11 @@ def _resolve_api_base_url(config: PrBotConfig) -> str:
         env_url = os.environ.get(env_var)
         if env_url:
             _validate_url_not_internal(env_url)
-            return env_url.rstrip("/")
+            url = env_url.rstrip("/")
+            # CI_API_V4_URL includes /api/v4 but GitLabAdapter adds it
+            if config.platform == "gitlab" and url.endswith("/api/v4"):
+                url = url[: -len("/api/v4")]
+            return url
 
     # Platform default
     default = _DEFAULT_API_URLS.get(config.platform)
