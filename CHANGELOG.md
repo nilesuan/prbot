@@ -5,6 +5,34 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `.github/dependabot.yml`. Nothing watched dependencies automatically
+  before; the base image went six months without a rebuild and reached 61
+  CRITICAL/HIGH Trivy findings in the meantime. Three ecosystems are
+  covered: `uv` for the Python dependencies, `docker` for the digest-pinned
+  base image, and `github-actions` for the SHA-pinned actions.
+- Updates are grouped by whether a package reaches the shipped container,
+  which is the distinction that matters when triaging. Of the five
+  advisories open in September 2026, only idna was in the runtime closure.
+  Security updates are split the same way, so a fix that reaches users is
+  never queued behind a test-only one.
+- `tests/test_dependabot_config.py` asserts the configuration's shape. A
+  malformed `dependabot.yml` does not fail loudly: Dependabot simply stops
+  opening pull requests, which looks the same as having nothing to update.
+
+### Known issues
+
+- A security advisory whose fix sits above a declared version ceiling
+  produces an alert but no pull request, because Dependabot will not widen a
+  constraint the project set and the `uv` ecosystem has no
+  `versioning-strategy` option yet (dependabot/dependabot-core#12162). Every
+  direct dependency here has an upper bound, so triage from the alert list
+  rather than the pull request list. `GHSA-6w46-j5rx-g56g` was exactly this
+  case. The configuration documents the check to run.
+
 ## [0.3.1] - 2026-09-16
 
 ### Fixed

@@ -1,0 +1,123 @@
+# Dependabot configuration.
+#
+# Three ecosystems are covered because all three have gone stale here before:
+#
+#   uv              the Python dependencies, runtime and development
+#   docker          the digest-pinned base image in the Dockerfile
+#   github-actions  the SHA-pinned actions in .github/workflows
+#
+# The docker entry is the one that earns its keep. A digest pin fixes what the
+# image is built from; it does nothing about the packages inside it ageing. The
+# base image here went six months without a rebuild and the Trivy gate reached
+# 61 CRITICAL/HIGH findings before anyone noticed, because nothing was watching
+# the pin.
+#
+# Updates are grouped, and grouped along the line that actually matters when
+# triaging: whether a package reaches the shipped container. Of the five
+# advisories open in September 2026, exactly one (idna) was in the runtime
+# closure. The rest arrived through moto and pytest and could never reach a
+# user. Five separate pull requests made those look alike, and the reliable
+# result of that is people learning to skim them.
+#
+# Known gap, worth reading before trusting this file:
+#
+# Every direct dependency in pyproject.toml carries an upper bound, and
+# Dependabot will not widen a ceiling the project declared. The uv ecosystem
+# has no versioning-strategy option yet, so there is no setting here that
+# changes it (dependabot/dependabot-core#12162). A security advisory whose fix
+# sits above a declared ceiling therefore produces an ALERT BUT NO PULL
+# REQUEST, and is invisible to anyone watching only the pull request list.
+# GHSA-6w46-j5rx-g56g was exactly this: pytest was pinned <9, the fix needed
+# 9.0.3, and no pull request ever appeared.
+#
+# So: triage from the alert list, not the pull request list.
+#   gh api repos/nilesuan/prbot/dependabot/alerts --paginate \
+#     -q '.[] | select(.state=="open") | "\(.security_advisory.severity)\t\(.dependency.package.name)"'
+#
+# Trivy is not a substitute for that check. Its database does not carry every
+# advisory GitHub's does, and it reported zero against uv.lock both before and
+# after the pytest fix.
+
+version: 2
+
+updates:
+  # --- Python dependencies (pyproject.toml + uv.lock) ---
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Australia/Sydney
+    # The default is 5. Five is also exactly how many advisories were open at
+    # once in September 2026, which is uncomfortably close to a cap that
+    # silently hides the sixth.
+    open-pull-requests-limit: 10
+    groups:
+      python-runtime:
+        applies-to: version-updates
+        dependency-type: production
+        patterns:
+          - "*"
+      python-development:
+        applies-to: version-updates
+        dependency-type: development
+        patterns:
+          - "*"
+      # Security updates are split the same way rather than pooled, so a fix
+      # that reaches the shipped image is never queued behind a test-only one.
+      python-runtime-security:
+        applies-to: security-updates
+        dependency-type: production
+        patterns:
+          - "*"
+      python-development-security:
+        applies-to: security-updates
+        dependency-type: development
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    labels:
+      - dependencies
+
+  # --- Container base image (Dockerfile) ---
+  # Both stages pin the same python:3.12-slim digest, so this is what moves
+  # the pin forward instead of leaving it to the next person who reads a
+  # Trivy report.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Australia/Sydney
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(docker)"
+    labels:
+      - dependencies
+      - container
+
+  # --- GitHub Actions (.github/workflows) ---
+  # Every action is pinned to a full commit SHA with the version in a trailing
+  # comment. Dependabot updates both, which is the only practical way to keep
+  # SHA pinning from decaying into permanently stale actions.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Australia/Sydney
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci(actions)"
+    labels:
+      - dependencies
+      - ci
