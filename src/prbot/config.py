@@ -9,6 +9,7 @@ import ipaddress
 import logging
 import os
 import re
+import socket
 import tomllib
 from pathlib import Path
 from typing import Any, Literal
@@ -55,15 +56,75 @@ def _validate_url_not_internal(url: str) -> str:
     if hostname in _METADATA_HOSTNAMES:
         raise ConfigError(f"SSRF: URL points to cloud metadata endpoint: {url}")
 
-    try:
-        addr = ipaddress.ip_address(hostname)
-        if addr.is_private or addr.is_loopback or addr.is_link_local:
-            raise ConfigError(f"SSRF: URL points to private/loopback address: {url}")
-    except ValueError:
-        # hostname is a DNS name, not an IP — allow it
-        pass
+    if not hostname:
+        raise ConfigError(f"URL has no host: {url}")
+
+    # Resolve before trusting (SEC-DATA-02). The previous check tried
+    # ipaddress.ip_address on the hostname and allowed anything that raised
+    # ValueError, so a DNS name pointing at the metadata endpoint passed
+    # untouched, and so did non-dotted-quad literal forms such as the decimal
+    # 2852039166. Every address the name resolves to has to be acceptable,
+    # not just the literal spelling of it.
+    for addr in _resolve_addresses(hostname, url):
+        reason = _internal_reason(addr)
+        if reason:
+            raise ConfigError(
+                f"SSRF: {url} resolves to the {reason} address {addr}"
+            )
 
     return url
+
+
+def _internal_reason(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> str:
+    """Why an address is not reachable-by-us, or an empty string."""
+    if addr.is_loopback:
+        return "loopback"
+    if addr.is_link_local:
+        return "link-local"
+    if addr.is_private:
+        return "private"
+    if addr.is_multicast:
+        return "multicast"
+    if addr.is_unspecified:
+        return "unspecified"
+    if addr.is_reserved:
+        return "reserved"
+    return ""
+
+
+def _resolve_addresses(
+    hostname: str, url: str,
+) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Every address a hostname resolves to, literals included.
+
+    ipaddress.ip_address accepts the decimal and hex forms of an IPv4
+    address as well as dotted quads, so a literal is checked directly rather
+    than sent to the resolver.
+    """
+    try:
+        return [ipaddress.ip_address(hostname)]
+    except ValueError:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as e:
+        raise ConfigError(
+            f"Could not resolve host for {url}: {e}"
+        ) from e
+
+    out: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for info in infos:
+        sockaddr = info[4]
+        try:
+            out.append(ipaddress.ip_address(sockaddr[0]))
+        except ValueError:
+            continue
+    if not out:
+        raise ConfigError(f"Could not resolve host for {url}")
+    return out
 
 
 # --- Config model ---

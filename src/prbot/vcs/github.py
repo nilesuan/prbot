@@ -443,7 +443,12 @@ class GitHubAdapter:
         """
         params: dict[str, Any] = {"per_page": 100}
         current_url: str | None = url
-        origin = httpx.URL(url).host
+        # The full origin, not just the host (SEC-CRED-02). Comparing the
+        # host alone let 'http://api.github.com/...' through, which sends the
+        # Authorization header in cleartext, and let a different port on the
+        # same host through to a different listener.
+        _initial = httpx.URL(url)
+        origin = (_initial.scheme, _initial.host, _initial.port)
         pages = 0
 
         while current_url:
@@ -478,11 +483,14 @@ class GitHubAdapter:
             # D3: the next URL comes from the server and is followed with the
             # Authorization header attached. A compromised or misconfigured
             # host must not be able to redirect the token somewhere else.
-            if current_url and httpx.URL(current_url).host != origin:
-                raise VCSError(
-                    f"GitHub API pagination pointed at a different host: "
-                    f"{httpx.URL(current_url).host!r} is not {origin!r}"
-                )
+            if current_url:
+                nxt = httpx.URL(current_url)
+                if (nxt.scheme, nxt.host, nxt.port) != origin:
+                    raise VCSError(
+                        f"GitHub API pagination pointed at a different "
+                        f"origin: {nxt.scheme}://{nxt.host}:{nxt.port} is "
+                        f"not {origin[0]}://{origin[1]}:{origin[2]}"
+                    )
 
 
 def _decode_json(

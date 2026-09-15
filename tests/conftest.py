@@ -16,6 +16,23 @@ _BASE_SHA = "1234567890abcdef1234567890abcdef12345678"
 
 
 @pytest.fixture(autouse=True)
+def _no_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve every hostname to a public address.
+
+    The SSRF guard resolves a hostname before trusting it (SEC-DATA-02), so
+    without this the suite would depend on real DNS and on example.com-style
+    names that do not resolve. Tests that care about what a name resolves to
+    override this with their own stub.
+    """
+    import socket
+
+    def _fake(host, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("140.82.121.6", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake)
+
+
+@pytest.fixture(autouse=True)
 def _no_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove retry sleeps from the suite.
 

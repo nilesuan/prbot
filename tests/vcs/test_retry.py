@@ -284,7 +284,7 @@ class TestPaginationIsBounded:
         )
         adapter = _github()
         try:
-            with pytest.raises(VCSError, match="host"):
+            with pytest.raises(VCSError, match=r"host|origin"):
                 await adapter.get_diff()
         finally:
             await adapter.close()
@@ -309,5 +309,55 @@ class TestPaginationIsBounded:
         try:
             with pytest.raises(VCSError, match="pages"):
                 await adapter.find_bot_comment()
+        finally:
+            await adapter.close()
+
+
+class TestPaginationOriginIsFullyChecked:
+    """SEC-CRED-02: the guard compared the host and nothing else.
+
+    _paginate follows a server-supplied Link URL with the Authorization
+    header attached. Comparing only the host let 'http://api.github.com/...'
+    through, sending the token in cleartext, and let a different port on the
+    same host through.
+    """
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_scheme_downgrade_is_refused(self) -> None:
+        url = "https://api.github.com/repos/owner/repo/pulls/42/files"
+        respx.get(url).mock(
+            return_value=httpx.Response(
+                200,
+                json=[{"filename": "a.py", "status": "modified", "patch": "+x"}],
+                headers={
+                    "link": '<http://api.github.com/x?page=2>; rel="next"',
+                },
+            ),
+        )
+        adapter = _github()
+        try:
+            with pytest.raises(VCSError, match=r"origin|host|scheme"):
+                await adapter.get_diff()
+        finally:
+            await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_port_change_is_refused(self) -> None:
+        url = "https://api.github.com/repos/owner/repo/pulls/42/files"
+        respx.get(url).mock(
+            return_value=httpx.Response(
+                200,
+                json=[{"filename": "a.py", "status": "modified", "patch": "+x"}],
+                headers={
+                    "link": '<https://api.github.com:8443/x?page=2>; rel="next"',
+                },
+            ),
+        )
+        adapter = _github()
+        try:
+            with pytest.raises(VCSError, match=r"origin|host|port"):
+                await adapter.get_diff()
         finally:
             await adapter.close()

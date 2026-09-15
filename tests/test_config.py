@@ -604,3 +604,81 @@ class TestConfigIsNotReadFromTheReviewedTree:
             },
         )
         assert config.api_base_url is None
+
+
+class TestSsrfGuardResolvesNames:
+    """SEC-DATA-02: anything that was not a literal IP was allowed.
+
+    _validate_url_not_internal tried ipaddress.ip_address on the hostname and
+    allowed whatever raised ValueError, so a DNS name pointing at the
+    metadata endpoint passed, as did non-dotted-quad literal forms.
+    """
+
+    def test_a_name_resolving_to_link_local_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import socket
+
+        def fake(host, *a, **kw):
+            return [(socket.AF_INET, None, None, "", ("169.254.169.254", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake)
+        with pytest.raises(ConfigError, match="SSRF"):
+            _validate_url_not_internal("https://metadata.example.com/")
+
+    def test_a_name_resolving_to_a_private_address_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import socket
+
+        def fake(host, *a, **kw):
+            return [(socket.AF_INET, None, None, "", ("10.0.0.5", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake)
+        with pytest.raises(ConfigError, match="SSRF"):
+            _validate_url_not_internal("https://internal.example.com/")
+
+    def test_a_decimal_literal_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ipaddress rejects the decimal form, so only the resolver sees it.
+
+        getaddrinfo accepts '2852039166' and returns 169.254.169.254, which
+        is why the guard has to resolve rather than only parse.
+        """
+        import socket
+
+        def fake(host, *a, **kw):
+            assert host == "2852039166"
+            return [(socket.AF_INET, None, None, "", ("169.254.169.254", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake)
+        with pytest.raises(ConfigError, match="SSRF"):
+            _validate_url_not_internal("https://2852039166/")
+
+    def test_a_public_name_is_allowed(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import socket
+
+        def fake(host, *a, **kw):
+            return [(socket.AF_INET, None, None, "", ("140.82.121.6", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake)
+        assert _validate_url_not_internal("https://api.github.com/")
+
+    def test_an_unresolvable_name_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import socket
+
+        def fake(host, *a, **kw):
+            raise socket.gaierror("nope")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake)
+        with pytest.raises(ConfigError, match="resolve"):
+            _validate_url_not_internal("https://nowhere.invalid/")
+
+    def test_a_literal_internal_ip_is_still_refused(self) -> None:
+        with pytest.raises(ConfigError, match="SSRF"):
+            _validate_url_not_internal("https://169.254.169.254/")

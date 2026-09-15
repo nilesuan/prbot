@@ -461,3 +461,87 @@ class TestAgentStatusAggregatesChunks:
         ])
         assert "1 of 2" in out or "1/2" in out
         assert "throttled" in out
+
+
+class TestCellEscapingCannotBeNeutralised:
+    """SEC-DATA-02: escaping the pipe without the backslash is undone.
+
+    _cell turned `|` into `\\|`, but text already containing `\\|` became
+    `\\\\|`. A table row is split on pipes before inline parsing and a
+    backslash consumes the character after it, so the first backslash ate the
+    second and the pipe split the cell anyway.
+    """
+
+    @staticmethod
+    def _cells(row: str) -> int:
+        """Pipes that actually split a cell.
+
+        A pipe is escaped only when preceded by an ODD number of
+        backslashes: `\\|` is an escaped backslash followed by a live pipe.
+        A naive "not preceded by a backslash" check cannot see that, which is
+        the whole bug.
+        """
+        live = 0
+        for i, ch in enumerate(row):
+            if ch != "|":
+                continue
+            slashes = 0
+            j = i - 1
+            while j >= 0 and row[j] == "\\":
+                slashes += 1
+                j -= 1
+            if slashes % 2 == 0:
+                live += 1
+        return live
+
+    def test_a_backslash_pipe_cannot_split_a_cell(self) -> None:
+        from prbot.review.formatter import _cell
+
+        out = _cell(r"a \| b", 200)
+        assert self._cells(out) == 0, f"cell still splits: {out!r}"
+
+    def test_a_doubled_backslash_pipe_cannot_split_a_cell(self) -> None:
+        from prbot.review.formatter import _cell
+
+        assert self._cells(_cell(r"a \\| b", 200)) == 0
+
+    def test_a_plain_pipe_is_still_escaped(self) -> None:
+        from prbot.review.formatter import _cell
+
+        assert self._cells(_cell("a | b", 200)) == 0
+
+    def test_ordinary_text_is_unchanged(self) -> None:
+        from prbot.review.formatter import _cell
+
+        assert _cell("Bare except swallows the error", 200) == (
+            "Bare except swallows the error"
+        )
+
+
+class TestSanitiseNeutralisesLinks:
+    """SEC-DATA-01: model text could post a clickable link."""
+
+    def test_a_markdown_link_is_defused(self) -> None:
+        from prbot.review.formatter import _sanitise
+
+        out = _sanitise("See [the docs](https://evil.example.com/x) now", 2000)
+        assert "](https://evil.example.com" not in out
+
+    def test_a_bare_url_is_not_clickable(self) -> None:
+        from prbot.review.formatter import _sanitise
+
+        out = _sanitise("Fetch https://evil.example.com/x for details", 2000)
+        assert "`https://evil.example.com/x`" in out
+
+    def test_the_url_is_still_readable(self) -> None:
+        from prbot.review.formatter import _sanitise
+
+        out = _sanitise("See https://example.com/a for details", 2000)
+        assert "https://example.com/a" in out
+
+    def test_ordinary_prose_is_unchanged(self) -> None:
+        from prbot.review.formatter import _sanitise
+
+        assert _sanitise("Catch the specific exception.", 2000) == (
+            "Catch the specific exception."
+        )

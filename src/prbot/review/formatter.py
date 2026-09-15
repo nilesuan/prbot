@@ -54,6 +54,9 @@ _MENTION = re.compile(r"(?<![\w`@.-])@([A-Za-z0-9][A-Za-z0-9-]{0,38})\b")
 
 _WHITESPACE = re.compile(r"\s+")
 
+# A URL the model emitted. Wrapped in a code span rather than removed.
+_URL = re.compile(r"(?i)\b((?:https?|ftp)://[^\s<>`\]\)]+)")
+
 
 def _sanitise(text: str, limit: int) -> str:
     """Neutralise model-supplied text before it enters the comment (B7).
@@ -73,7 +76,14 @@ def _sanitise(text: str, limit: int) -> str:
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     # Backtick the handle rather than delete it: the reader still sees who
     # was named, and no notification fires.
-    return _MENTION.sub(r"`@\1`", text)
+    text = _MENTION.sub(r"`@\1`", text)
+    # Same treatment for URLs (SEC-DATA-01). Escaping < stops HTML but not
+    # markdown link syntax, so model text could still post a clickable link
+    # into a comment prbot signs. Wrapping the URL in a code span keeps it
+    # readable and removes the destination from one click away; the bracket
+    # escape stops [text](url) re-forming around it.
+    text = _URL.sub(r"`\1`", text)
+    return text.replace("[", "&#91;").replace("]", "&#93;")
 
 
 def _cell(text: str, limit: int) -> str:
@@ -83,7 +93,16 @@ def _cell(text: str, limit: int) -> str:
     model reshapes the table around it.
     """
     flattened = _WHITESPACE.sub(" ", text).strip()
-    return _sanitise(flattened, limit).replace("|", "\\|")
+    # The backslash is escaped FIRST. Escaping only the pipe leaves text
+    # containing "\\|" as "\\\\|", and a table row is split on pipes before
+    # inline parsing, where a backslash consumes the character after it: the
+    # first backslash eats the second and the pipe splits the cell anyway
+    # (SEC-DATA-02).
+    return (
+        _sanitise(flattened, limit)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+    )
 
 
 # Non-determinism disclaimer (S83)
