@@ -6,6 +6,7 @@ Merge priority: CLI args > env vars (PRBOT_ prefix) > TOML config > defaults.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import re
 import tomllib
@@ -16,6 +17,8 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from prbot.exceptions import ConfigError
+
+logger = logging.getLogger(__name__)
 
 # --- SSRF validation (reused by auth and VCS) ---
 
@@ -319,6 +322,19 @@ class PrBotConfig(BaseModel, frozen=True):
         return self
 
 
+def _in_ci(env_vars: dict[str, str]) -> bool:
+    """Whether this process is running inside a CI job.
+
+    Used to decide whether the working directory can be trusted to hold the
+    operator's configuration rather than the reviewed branch's.
+    """
+    return bool(
+        env_vars.get("GITHUB_ACTIONS") == "true"
+        or env_vars.get("GITLAB_CI") == "true"
+        or env_vars.get("CI") == "true",
+    )
+
+
 # --- Platform detection ---
 
 
@@ -377,20 +393,44 @@ def detect_pr_context() -> dict[str, str]:
 # --- TOML loading ---
 
 
-def load_toml_config(config_path: str | None = None) -> dict[str, Any]:
+def load_toml_config(
+    config_path: str | None = None,
+    env_vars: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Load configuration from TOML file.
 
     Search order:
     1. Explicit config_path if provided
-    2. .prbot.toml in current directory
-    3. pyproject.toml [tool.prbot] section
+    2. .prbot.toml in current directory  (non-CI only)
+    3. pyproject.toml [tool.prbot] section  (non-CI only)
+
+    SEC-CRED-03: the implicit search is refused in CI. A runner clones the
+    branch under review into the job's working directory, so searching the
+    current directory reads a file the reviewed code controls. That file can
+    set api_base_url, which decides where the VCS token is sent, along with
+    secret_name, the exclusion patterns and the suppression rules, so the
+    code being reviewed would be choosing what its reviewer looks at and
+    where its credentials go.
+
+    An explicit --config path still works everywhere: naming the file is the
+    operator's decision rather than the branch's.
 
     Returns empty dict if no config file found.
     """
+    if env_vars is None:
+        env_vars = dict(os.environ)
+
     paths_to_try: list[Path] = []
 
     if config_path:
         paths_to_try.append(Path(config_path))
+    elif _in_ci(env_vars):
+        logger.info(
+            "Skipping the implicit .prbot.toml search: in CI the working "
+            "directory may hold the branch under review. Pass --config to "
+            "load a configuration file explicitly.",
+        )
+        return {}
     else:
         paths_to_try.append(Path(".prbot.toml"))
         paths_to_try.append(Path("pyproject.toml"))
@@ -475,7 +515,7 @@ def build_config(
         env_vars = dict(os.environ)
     if toml_config is None:
         config_path = (cli_args or {}).get("config")
-        toml_config = load_toml_config(config_path)
+        toml_config = load_toml_config(config_path, env_vars=env_vars)
 
     # Start with TOML values
     merged: dict[str, Any] = dict(toml_config)

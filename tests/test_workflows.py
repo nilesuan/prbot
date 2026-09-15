@@ -82,8 +82,10 @@ class TestForkGating:
         assert "author_association" in joined, (
             "fork review job has no job-level author_association condition"
         )
-        assert "FIRST_TIME_CONTRIBUTOR" in joined
-        assert "NONE" in joined
+        # An allowlist of trusted associations, not a blocklist of two
+        # untrusted ones (SEC-AUTH-02). See TestForkGateIsAnAllowlist.
+        assert "contains(" in joined
+        assert "OWNER" in joined
 
     def test_closed_pr_gate_is_job_level(self) -> None:
         workflow = _load("prbot-fork.yml")
@@ -270,3 +272,43 @@ class TestIAMPolicy:
             if statement.get("Effect") != "Allow":
                 continue
             assert "bedrock:*" not in (statement.get("Action") or [])
+
+
+class TestForkGateIsAnAllowlist:
+    """SEC-AUTH-02: denying two enum values left six, three untrusted."""
+
+    @staticmethod
+    def _condition() -> str:
+        workflow = _load("prbot-fork.yml")
+        return " ".join(
+            str(job.get("if", "")) for job in workflow["jobs"].values()
+        )
+
+    def test_trusted_associations_are_named(self) -> None:
+        cond = self._condition()
+        for value in ("OWNER", "MEMBER", "COLLABORATOR"):
+            assert value in cond
+
+    def test_it_is_not_a_blocklist(self) -> None:
+        cond = self._condition()
+        assert "!=" not in cond.replace(
+            "head.repo.full_name != github.repository", "",
+        ).replace("state != 'closed'", "")
+
+    def test_first_timer_is_not_allowed(self) -> None:
+        """The least-trusted association in the enum."""
+        cond = self._condition()
+        assert "FIRST_TIMER" not in cond
+        assert "contains(" in cond
+
+
+class TestGitLabDoesNotCloneTheReviewedBranch:
+    """SEC-CRED-03: a checkout puts the reviewed tree in the working dir."""
+
+    def test_git_strategy_is_none(self) -> None:
+        template = TestGitLabTemplate._template()
+        variables: dict[str, str] = {}
+        for job in template.values():
+            if isinstance(job, dict):
+                variables.update(job.get("variables") or {})
+        assert variables.get("GIT_STRATEGY") == "none"

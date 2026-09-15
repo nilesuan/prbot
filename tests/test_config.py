@@ -547,3 +547,60 @@ class TestListValuedConfigFromEnvironment:
             toml_config={"excluded_patterns": ["a", "b"]},
         )
         assert config.excluded_patterns == ["a", "b"]
+
+
+class TestConfigIsNotReadFromTheReviewedTree:
+    """SEC-CRED-03: an implicit CWD search reads the branch under review.
+
+    GitLab Runner clones the merge request source into the job's working
+    directory, so load_toml_config's search for ./.prbot.toml found a file
+    committed on the untrusted branch. That file can set api_base_url,
+    secret_name, excluded_patterns and suppression rules, so the code being
+    reviewed chose where its reviewer sent credentials and which of its own
+    files were looked at.
+    """
+
+    def test_implicit_search_is_refused_in_ci(self) -> None:
+        env = {"GITHUB_ACTIONS": "true"}
+        assert load_toml_config(None, env_vars=env) == {}
+
+    def test_implicit_search_is_refused_on_gitlab_ci(self) -> None:
+        env = {"GITLAB_CI": "true"}
+        assert load_toml_config(None, env_vars=env) == {}
+
+    def test_an_explicit_path_still_works_in_ci(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "trusted.toml"
+        cfg.write_text('[prbot]\nconfidence_threshold = 55\n')
+        env = {"GITHUB_ACTIONS": "true"}
+        assert load_toml_config(str(cfg), env_vars=env) == {
+            "confidence_threshold": 55,
+        }
+
+    def test_implicit_search_still_works_outside_ci(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".prbot.toml").write_text(
+            '[prbot]\nconfidence_threshold = 61\n',
+        )
+        assert load_toml_config(None, env_vars={}) == {
+            "confidence_threshold": 61,
+        }
+
+    def test_build_config_does_not_read_the_tree_in_ci(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".prbot.toml").write_text(
+            '[prbot]\napi_base_url = "https://attacker.example.com"\n',
+        )
+        config = build_config(
+            cli_args=None,
+            env_vars={
+                "GITHUB_ACTIONS": "true",
+                "PRBOT_PLATFORM": "github",
+                "PRBOT_REPO": "o/r",
+                "PRBOT_PR_NUMBER": "1",
+            },
+        )
+        assert config.api_base_url is None

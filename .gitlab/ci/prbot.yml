@@ -22,6 +22,12 @@
   # harder, replace with a digest: ghcr.io/nilesuan/prbot@sha256:...
   image: ghcr.io/nilesuan/prbot:v0.2.0
   variables:
+    # SEC-CRED-03: do not clone the branch under review. prbot fetches the
+    # diff over the API and needs no working copy, and a checkout would put
+    # a .prbot.toml the reviewed code controls into the job's working
+    # directory. prbot refuses the implicit config search in CI as well;
+    # this is the other half of the same boundary.
+    GIT_STRATEGY: none
     PRBOT_PLATFORM: gitlab
     PRBOT_REPO: $CI_PROJECT_PATH
     PRBOT_PR_NUMBER: $CI_MERGE_REQUEST_IID
