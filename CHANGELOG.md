@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- prbot could not run in GitHub Actions at all. `secrets.GITHUB_TOKEN` is a
+  GitHub App installation token, and `GET /user` is not available to one:
+  GitHub answers 403, not 200. Scope validation treated that as fatal and
+  every run died with `Token scope validation failed: forbidden (403)`
+  before a review started. The code already had the right reasoning for
+  installation tokens, but it sat behind a 200 the endpoint never returns.
+  A 403 now skips the scope check the way GitLab already did for
+  `CI_JOB_TOKEN`, while a 401 stays fatal because that means the credential
+  is bad, and a throttled 403 stays fatal because that is a real fault.
+- `get_authenticated_user()` hit the same endpoint and would have failed the
+  run immediately after. It now returns an empty login on 403, which
+  `reconcile()` already documents as "identity unknown, match on the marker
+  alone". This is weaker than author matching, and the log says so.
+- `VCSError` now carries the HTTP status it was classified from.
+  `VCSAuthError` covers both 401 and 403, so without it the fix above could
+  not tell a bad credential from an endpoint the token may not use.
+
 - The CI templates and every setup document pinned
   `ghcr.io/nilesuan/prbot:v0.2.0`, an image tag that is never published.
   `build.yml` tags with docker/metadata-action's

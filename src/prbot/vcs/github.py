@@ -226,10 +226,36 @@ class GitHubAdapter:
         return response.text
 
     async def get_authenticated_user(self) -> str:
-        """Get authenticated user login, cached after first call."""
+        """Get authenticated user login, cached after first call.
+
+        Returns "" when the identity cannot be established. GET /user is not
+        available to a GitHub App installation token, which is exactly what
+        secrets.GITHUB_TOKEN is, and GitHub answers 403 rather than 200.
+        Raising there would fail every GitHub Actions run before a review
+        starts.
+
+        SEC-AUTH-02: callers read an empty login as "identity unknown" and
+        match threads on prbot's marker alone. That is weaker, because anyone
+        who can comment can paste a marker, but it is the degradation
+        reconcile() already documents, and the alternative is no review at
+        all. A 401 still raises: that means the credential is bad, not that
+        the endpoint is the wrong one. A throttled 403 still raises too,
+        since _request classifies it as VCSRateLimitError.
+        """
         if self._authenticated_user is None:
-            data = await self._request("GET", f"{self._base_url}/user")
-            self._authenticated_user = data.get("login", "")
+            try:
+                data = await self._request("GET", f"{self._base_url}/user")
+            except VCSAuthError as e:
+                if e.status_code != 403:
+                    raise
+                logger.warning(
+                    "Could not read the authenticated user: GET /user is not "
+                    "available to an installation token. Thread ownership "
+                    "will be matched on the prbot marker alone.",
+                )
+                self._authenticated_user = ""
+            else:
+                self._authenticated_user = data.get("login", "")
         return self._authenticated_user
 
     async def find_bot_comment(self) -> tuple[int, str] | None:
@@ -572,7 +598,8 @@ def _classify_response(
 
     if status == 401:
         raise VCSAuthError(
-            f"GitHub API authentication failed (401): {method} {url}"
+            f"GitHub API authentication failed (401): {method} {url}",
+            status_code=401,
         )
     if status == 403:
         # D3: GitHub signals its primary rate limit with 403 and an exhausted
@@ -586,7 +613,8 @@ def _classify_response(
                 f"GitHub API rate_limited (403): {method} {url}. {body_text}"
             )
         raise VCSAuthError(
-            f"GitHub API forbidden (403): {method} {url}. {body_text}"
+            f"GitHub API forbidden (403): {method} {url}. {body_text}",
+            status_code=403,
         )
     if status == 404:
         raise VCSNotFoundError(

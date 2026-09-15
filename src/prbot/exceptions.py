@@ -45,9 +45,20 @@ class InsufficientScopesError(AuthError):
 
 
 class VCSError(PrBotError):
-    """VCS API communication failure."""
+    """VCS API communication failure.
+
+    Carries the HTTP status it was classified from where there was one, so a
+    caller can tell apart two conditions that share a subtype. VCSAuthError
+    covers both 401 and 403, and those mean different things: 401 is a bad
+    credential, while 403 can mean the endpoint is simply not available to
+    this kind of token.
+    """
 
     exit_code = 3
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class VCSAuthError(VCSError):
