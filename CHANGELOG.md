@@ -5,15 +5,6 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Security
-
-- Bumped four transitive dependencies to clear their advisories. idna 3.11 to
-  3.19 is the only one that reaches the shipped image and closes
-  CVE-2026-45409; cryptography, pygments and requests are development-only.
-  Trivy now reports no advisory at any severity against the lockfile.
-
 ## [0.2.0] - 2026-09-15
 
 A correctness and hardening release. Several shipped controls did not do what
@@ -148,6 +139,12 @@ now in CI.
   61 CRITICAL/HIGH findings to 0. The digest pin fixes what is built
   from; it does not stop the packages inside it ageing, and the last
   successful build was six months old.
+- Cleared the four remaining transitive advisories in one lockfile pass:
+  idna 3.11 to 3.19, cryptography 46.0.5 to 50.0.1, pygments 2.19.2 to
+  2.21.0 and requests 2.32.5 to 2.34.2. Only idna reaches the shipped
+  image, where it closes CVE-2026-45409; the other three are in the
+  development closure. Trivy now reports no advisory at any severity
+  against `uv.lock`, and none at CRITICAL or HIGH against the image.
 
 - Fork reviews are gated before the OIDC role is assumed. The previous gate
   used `exit 0` inside a step, which does not stop later steps.
