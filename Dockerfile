@@ -38,14 +38,26 @@ RUN apt-get update && \
 
 # Create non-root user, and strip the installers the base image ships with.
 # S86 asks for no build tools in the final image; the virtual environment
-# never had them, but python:3.12-slim carries pip, setuptools and wheel in
-# the system interpreter and PATH finds them.
+# never had them, but python:N-slim carries pip, setuptools and wheel in the
+# system interpreter and PATH finds them.
+#
+# The site-packages path is asked of the interpreter rather than written out.
+# It used to be hardcoded to python3.12, so bumping the base to 3.14 pointed
+# every rm at a path that did not exist. rm -rf succeeds on a missing path,
+# so the build stayed green while pip survived in the image, and pip vendors
+# its own copy of msgpack, which is how a base image bump arrived carrying
+# two HIGH advisories that the previous image did not have.
+#
+# The import checks at the end are the actual guard. Without them this is a
+# command that cannot fail, and a strip that silently removes nothing looks
+# exactly like one that worked.
 RUN groupadd --gid 1000 prbot && \
     useradd --uid 1000 --gid prbot --shell /bin/false --create-home prbot && \
-    rm -rf /usr/local/lib/python3.12/site-packages/pip* \
-           /usr/local/lib/python3.12/site-packages/setuptools* \
-           /usr/local/lib/python3.12/site-packages/wheel* \
-           /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.*
+    SITE="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" && \
+    rm -rf "$SITE"/pip* "$SITE"/setuptools* "$SITE"/wheel* \
+           /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.* && \
+    if python -c 'import pip' 2>/dev/null; then echo "pip survived the strip in $SITE" >&2; exit 1; fi && \
+    if python -c 'import setuptools' 2>/dev/null; then echo "setuptools survived the strip in $SITE" >&2; exit 1; fi
 
 WORKDIR /app
 

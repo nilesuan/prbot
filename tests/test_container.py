@@ -68,6 +68,40 @@ class TestDockerfile:
         )
         assert result.returncode != 0
 
+    @pytest.mark.parametrize("installer", ["pip", "setuptools", "wheel"])
+    def test_installers_are_not_on_disk(
+        self, built_image: str, installer: str,
+    ) -> None:
+        """S86, the half `which` cannot see.
+
+        Removing /usr/local/bin/pip takes the binary off PATH and leaves the
+        package in the system interpreter's site-packages. That gap is not
+        cosmetic: pip vendors its own copy of msgpack, and Trivy scans files
+        rather than PATH, so a surviving pip brings its advisories with it.
+
+        This checks the filesystem, not importability. `import pip` fails in
+        this image either way, because PATH puts the virtual environment's
+        interpreter first and it cannot see system site-packages, so an
+        import check passes even when every file is still there.
+
+        The Dockerfile once hardcoded the python3.12 site-packages path, so
+        a base image bump to 3.14 pointed every rm at a path that did not
+        exist. rm -rf returns success on a missing path, the build stayed
+        green, and the image gained two HIGH advisories.
+        """
+        result = subprocess.run(
+            ["docker", "run", "--rm", "--entrypoint", "sh", built_image,
+             "-c", f"ls -d /usr/local/lib/python3.*/site-packages/{installer}* "
+                   f"2>/dev/null"],
+            capture_output=True, text=True, timeout=30,
+        )
+        found = result.stdout.strip()
+        assert not found, (
+            f"{installer} is still in the image at:\n{found}\n"
+            f"the site-packages strip did not run against this "
+            f"interpreter's path"
+        )
+
     def test_runs_as_non_root(self, built_image: str) -> None:
         result = subprocess.run(
             ["docker", "run", "--rm", "--entrypoint",
