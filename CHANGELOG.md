@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Both review agents now default to `au.anthropic.claude-sonnet-5` instead
+  of `au.anthropic.claude-sonnet-4-6`. Override with
+  `PRBOT_GENERAL_MODEL_ID` and `PRBOT_SECURITY_MODEL_ID` as before. The
+  profile routes only through `ap-southeast-2` and `ap-southeast-4`, so the
+  Australian residency guarantee is unchanged.
+- Sonnet 5 is listed at $2/$10 per million tokens against Sonnet 4.6's
+  $3/$15, but Claude 4.7 and later use a tokenizer that produces roughly 30%
+  more tokens for the same text. Expect review cost to be about flat, not a
+  third lower.
+
 ### Fixed
 
 - prbot could not run in GitHub Actions at all. `secrets.GITHUB_TOKEN` is a
@@ -25,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `VCSError` now carries the HTTP status it was classified from.
   `VCSAuthError` covers both 401 and 403, so without it the fix above could
   not tell a bad credential from an endpoint the token may not use.
+- Opus 4.6 was priced at $15/$75 per million tokens, which are the retired
+  Opus 4.1 rates. Anthropic lists Opus 4.5 and later at $5/$25, so every
+  cost estimate and budget check for a run using it was three times too
+  high. Two tests now guard the table: each default model must have a real
+  pricing entry rather than silently falling back to the Opus upper bound,
+  and no entry may exceed that fallback.
 
 - The CI templates and every setup document pinned
   `ghcr.io/nilesuan/prbot:v0.2.0`, an image tag that is never published.

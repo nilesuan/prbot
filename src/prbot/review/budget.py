@@ -14,15 +14,23 @@ from prbot.review.prompts import estimate_prompt_tokens
 
 logger = logging.getLogger(__name__)
 
-# Per-million-token pricing (USD)
+# USD per million tokens, Anthropic list price. Bedrock regional endpoints
+# (the au.* profiles, which guarantee Australian routing) carry a documented
+# 10% premium over global for Sonnet 4.5 and later, so these are a floor
+# rather than an exact figure. AWS does not publish Anthropic rates through
+# the Price List API, so the premium is not tracked here.
 PRICING: dict[str, dict[str, float]] = {
+    "au.anthropic.claude-sonnet-5": {
+        "input": 2.00,
+        "output": 10.00,
+    },
     "au.anthropic.claude-sonnet-4-6": {
         "input": 3.00,
         "output": 15.00,
     },
     "au.anthropic.claude-opus-4-6-v1": {
-        "input": 15.00,
-        "output": 75.00,
+        "input": 5.00,
+        "output": 25.00,
     },
     "us.anthropic.claude-sonnet-4-20250514": {
         "input": 3.00,

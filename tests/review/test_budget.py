@@ -11,6 +11,8 @@ from prbot.exceptions import (
     TimeoutBudgetExhausted,
 )
 from prbot.review.budget import (
+    DEFAULT_PRICING,
+    PRICING,
     CostEstimate,
     TimeoutBudget,
     estimate_cost,
@@ -31,6 +33,36 @@ class TestGetModelPricing:
         # Falls back to Opus pricing as upper bound
         assert pricing["input"] == 15.00
         assert pricing["output"] == 75.00
+
+    def test_sonnet_5_priced(self) -> None:
+        """Anthropic lists Sonnet 5 at $2/$10 per million tokens."""
+        pricing = get_model_pricing("au.anthropic.claude-sonnet-5")
+        assert pricing["input"] == 2.00
+        assert pricing["output"] == 10.00
+
+    @pytest.mark.parametrize(
+        "field", ["general_model_id", "security_model_id"],
+    )
+    def test_default_models_are_priced(self, field: str) -> None:
+        """Every default model must have a real entry, not the fallback.
+
+        Without this, changing a default to a model the table does not know
+        silently prices the run at the Opus upper bound, inflating every cost
+        estimate and tripping the budget check for a reason no log explains.
+        """
+        from prbot.config import PrBotConfig
+
+        model_id = PrBotConfig.model_fields[field].default
+        assert model_id in PRICING, (
+            f"default {field}={model_id!r} has no PRICING entry, so it would "
+            f"fall back to {DEFAULT_PRICING}"
+        )
+
+    def test_fallback_is_an_upper_bound(self) -> None:
+        """The fallback only works as a safe default if nothing exceeds it."""
+        for model_id, pricing in PRICING.items():
+            assert pricing["input"] <= DEFAULT_PRICING["input"], model_id
+            assert pricing["output"] <= DEFAULT_PRICING["output"], model_id
 
 
 class TestCostEstimate:

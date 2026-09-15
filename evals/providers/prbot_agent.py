@@ -49,7 +49,7 @@ def call_api(
         return {"error": f"unknown fixture: {fixture_name!r}"}
 
     agent = cfg.get("agent", "general")
-    model_id = cfg.get("model_id", "au.anthropic.claude-sonnet-4-6")
+    model_id = cfg.get("model_id", "au.anthropic.claude-sonnet-5")
     region = cfg.get("region", "ap-southeast-2")
     datamark = bool(cfg.get("datamark_diff", True))
     context_lines = int(cfg.get("context_lines", 0))

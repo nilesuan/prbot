@@ -249,8 +249,8 @@ All configuration can be set via `PRBOT_`-prefixed environment variables in the 
 | `PRBOT_ALLOWED_REGIONS` | `ap-southeast-2` | Comma-separated list of allowed AWS regions |
 | `PRBOT_CONFIDENCE_THRESHOLD` | `70` | Minimum confidence (0-100) to report a finding |
 | `PRBOT_BLOCKER_THRESHOLD` | `70` | Minimum confidence (0-100) to mark a finding as a blocker |
-| `PRBOT_GENERAL_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | Bedrock model ID for general review agent |
-| `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | Bedrock model ID for security review agent |
+| `PRBOT_GENERAL_MODEL_ID` | `au.anthropic.claude-sonnet-5` | Bedrock model ID for general review agent |
+| `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-5` | Bedrock model ID for security review agent |
 | `PRBOT_MIN_PASSING_SCORE` | `70` | Minimum review score (0-100) required to pass |
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
 | `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |

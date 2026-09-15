@@ -406,8 +406,8 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_CONFIDENCE_THRESHOLD` | `70` | Minimum confidence to report a finding |
 | `PRBOT_BLOCKER_THRESHOLD` | `70` | Minimum **confidence** at which a critical or high finding blocks |
 | `PRBOT_MIN_PASSING_SCORE` | `70` | Minimum **score** (0-100) a review must reach to pass |
-| `PRBOT_GENERAL_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | General review model |
-| `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | Security review model |
+| `PRBOT_GENERAL_MODEL_ID` | `au.anthropic.claude-sonnet-5` | General review model |
+| `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-5` | Security review model |
 | `PRBOT_MAX_DIFF_TOKENS` | `100000` | Tokens per review call; a larger diff is reviewed in several passes |
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
 | `PRBOT_CONTEXT_LINES` | `0` | Lines of surrounding code to include around each hunk |
