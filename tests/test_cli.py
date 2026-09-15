@@ -102,3 +102,40 @@ class TestUnexpectedErrorsExitThree:
         ) as exc:
             main(["--platform", "github", "--repo", "o/r", "--pr", "1"])
         assert exc.value.code == EXIT_INFRA_ERROR
+
+
+class TestExitCodesComeFromTheExceptions:
+    """GEN-MAINT-02: main() kept a second copy of the exit-code mapping."""
+
+    def test_insufficient_scopes_exits_config_error(self) -> None:
+        from prbot.cli import EXIT_CONFIG_ERROR, main
+        from prbot.exceptions import InsufficientScopesError
+
+        boom = AsyncMock(side_effect=InsufficientScopesError("missing repo"))
+        with patch("prbot.cli.run_pipeline", boom), pytest.raises(
+            SystemExit,
+        ) as exc:
+            main(["--platform", "github", "--repo", "o/r", "--pr", "1"])
+        assert exc.value.code == EXIT_CONFIG_ERROR
+
+    def test_auth_error_exits_infra_error(self) -> None:
+        from prbot.cli import EXIT_INFRA_ERROR, main
+        from prbot.exceptions import AuthError
+
+        boom = AsyncMock(side_effect=AuthError("no token"))
+        with patch("prbot.cli.run_pipeline", boom), pytest.raises(
+            SystemExit,
+        ) as exc:
+            main(["--platform", "github", "--repo", "o/r", "--pr", "1"])
+        assert exc.value.code == EXIT_INFRA_ERROR
+
+    def test_the_mapping_lives_only_in_exceptions(self) -> None:
+        """One source of truth: exceptions.py declares exit_code per class."""
+        import inspect
+
+        from prbot import cli
+
+        source = inspect.getsource(cli.main)
+        assert "InsufficientScopesError" not in source
+        assert "except AuthError" not in source
+        assert "e.exit_code" in source

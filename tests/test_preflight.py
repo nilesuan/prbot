@@ -299,3 +299,61 @@ class TestScopeValidationRuns:
             await run_pipeline(config)
 
         adapter.get_pr_metadata.assert_not_called()
+
+
+class TestReviewContextIsAlwaysCleared:
+    """GEN-ERR-03: bind ran before the try/finally that clears it.
+
+    Several fallible steps ran between bind_review_context and the try:
+    line, so a ConfigError or AuthError from any of them left repo, pr_number
+    and review_id bound to the contextvars for the life of the process.
+    """
+
+    @pytest.mark.asyncio
+    async def test_context_is_cleared_when_scope_validation_fails(
+        self,
+    ) -> None:
+        import structlog
+
+        from prbot.exceptions import InsufficientScopesError
+
+        config = _make_config()
+        adapter = AsyncMock()
+        failing = AsyncMock(
+            side_effect=InsufficientScopesError("missing repo"),
+        )
+        with _pipeline_patches(adapter), \
+                patch("prbot.auth.validate_token_scopes", failing), \
+                pytest.raises(InsufficientScopesError):
+            await run_pipeline(config)
+
+        assert structlog.contextvars.get_contextvars() == {}
+
+    @pytest.mark.asyncio
+    async def test_context_is_cleared_when_residency_fails(self) -> None:
+        import structlog
+
+        from prbot.exceptions import ConfigError
+
+        config = _make_config(
+            general_model_id="us.anthropic.claude-sonnet-4-6",
+            aws_region="ap-southeast-2",
+            allowed_regions=[],
+        )
+        adapter = AsyncMock()
+        with _pipeline_patches(adapter), pytest.raises(ConfigError):
+            await run_pipeline(config)
+
+        assert structlog.contextvars.get_contextvars() == {}
+
+    @pytest.mark.asyncio
+    async def test_context_is_cleared_on_the_happy_path(self) -> None:
+        import structlog
+
+        config = _make_config()
+        adapter = AsyncMock()
+        adapter.get_pr_metadata.return_value = _make_metadata(state="closed")
+        with _pipeline_patches(adapter):
+            await run_pipeline(config)
+
+        assert structlog.contextvars.get_contextvars() == {}

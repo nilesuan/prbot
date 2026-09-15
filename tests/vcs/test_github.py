@@ -376,3 +376,48 @@ class TestMalformedResponsesAreClassified:
                 await adapter.get_diff()
         finally:
             await adapter.close()
+
+
+class TestPrPayloadIsFetchedOnce:
+    """GEN-ARCH-03: get_diff re-fetched metadata get_pr_metadata already had."""
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_metadata_then_diff_hits_the_pr_endpoint_once(
+        self, github_pr_response: dict[str, Any],
+    ) -> None:
+        pr = respx.get(
+            "https://api.github.com/repos/owner/repo/pulls/42",
+        ).mock(return_value=httpx.Response(200, json=github_pr_response))
+        respx.get(
+            "https://api.github.com/repos/owner/repo/pulls/42/files",
+        ).mock(return_value=httpx.Response(200, json=[]))
+
+        adapter = _make_adapter()
+        try:
+            await adapter.get_pr_metadata()
+            diff = await adapter.get_diff()
+        finally:
+            await adapter.close()
+
+        assert pr.call_count == 1
+        assert diff.head_sha == github_pr_response["head"]["sha"]
+        assert diff.base_sha == github_pr_response["base"]["sha"]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_diff_alone_still_resolves_the_shas(
+        self, github_pr_response: dict[str, Any],
+    ) -> None:
+        respx.get(
+            "https://api.github.com/repos/owner/repo/pulls/42",
+        ).mock(return_value=httpx.Response(200, json=github_pr_response))
+        respx.get(
+            "https://api.github.com/repos/owner/repo/pulls/42/files",
+        ).mock(return_value=httpx.Response(200, json=[]))
+        adapter = _make_adapter()
+        try:
+            diff = await adapter.get_diff()
+        finally:
+            await adapter.close()
+        assert diff.head_sha == github_pr_response["head"]["sha"]

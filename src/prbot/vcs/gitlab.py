@@ -36,6 +36,15 @@ logger = logging.getLogger(__name__)
 
 _STATE_MARKER = "<!-- prbot:state:"
 
+# SEC-INPUT-04: an upper bound on a file fetched for context. The sizes are
+# chosen by the contributor whose branch is under review, every non-removed
+# file in the diff is fetched, and build_context_excerpt only ever uses a
+# window around the hunks, so anything past this is retained for nothing.
+# 2 MiB is far above any file a human reads in review and far below what
+# would hurt a runner.
+MAX_CONTEXT_BYTES = 2 * 1024 * 1024
+
+
 # Hard cap on pages followed (D3). See the note in github.py.
 _MAX_PAGES = 100
 
@@ -152,6 +161,13 @@ class GitLabAdapter:
             )
         except VCSError as e:
             logger.info("context.unavailable path=%s: %s", path, e)
+            return None
+
+        if len(response.content) > MAX_CONTEXT_BYTES:
+            logger.info(
+                "context.too_large path=%s bytes=%d limit=%d",
+                path, len(response.content), MAX_CONTEXT_BYTES,
+            )
             return None
         return response.text
 

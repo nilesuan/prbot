@@ -19,12 +19,7 @@ import uuid
 
 from prbot import __version__
 from prbot.config import PrBotConfig, build_config
-from prbot.exceptions import (
-    AuthError,
-    ConfigError,
-    InsufficientScopesError,
-    PrBotError,
-)
+from prbot.exceptions import ConfigError, PrBotError
 
 EXIT_PASS = 0
 EXIT_BLOCKERS = 1
@@ -176,53 +171,61 @@ async def run_pipeline(config: PrBotConfig) -> int:
         review_id=review_id,
     )
 
-    # C5: the roster is configuration, not three hardcoded modules
-    roster = config.agent_roster()
-    agents = [
-        {
-            "name": spec.name,
-            "model_id": spec.model_id or config.general_model_id,
-            "check_prefix": spec.check_prefix,
-        }
-        for spec in roster
-    ]
-
-    # Validate data residency before any API calls
-    model_ids = [a["model_id"] for a in agents]
-    validate_data_residency(
-        config.aws_region, config.allowed_regions, model_ids,
-    )
-
-    # Resolve VCS token
-    token = await resolve_token(config)
-    token.mask_in_ci()
-    logger.info(
-        "auth.resolved source=%s token=%s",
-        token.source, token.redacted,
-    )
-
-    # A9: scope validation was written, tested and never called, so a token
-    # missing a scope failed later as an opaque 403 rather than a clear
-    # configuration error. Token types that cannot report their own scopes
-    # skip the check rather than failing it.
-    from prbot.vcs import _resolve_api_base_url
-
-    await validate_token_scopes(
-        token, config.platform, _resolve_api_base_url(config),
-    )
-
-    validate_aws_session_credentials()
-
-    # Create VCS adapter
-    adapter = create_vcs_adapter(config, token)
-
-    # Audit tracking variables
-    pii_redacted_total = 0
-    hallucinations_removed = 0
-    secret_count = 0
-    exit_code = EXIT_PASS
-
+    # GEN-ERR-03: everything after the bind runs inside the try, so the
+    # context is cleared on every exit path. Several fallible steps used to
+    # sit between the bind and the try, and a ConfigError or AuthError from
+    # any of them left repo, pr_number and review_id bound for the life of
+    # the process, which in a long-lived host attributes later log lines to
+    # a review that already failed.
+    adapter = None
     try:
+
+        # C5: the roster is configuration, not three hardcoded modules
+        roster = config.agent_roster()
+        agents = [
+            {
+                "name": spec.name,
+                "model_id": spec.model_id or config.general_model_id,
+                "check_prefix": spec.check_prefix,
+            }
+            for spec in roster
+        ]
+
+        # Validate data residency before any API calls
+        model_ids = [a["model_id"] for a in agents]
+        validate_data_residency(
+            config.aws_region, config.allowed_regions, model_ids,
+        )
+
+        # Resolve VCS token
+        token = await resolve_token(config)
+        token.mask_in_ci()
+        logger.info(
+            "auth.resolved source=%s token=%s",
+            token.source, token.redacted,
+        )
+
+        # A9: scope validation was written, tested and never called, so a token
+        # missing a scope failed later as an opaque 403 rather than a clear
+        # configuration error. Token types that cannot report their own scopes
+        # skip the check rather than failing it.
+        from prbot.vcs import _resolve_api_base_url
+
+        await validate_token_scopes(
+            token, config.platform, _resolve_api_base_url(config),
+        )
+
+        validate_aws_session_credentials()
+
+        # Create VCS adapter
+        adapter = create_vcs_adapter(config, token)
+
+        # Audit tracking variables
+        pii_redacted_total = 0
+        hallucinations_removed = 0
+        secret_count = 0
+        exit_code = EXIT_PASS
+
         # Fetch PR metadata
         metadata = await adapter.get_pr_metadata()
 
@@ -722,7 +725,8 @@ async def run_pipeline(config: PrBotConfig) -> int:
         return exit_code
 
     finally:
-        await adapter.close()
+        if adapter is not None:
+            await adapter.close()
         clear_review_context()
 
 
@@ -743,13 +747,10 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         exit_code = asyncio.run(run_pipeline(config))
-    except InsufficientScopesError as e:
-        print(f"error: {e}", file=sys.stderr)
-        sys.exit(EXIT_CONFIG_ERROR)
-    except AuthError as e:
-        print(f"error: {e}", file=sys.stderr)
-        sys.exit(EXIT_INFRA_ERROR)
     except PrBotError as e:
+        # exceptions.py declares exit_code per class and is the single source
+        # of truth. Hand-written branches per exception type were a second
+        # copy of that mapping, able to drift from it (GEN-MAINT-02).
         print(f"error: {e}", file=sys.stderr)
         sys.exit(e.exit_code)
     except KeyboardInterrupt:

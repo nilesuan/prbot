@@ -317,3 +317,52 @@ class TestBuildingInlineComments:
         body = build_inline_comments(scored, self._diff())[0].body
         assert "`@octocat`" in body
         assert "<img" not in body
+
+
+class TestFileContentIsBounded:
+    """SEC-INPUT-04: get_file_content returned the whole body, unbounded.
+
+    The file sizes are chosen by the contributor whose branch is under
+    review, every non-removed file in the diff was fetched, and all of them
+    were held for the run. build_context_excerpt only ever uses a window
+    around the hunks, so the rest was retained for nothing.
+    """
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_an_oversized_file_is_skipped(self) -> None:
+        respx.get(
+            "https://api.github.com/repos/owner/repo/contents/big.py",
+        ).mock(return_value=httpx.Response(200, text="x" * 3_000_000))
+        adapter = _github()
+        try:
+            assert await adapter.get_file_content("big.py", _HEAD) is None
+        finally:
+            await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_normal_file_is_returned(self) -> None:
+        respx.get(
+            "https://api.github.com/repos/owner/repo/contents/small.py",
+        ).mock(return_value=httpx.Response(200, text="import os\n"))
+        adapter = _github()
+        try:
+            assert await adapter.get_file_content("small.py", _HEAD) == (
+                "import os\n"
+            )
+        finally:
+            await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_gitlab_is_bounded_too(self) -> None:
+        respx.get(
+            "https://gitlab.com/api/v4/projects/owner%2Frepo"
+            "/repository/files/big.py/raw",
+        ).mock(return_value=httpx.Response(200, text="x" * 3_000_000))
+        adapter = _gitlab()
+        try:
+            assert await adapter.get_file_content("big.py", _HEAD) is None
+        finally:
+            await adapter.close()

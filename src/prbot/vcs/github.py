@@ -40,6 +40,15 @@ _STATE_MARKER = "<!-- prbot:state:"
 # GitHub API file limit before truncation
 _GITHUB_FILE_LIMIT = 3000
 
+# SEC-INPUT-04: an upper bound on a file fetched for context. The sizes are
+# chosen by the contributor whose branch is under review, every non-removed
+# file in the diff is fetched, and build_context_excerpt only ever uses a
+# window around the hunks, so anything past this is retained for nothing.
+# 2 MiB is far above any file a human reads in review and far below what
+# would hurt a runner.
+MAX_CONTEXT_BYTES = 2 * 1024 * 1024
+
+
 # Hard cap on pages followed (D3). At per_page=100 this is 10,000 items,
 # past any pull request worth reviewing. Without it a server returning a
 # Link header that points back at itself holds the CI job open until the
@@ -88,6 +97,10 @@ class GitHubAdapter:
         self._pr_number = pr_number
         self._base_url = base_url.rstrip("/")
         self._authenticated_user: str | None = None
+        # GEN-ARCH-03: get_pr_metadata and get_diff both need the PR
+        # payload and both used to fetch it, so every run paid for two
+        # identical GETs to the same endpoint.
+        self._pr_payload: dict[str, Any] | None = None
         self._client = httpx.AsyncClient(
             headers={
                 "Authorization": token.as_bearer_header(),
@@ -97,13 +110,19 @@ class GitHubAdapter:
             timeout=30.0,
         )
 
+    async def _fetch_pr(self) -> dict[str, Any]:
+        """The PR payload, fetched once and cached for the run."""
+        if self._pr_payload is None:
+            self._pr_payload = await self._request(
+                "GET",
+                f"{self._base_url}/repos/{self._repo}"
+                f"/pulls/{self._pr_number}",
+            )
+        return self._pr_payload
+
     async def get_pr_metadata(self) -> PRMetadata:
         """Fetch PR metadata with state normalization and null coercion."""
-        url = (
-            f"{self._base_url}/repos/{self._repo}"
-            f"/pulls/{self._pr_number}"
-        )
-        data = await self._request("GET", url)
+        data = await self._fetch_pr()
         validate_response(data, [
             "head.sha", "base.sha", "head.ref", "base.ref",
             "state", "user.login", "number",
@@ -154,12 +173,8 @@ class GitHubAdapter:
             for f in all_files
         ]
 
-        # Get SHAs from PR metadata for the diff
-        pr_url = (
-            f"{self._base_url}/repos/{self._repo}"
-            f"/pulls/{self._pr_number}"
-        )
-        pr_data = await self._request("GET", pr_url)
+        # Get SHAs from the PR payload, fetched once per run
+        pr_data = await self._fetch_pr()
         head_sha = pr_data.get("head", {}).get("sha", "")
         base_sha = pr_data.get("base", {}).get("sha", "")
 
@@ -185,6 +200,13 @@ class GitHubAdapter:
             )
         except VCSError as e:
             logger.info("context.unavailable path=%s: %s", path, e)
+            return None
+
+        if len(response.content) > MAX_CONTEXT_BYTES:
+            logger.info(
+                "context.too_large path=%s bytes=%d limit=%d",
+                path, len(response.content), MAX_CONTEXT_BYTES,
+            )
             return None
         return response.text
 

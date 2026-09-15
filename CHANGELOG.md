@@ -113,6 +113,27 @@ now in CI.
 
 ### Security
 
+- Datamarking identified diff structure by prefix, so a deleted line
+  whose text began with `-- ` impersonated a file header and reached
+  the model unmarked. Structure is now identified by position.
+- File paths, which a contributor chooses and which may contain
+  arbitrary printable text, are datamarked like any other content.
+- Inline comment bodies now pass through secret redaction, which
+  previously covered the summary comment only.
+- The implicit `.prbot.toml` search is refused in CI, and the GitLab
+  template sets `GIT_STRATEGY: none`, so the branch under review can
+  no longer choose its reviewer's configuration.
+- The fork gate is an allowlist of OWNER, MEMBER and COLLABORATOR
+  rather than a blocklist of two values out of eight.
+- Review threads are matched by author as well as by marker, so a
+  pasted finding marker cannot suppress or resolve a finding.
+- The SSRF guard resolves hostnames instead of allowing anything that
+  is not a literal IP, and pagination compares scheme, host and port
+  rather than host alone.
+- Table cells escape the backslash before the pipe, and model-emitted
+  URLs are rendered as code rather than links.
+- Context fetches are bounded at 2 MiB per file.
+
 - Refreshed the pinned base image and applied Debian security updates
   on top of it, and bumped urllib3 to 2.7.0. The Trivy gate went from
   61 CRITICAL/HIGH findings to 0. The digest pin fixes what is built
