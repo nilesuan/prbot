@@ -4,7 +4,7 @@ Set up prbot to automatically review merge requests on GitLab -- both GitLab.com
 
 ## Prerequisites
 
-- **AWS account** with [Amazon Bedrock](https://aws.amazon.com/bedrock/) model access enabled (Claude Sonnet + Claude Opus)
+- **AWS account** with [Amazon Bedrock](https://aws.amazon.com/bedrock/) model access enabled for whichever models you configure (Claude Sonnet by default for both agents)
 - **GitLab instance** (GitLab.com or self-hosted, version 15.7+ for OIDC support)
 - A **project or group access token** with `api` scope
 - An **AWS IAM OIDC identity provider** configured for your GitLab instance (recommended), or static IAM credentials
@@ -214,16 +214,16 @@ The prbot image is hosted on GitHub Container Registry (`ghcr.io`). If your GitL
 
 ```bash
 # Pull from GHCR and push to your registry
-docker pull ghcr.io/nilesuan/prbot:latest
-docker tag ghcr.io/nilesuan/prbot:latest registry.example.com/prbot:latest
-docker push registry.example.com/prbot:latest
+docker pull ghcr.io/nilesuan/prbot:v0.2.0
+docker tag ghcr.io/nilesuan/prbot:v0.2.0 registry.example.com/prbot:v0.2.0
+docker push registry.example.com/prbot:v0.2.0
 ```
 
 Then update the job:
 
 ```yaml
 prbot-review:
-  image: registry.example.com/prbot:latest
+  image: registry.example.com/prbot:v0.2.0
   # ...
 ```
 
@@ -243,8 +243,12 @@ All configuration can be set via `PRBOT_`-prefixed CI/CD variables:
 | `PRBOT_ALLOWED_REGIONS` | `ap-southeast-2` | Comma-separated list of allowed AWS regions |
 | `PRBOT_CONFIDENCE_THRESHOLD` | `70` | Minimum confidence (0-100) to report a finding |
 | `PRBOT_BLOCKER_THRESHOLD` | `70` | Minimum confidence (0-100) to mark a finding as a blocker |
-| `PRBOT_GENERAL_MODEL_ID` | `us.anthropic.claude-sonnet-4-20250514` | Bedrock model ID for general review agent |
-| `PRBOT_SECURITY_MODEL_ID` | `us.anthropic.claude-opus-4-0-20250514` | Bedrock model ID for security review agent |
+| `PRBOT_GENERAL_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | Bedrock model ID for general review agent |
+| `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | Bedrock model ID for security review agent |
+| `PRBOT_MIN_PASSING_SCORE` | `70` | Minimum review score (0-100) required to pass |
+| `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
+| `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |
+| `PRBOT_ALLOWED_REGIONS` | `ap-southeast-2` | Comma-separated regions the review may run in |
 | `PRBOT_MAX_DIFF_TOKENS` | `100000` | Maximum diff size in tokens before rejection |
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Maximum estimated cost per review |
 | `PRBOT_TIMEOUT_SECONDS` | `300` | Review timeout in seconds |
@@ -350,7 +354,9 @@ rules:
 ### Review costs too much
 
 - Lower `PRBOT_BUDGET_LIMIT_USD` to cap estimated cost
-- Use a cheaper model for `PRBOT_GENERAL_MODEL_ID` (e.g., `anthropic.claude-haiku-3-20240307`)
+- Point `PRBOT_GENERAL_MODEL_ID` at a cheaper model, and check it
+  against `PRICING` in `review/budget.py` so the cost estimate is
+  accurate rather than falling back to the Opus upper bound
 - Add exclusion patterns to reduce diff size
 
 ### Runners can't pull the container image
