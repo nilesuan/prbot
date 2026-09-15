@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from prbot.review.models import Finding
 from prbot.security.validation import (
     HALLUCINATION_PENALTY,
@@ -63,11 +65,17 @@ class TestBuildLineIndex:
         assert 11 in index["src/app.py"]  # +new_line at line 11
 
     def test_empty_patch(self) -> None:
+        """None, not an empty set: no hunks means no basis to judge lines.
+
+        An empty set used to be indistinguishable from "this file has hunks
+        but nothing was added", and the caller silently skipped the check for
+        both (B4).
+        """
         diff = _make_diff([
             FileDiff(path="empty.py", status="removed", patch=""),
         ])
         index = _build_line_index(diff)
-        assert index["empty.py"] == set()
+        assert index["empty.py"] is None
 
     def test_multiple_hunks(self) -> None:
         patch = (
@@ -141,3 +149,114 @@ class TestValidateFindingsAgainstDiff:
         assert len(result) == 2  # ghost.py removed
         assert result[0].confidence == 80   # valid unchanged
         assert result[1].confidence == 20   # 60 - 40
+
+
+# New-side numbering: context 10, added 11, context 12, context 13.
+# The added-line index therefore holds only {11}, so under the old rule a
+# finding about the deleted check or the surrounding context found no
+# overlap and lost 40 points.
+_REMOVAL_PATCH = """@@ -10,7 +10,7 @@ def handler(request):
+     user = request.user
+-    if not user.is_authenticated:
+-        raise PermissionDenied
++    pass
+     return render(request)
+     # trailing context
+"""
+
+
+class TestValidationCoversTheWholeHunk:
+    """B4: only added lines were indexed.
+
+    A finding about a line the diff deletes, or about the context around a
+    change, found no overlap and lost 40 confidence points. "This pull
+    request removes the authorisation check" is exactly the kind of finding
+    a security agent should be rewarded for.
+    """
+
+    @staticmethod
+    def _diff(patch: str = _REMOVAL_PATCH) -> PRDiff:
+        return PRDiff(
+            files=[
+                FileDiff(path="src/views.py", status="modified", patch=patch),
+            ],
+        )
+
+    @staticmethod
+    def _finding(line_start: int, line_end: int, confidence: int = 90):
+        return Finding(
+            id="security-1",
+            category="security",
+            check_id="S-AUTH-01",
+            title="Authorisation check removed",
+            description="d",
+            file_path="src/views.py",
+            line_start=line_start,
+            line_end=line_end,
+            severity="critical",
+            confidence=confidence,
+        )
+
+    def test_finding_about_a_deleted_line_is_not_penalised(self) -> None:
+        """The removal sits between new-side lines 10 and 11."""
+        out = validate_findings_against_diff(
+            [self._finding(10, 11)], self._diff(),
+        )
+        assert out[0].confidence == 90
+
+    def test_finding_on_a_leading_context_line_is_not_penalised(self) -> None:
+        out = validate_findings_against_diff(
+            [self._finding(10, 10)], self._diff(),
+        )
+        assert out[0].confidence == 90
+
+    def test_finding_on_a_trailing_context_line_is_not_penalised(self) -> None:
+        out = validate_findings_against_diff(
+            [self._finding(12, 13)], self._diff(),
+        )
+        assert out[0].confidence == 90
+
+    def test_finding_outside_every_hunk_is_still_penalised(self) -> None:
+        out = validate_findings_against_diff(
+            [self._finding(900, 905)], self._diff(),
+        )
+        assert out[0].confidence == 50
+
+    def test_finding_on_an_added_line_is_not_penalised(self) -> None:
+        patch = "@@ -1,2 +1,3 @@\n import os\n+import sys\n context\n"
+        out = validate_findings_against_diff(
+            [self._finding(2, 2)], self._diff(patch),
+        )
+        assert out[0].confidence == 90
+
+    def test_deletion_only_hunk_still_bounds_the_check(self) -> None:
+        """An empty added-line index previously disabled validation."""
+        patch = (
+            "@@ -10,4 +10,2 @@\n a\n-b\n-c\n d\n"
+        )
+        out = validate_findings_against_diff(
+            [self._finding(800, 800)], self._diff(patch),
+        )
+        assert out[0].confidence == 50
+
+    def test_multiple_hunks_are_all_indexed(self) -> None:
+        patch = (
+            "@@ -1,2 +1,2 @@\n a\n+b\n"
+            "@@ -50,2 +50,2 @@\n x\n+y\n"
+        )
+        out = validate_findings_against_diff(
+            [self._finding(50, 51)], self._diff(patch),
+        )
+        assert out[0].confidence == 90
+
+    def test_unparseable_patch_does_not_penalise(self) -> None:
+        """No hunk headers means no basis to judge the line numbers."""
+        out = validate_findings_against_diff(
+            [self._finding(5, 5)], self._diff("no hunks here at all"),
+        )
+        assert out[0].confidence == 90
+
+    def test_finding_for_a_file_not_in_the_diff_is_still_dropped(self) -> None:
+        finding = self._finding(1, 1)
+        finding = replace(finding, file_path="src/other.py")
+        assert validate_findings_against_diff([finding], self._diff()) == []

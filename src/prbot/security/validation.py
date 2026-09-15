@@ -20,42 +20,51 @@ logger = logging.getLogger(__name__)
 HALLUCINATION_PENALTY = 40
 
 
-def _build_line_index(diff: PRDiff) -> dict[str, set[int]]:
-    """Parse each file's patch to extract new-side changed line numbers.
+def _build_line_index(diff: PRDiff) -> dict[str, set[int] | None]:
+    """Map each file to the new-side line numbers its hunks cover (B4).
 
-    Returns dict mapping file path to set of changed line numbers.
+    The index previously held added lines only, so a finding about a line
+    the diff deletes, or about the context around a change, found no overlap
+    and was penalised. "This pull request removes the authorisation check"
+    is exactly the kind of finding that should survive.
+
+    A hunk's new-side span covers added lines, context lines, and the
+    position where a deletion happened, which is the only new-side line
+    number a deletion can be described by. Findings outside every hunk are
+    still outside the reviewed region.
+
+    Returns None for a file whose patch declares no hunks, meaning there is
+    no basis to judge its line numbers either way.
     """
-    index: dict[str, set[int]] = {}
+    index: dict[str, set[int] | None] = {}
 
     for file_diff in diff.files:
-        lines: set[int] = set()
-
         if not file_diff.patch:
-            index[file_diff.path] = lines
+            index[file_diff.path] = None
             continue
 
-        current_line = 0
+        covered: set[int] = set()
+        saw_hunk = False
+
         for raw_line in file_diff.patch.split("\n"):
-            # Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
             hunk_match = re.match(
-                r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@",
+                r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@",
                 raw_line,
             )
-            if hunk_match:
-                current_line = int(hunk_match.group(1))
+            if not hunk_match:
                 continue
+            saw_hunk = True
+            start = int(hunk_match.group(1))
+            count = (
+                int(hunk_match.group(2))
+                if hunk_match.group(2) is not None
+                else 1
+            )
+            # A zero-length new side still marks the position of a pure
+            # deletion, so keep at least that one line addressable.
+            covered.update(range(start, start + max(count, 1)))
 
-            if raw_line.startswith("+") and not raw_line.startswith("+++"):
-                lines.add(current_line)
-                current_line += 1
-            elif raw_line.startswith("-") and not raw_line.startswith("---"):
-                # Removed lines don't advance new-side counter
-                pass
-            else:
-                # Context line
-                current_line += 1
-
-        index[file_diff.path] = lines
+        index[file_diff.path] = covered if saw_hunk else None
 
     return index
 
@@ -86,13 +95,18 @@ def validate_findings_against_diff(
             )
             continue
 
-        # Check line range overlap with changed lines
-        changed_lines = line_index.get(finding.file_path, set())
+        # Check line range overlap with the hunks the diff actually covers
+        changed_lines = line_index.get(finding.file_path)
+        if changed_lines is None:
+            # No hunk headers, so no basis to judge the line numbers.
+            validated.append(finding)
+            continue
+
         finding_lines = set(
             range(finding.line_start, finding.line_end + 1),
         )
 
-        if changed_lines and not finding_lines & changed_lines:
+        if not finding_lines & changed_lines:
             # No overlap — penalize confidence
             new_confidence = max(0, finding.confidence - HALLUCINATION_PENALTY)
             logger.warning(
