@@ -86,8 +86,15 @@ def _compile(patterns: tuple[str, ...]) -> pathspec.PathSpec:
     A pattern that fails to compile must not be dropped: silently matching
     nothing is exactly the failure this module is being fixed for.
     """
+    # pathspec 1.0 renamed the registered factory: "gitwildmatch" is
+    # deprecated there in favour of "gitignore". The names are exactly
+    # inverted on 0.x, which deprecates "gitignore" instead, so no single
+    # name is clean across both and the dependency floor is pinned to >=1
+    # rather than branching here. The deprecation is not cosmetic: the
+    # except below turns any warning raised as an error into ConfigError,
+    # so on 0.x this call would refuse every pattern list it was given.
     try:
-        return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+        return pathspec.PathSpec.from_lines("gitignore", patterns)
     except Exception as exc:  # pathspec raises several pattern error types
         raise ConfigError(
             f"Invalid exclusion pattern in {list(patterns)!r}: {exc}"

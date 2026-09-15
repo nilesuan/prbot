@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from prbot.security.diff_filter import (
+    _compile,
     _matches_exclusion,
     filter_diff,
     is_binary_file,
@@ -236,3 +237,42 @@ class TestShippedConfigPatterns:
 
     def test_shipped_patterns_leave_source_alone(self) -> None:
         assert not _matches_exclusion("src/prbot/cli.py", self._shipped())
+
+
+class TestPathspecPatternFactory:
+    """pathspec renamed its registered pattern factory at 1.0.
+
+    "gitwildmatch" is deprecated there in favour of "gitignore", and 0.x
+    deprecates exactly the opposite name. Because _compile turns any
+    exception into ConfigError, and this suite raises on warnings, naming
+    the wrong one does not produce a deprecation notice: it refuses every
+    pattern list in the project, which surfaced as 83 failing tests with no
+    obvious common cause.
+    """
+
+    def test_the_factory_name_is_not_deprecated(self) -> None:
+        """Fails loudly, and says why, when pathspec renames it again."""
+        import warnings
+
+        import pathspec
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            try:
+                pathspec.PathSpec.from_lines("gitignore", ["*.lock"])
+            except DeprecationWarning as exc:  # pragma: no cover
+                pytest.fail(
+                    f"pathspec {pathspec.__version__} deprecates the pattern "
+                    f"factory this module asks for: {exc}. Update the name in "
+                    f"security/diff_filter.py and the floor in pyproject.toml "
+                    f"together; the names are inverted between majors, so "
+                    f"there is no value that works on both."
+                )
+
+    def test_patterns_still_match_what_they_did_before(self) -> None:
+        """The rename must not change matching behaviour."""
+        spec = _compile(("*.lock", "**/vendor/**", "package-lock.json"))
+        assert spec.match_file("a.lock")
+        assert spec.match_file("x/vendor/y.js")
+        assert spec.match_file("package-lock.json")
+        assert not spec.match_file("src/main.py")
