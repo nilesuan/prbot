@@ -7,6 +7,7 @@ collapsible borderline sections, and progressive truncation.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Literal
 
 from prbot.review.models import AgentError, AgentOutcome, AgentResult
@@ -36,6 +37,53 @@ _SEVERITY_EMOJI: dict[str, str] = {
     "low": "🔵",
     "info": "⚪",
 }
+
+# Caps on model-supplied fields (B7). One finding must not be able to
+# consume the platform comment limit on its own, and a cap makes the
+# progressive truncation in truncate_comment a fallback rather than the
+# first line of defence.
+_MAX_TITLE = 200
+_MAX_DESCRIPTION = 4000
+_MAX_SUGGESTION = 2000
+_MAX_PATH = 400
+
+# A mention that would notify a real person. Preceded by a non-word, so an
+# email address local part does not qualify.
+_MENTION = re.compile(r"(?<![\w`@.-])@([A-Za-z0-9][A-Za-z0-9-]{0,38})\b")
+
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _sanitise(text: str, limit: int) -> str:
+    """Neutralise model-supplied text before it enters the comment (B7).
+
+    The four prompt-injection layers all stop at the model boundary. This is
+    the other end: prbot posts the model's words with pull-requests: write,
+    so those words must not be able to open an HTML element, forge prbot's
+    own state marker, or notify people.
+
+    Escaping "<" is enough for all three. Markdown renders "&lt;" as a
+    literal "<", so a finding that discusses <script> still reads correctly
+    while being unable to open one.
+    """
+    if not text:
+        return ""
+    text = text[:limit]
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Backtick the handle rather than delete it: the reader still sees who
+    # was named, and no notification fires.
+    return _MENTION.sub(r"`@\1`", text)
+
+
+def _cell(text: str, limit: int) -> str:
+    """Sanitise text for a markdown table cell.
+
+    A pipe ends a cell and a newline ends a row, so either one from the
+    model reshapes the table around it.
+    """
+    flattened = _WHITESPACE.sub(" ", text).strip()
+    return _sanitise(flattened, limit).replace("|", "\\|")
+
 
 # Non-determinism disclaimer (S83)
 _DISCLAIMER = (
@@ -99,8 +147,8 @@ def _format_review_incomplete(
     for outcome in outcomes:
         if isinstance(outcome, AgentError):
             lines.append(
-                f"- **{outcome.agent}**: {outcome.error_type} — "
-                f"{outcome.message}",
+                f"- **{outcome.agent}**: {_cell(outcome.error_type, 64)} — "
+                f"{_cell(outcome.message, 400)}",
             )
 
     lines.extend([
@@ -149,10 +197,14 @@ def _format_findings_table(reported: list[ScoredFinding]) -> str:
     for sf in sorted_findings:
         f = sf.finding
         emoji = _SEVERITY_EMOJI.get(f.severity, "")
+        agreement = (
+            " (both agents)" if len(f.reported_by) > 1 else ""
+        )
         lines.append(
-            f"| {emoji} {f.severity} | `{f.check_id}` | "
-            f"`{f.file_path}` | {f.line_start}-{f.line_end} | "
-            f"{f.confidence}% | {f.title} |",
+            f"| {emoji} {f.severity} | `{_cell(f.check_id, 64)}` | "
+            f"`{_cell(f.file_path, _MAX_PATH)}` | "
+            f"{f.line_start}-{f.line_end} | "
+            f"{f.confidence}% | {_cell(f.title, _MAX_TITLE)}{agreement} |",
         )
 
     # Add details for each finding
@@ -160,16 +212,17 @@ def _format_findings_table(reported: list[ScoredFinding]) -> str:
     for sf in sorted_findings:
         f = sf.finding
         lines.extend([
-            f"#### `{f.check_id}`: {f.title}",
+            f"#### `{_cell(f.check_id, 64)}`: {_cell(f.title, _MAX_TITLE)}",
             "",
-            f"**File:** `{f.file_path}` (L{f.line_start}-L{f.line_end})",
+            f"**File:** `{_cell(f.file_path, _MAX_PATH)}` "
+            f"(L{f.line_start}-L{f.line_end})",
             "",
-            f"{f.description}",
+            _sanitise(f.description, _MAX_DESCRIPTION),
             "",
         ])
         if f.suggestion:
             lines.extend([
-                f"**Suggestion:** {f.suggestion}",
+                f"**Suggestion:** {_sanitise(f.suggestion, _MAX_SUGGESTION)}",
                 "",
             ])
 
@@ -193,8 +246,10 @@ def _format_borderline_section(
         f = sf.finding
         emoji = _SEVERITY_EMOJI.get(f.severity, "")
         lines.extend([
-            f"- {emoji} **`{f.check_id}`**: {f.title} "
-            f"(`{f.file_path}` L{f.line_start}-L{f.line_end}, "
+            f"- {emoji} **`{_cell(f.check_id, 64)}`**: "
+            f"{_cell(f.title, _MAX_TITLE)} "
+            f"(`{_cell(f.file_path, _MAX_PATH)}` "
+            f"L{f.line_start}-L{f.line_end}, "
             f"{f.confidence}% confidence)",
         ])
 
@@ -220,7 +275,8 @@ def _format_agent_status(outcomes: list[AgentOutcome]) -> str:
             retry_note = " (retryable)" if outcome.retryable else ""
             lines.append(
                 f"- **{outcome.agent}**: ❌ "
-                f"{outcome.error_type}{retry_note} — {outcome.message}",
+                f"{_cell(outcome.error_type, 64)}{retry_note} — "
+                f"{_cell(outcome.message, 400)}",
             )
 
     return "\n".join(lines)
