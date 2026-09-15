@@ -83,6 +83,14 @@ now in CI.
 
 ### Fixed
 
+- The container could not take arguments: with only a `CMD`,
+  `docker run prbot --version` replaced the command and failed with
+  "executable file not found". It now has an `ENTRYPOINT`.
+- `pip`, `setuptools` and `wheel` were present in the runtime image
+  despite S86, because the base image carries them in the system
+  interpreter. Both were found by running the container smoke tests,
+  which were skipped by default and which CI now runs.
+
 - `dry_run` could not be set from an environment variable or TOML.
 - List-valued settings could not be set from environment variables.
 - An unexpected exception exited 1, indistinguishable from a blocking review.
