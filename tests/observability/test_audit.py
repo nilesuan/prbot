@@ -192,3 +192,49 @@ class TestEmitAuditRecord:
         assert "repo" in data
         assert "agents" in data
         assert "score" in data
+
+
+class TestAuditRecordCarriesCost:
+    """A8: the audit record reported tokens against zero spend."""
+
+    def test_agent_info_has_cost(self) -> None:
+        info = AgentAuditInfo(
+            name="general",
+            model_id="au.anthropic.claude-sonnet-4-6",
+            status="success",
+            finding_count=2,
+            input_tokens=1000,
+            output_tokens=500,
+            latency_ms=1200,
+            cost_usd=0.0105,
+        )
+        assert info.cost_usd == 0.0105
+
+    def test_record_totals_cost_across_agents(self) -> None:
+        record = _make_audit_record(
+            agents=[
+                AgentAuditInfo(
+                    name="general",
+                    model_id="m",
+                    status="success",
+                    finding_count=0,
+                    input_tokens=0,
+                    output_tokens=0,
+                    latency_ms=0,
+                    cost_usd=0.02,
+                ),
+                AgentAuditInfo(
+                    name="security",
+                    model_id="m",
+                    status="success",
+                    finding_count=0,
+                    input_tokens=0,
+                    output_tokens=0,
+                    latency_ms=0,
+                    cost_usd=0.03,
+                ),
+            ],
+            cost_usd=0.05,
+        )
+        assert record.cost_usd == 0.05
+        assert asdict(record)["cost_usd"] == 0.05

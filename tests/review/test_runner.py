@@ -408,6 +408,9 @@ class TestParseFindings:
             _parse_findings(response, "general")
 
 
+_MODEL = "au.anthropic.claude-sonnet-4-6"
+
+
 class TestExtractTokenUsage:
     """Tests for _extract_token_usage."""
 
@@ -415,12 +418,12 @@ class TestExtractTokenUsage:
         response = {
             "usage": {"inputTokens": 1000, "outputTokens": 500},
         }
-        usage = _extract_token_usage(response)
+        usage = _extract_token_usage(response, _MODEL)
         assert usage.input_tokens == 1000
         assert usage.output_tokens == 500
 
     def test_missing_usage(self) -> None:
-        usage = _extract_token_usage({})
+        usage = _extract_token_usage({}, _MODEL)
         assert usage.input_tokens == 0
         assert usage.output_tokens == 0
 
@@ -428,7 +431,7 @@ class TestExtractTokenUsage:
         response = {
             "usage": {"inputTokens": "not_int", "outputTokens": None},
         }
-        usage = _extract_token_usage(response)
+        usage = _extract_token_usage(response, _MODEL)
         assert usage.input_tokens == 0
         assert usage.output_tokens == 0
 
@@ -466,3 +469,51 @@ class TestClassifyError:
         assert _is_retryable("internal_error") is True
         assert _is_retryable("validation_error") is False
         assert _is_retryable("unknown") is False
+
+
+class TestTokenUsageCarriesRealCost:
+    """A8: estimated_cost_usd was hardcoded to 0.0 and never recomputed."""
+
+    @staticmethod
+    def _response(input_tokens: int, output_tokens: int) -> dict[str, object]:
+        return {
+            "usage": {
+                "inputTokens": input_tokens,
+                "outputTokens": output_tokens,
+            },
+            "output": {"message": {"content": [{"text": "{}"}]}},
+        }
+
+    def test_cost_is_computed_from_model_pricing(self) -> None:
+        from prbot.review.runner import _extract_token_usage
+
+        usage = _extract_token_usage(
+            self._response(1_000_000, 1_000_000),
+            model_id="au.anthropic.claude-sonnet-4-6",
+        )
+        # 3.00 per million in, 15.00 per million out
+        assert usage.estimated_cost_usd == pytest.approx(18.00)
+
+    def test_cost_scales_with_token_counts(self) -> None:
+        from prbot.review.runner import _extract_token_usage
+
+        usage = _extract_token_usage(
+            self._response(500_000, 100_000),
+            model_id="au.anthropic.claude-sonnet-4-6",
+        )
+        assert usage.estimated_cost_usd == pytest.approx(1.5 + 1.5)
+
+    def test_unknown_model_uses_the_upper_bound(self) -> None:
+        from prbot.review.runner import _extract_token_usage
+
+        usage = _extract_token_usage(
+            self._response(1_000_000, 0), model_id="who.knows.what",
+        )
+        assert usage.estimated_cost_usd == pytest.approx(15.00)
+
+    def test_missing_usage_block_costs_nothing(self) -> None:
+        from prbot.review.runner import _extract_token_usage
+
+        usage = _extract_token_usage({}, model_id="au.anthropic.claude-sonnet-4-6")
+        assert usage.input_tokens == 0
+        assert usage.estimated_cost_usd == 0.0

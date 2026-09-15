@@ -408,6 +408,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     input_tokens=outcome.token_usage.input_tokens,
                     output_tokens=outcome.token_usage.output_tokens,
                     latency_ms=outcome.latency_ms,
+                    cost_usd=outcome.token_usage.estimated_cost_usd,
                 ))
             else:
                 err_type = type(outcome).__name__
@@ -420,6 +421,20 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     output_tokens=0,
                     latency_ms=0,
                 ))
+
+        # A8: compare what the run actually cost with the budget, not just
+        # the pre-flight character-count estimate.
+        total_cost = sum(info.cost_usd for info in agent_infos)
+        if total_cost > config.budget_limit_usd:
+            logger.warning(
+                "cost.over_budget actual=%.4f limit=%.2f",
+                total_cost, config.budget_limit_usd,
+            )
+        else:
+            logger.info(
+                "cost.actual usd=%.4f limit=%.2f",
+                total_cost, config.budget_limit_usd,
+            )
 
         audit = build_audit_record(
             review_id=review_id,
@@ -453,6 +468,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
             comment_posted=comment_posted,
             exit_code=exit_code,
             dry_run=config.dry_run,
+            cost_usd=total_cost,
         )
         emit_audit_record(audit)
 

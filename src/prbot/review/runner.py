@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from prbot.exceptions import BedrockError
-from prbot.review.budget import TimeoutBudget
+from prbot.review.budget import TimeoutBudget, get_model_pricing
 from prbot.review.models import (
     AgentError,
     AgentOutcome,
@@ -117,7 +117,7 @@ async def _run_single_agent(
                 timeout=timeout,
             )
 
-            token_usage = _extract_token_usage(response)
+            token_usage = _extract_token_usage(response, model_id)
             findings = _parse_findings(response, agent_name)
             latency_ms = int((time.monotonic() - start_time) * 1000)
 
@@ -222,10 +222,17 @@ def _invoke_bedrock(
 
 def _extract_token_usage(
     response: dict[str, Any],
+    model_id: str,
 ) -> TokenUsage:
-    """Extract token usage from Bedrock response (G4-13).
+    """Extract token usage and cost from a Bedrock response (G4-13, A8).
 
-    Returns TokenUsage(0, 0, 0.0) with warning if data is missing.
+    Returns TokenUsage(0, 0, 0.0) with a warning if data is missing.
+
+    The cost was previously left at 0.0 with a note saying it would be
+    calculated later, and nothing ever calculated it. The audit record
+    therefore reported real token counts against zero spend, and
+    budget_limit_usd was only ever compared with a pre-flight character
+    count heuristic, never with what the run actually cost.
     """
     usage = response.get("usage")
     if not isinstance(usage, dict):
@@ -240,10 +247,16 @@ def _extract_token_usage(
     if not isinstance(output_tokens, int):
         output_tokens = 0
 
+    pricing = get_model_pricing(model_id)
+    cost = (
+        (input_tokens / 1_000_000) * pricing["input"]
+        + (output_tokens / 1_000_000) * pricing["output"]
+    )
+
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        estimated_cost_usd=0.0,  # Calculated later with pricing
+        estimated_cost_usd=cost,
     )
 
 

@@ -25,6 +25,9 @@ class AgentAuditInfo:
     input_tokens: int
     output_tokens: int
     latency_ms: int
+    # A8: what this agent actually cost, from the token counts Bedrock
+    # returned and the model's pricing. Zero for an agent that errored.
+    cost_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,9 @@ class AuditRecord:
     reported_count: int
     borderline_count: int
     hidden_count: int
+
+    # Cost — what the run actually spent, not the pre-flight estimate
+    cost_usd: float
 
     # Safety
     hallucinations_removed: int
@@ -115,6 +121,7 @@ def build_audit_record(
     comment_posted: bool,
     exit_code: int,
     dry_run: bool,
+    cost_usd: float = 0.0,
 ) -> AuditRecord:
     """Build a complete audit record from pipeline state."""
     return AuditRecord(
@@ -138,6 +145,7 @@ def build_audit_record(
         budget_limit_usd=budget_limit_usd,
         draft_behavior=draft_behavior,
         agents=agents,
+        cost_usd=cost_usd,
         verdict=verdict,
         score=score,
         reported_count=reported_count,
