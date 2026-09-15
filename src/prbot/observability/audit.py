@@ -83,6 +83,13 @@ class AuditRecord:
     exit_code: int
     dry_run: bool
 
+    # C8: what happened to each finding since the last review. Zero in
+    # comment mode, where there are no threads to reconcile against.
+    findings_new: int = 0
+    findings_persisting: int = 0
+    findings_fixed: int = 0
+    findings_human_resolved: int = 0
+
     # Agents (default last — frozen dataclass ordering)
     agents: list[AgentAuditInfo] = field(default_factory=list)
 
@@ -127,9 +134,17 @@ def build_audit_record(
     exit_code: int,
     dry_run: bool,
     cost_usd: float = 0.0,
+    outcome_counts: dict[str, int] | None = None,
 ) -> AuditRecord:
     """Build a complete audit record from pipeline state."""
+    outcomes = outcome_counts or {}
     return AuditRecord(
+        findings_new=outcomes.get("findings_new", 0),
+        findings_persisting=outcomes.get("findings_persisting", 0),
+        findings_fixed=outcomes.get("findings_fixed", 0),
+        findings_human_resolved=outcomes.get(
+            "findings_human_resolved", 0,
+        ),
         review_id=review_id,
         repo=repo,
         pr_number=pr_number,

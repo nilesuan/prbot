@@ -85,6 +85,23 @@ class InlineComment:
 
 
 @dataclass(frozen=True)
+class ReviewThread:
+    """An existing review comment thread on the pull request (C8).
+
+    `id` is whatever the platform uses to address the thread: a GraphQL node
+    id on GitHub, a discussion id on GitLab. `comment_id` addresses the first
+    comment over REST, which is what a reply is posted against.
+    """
+
+    id: str
+    comment_id: int
+    body: str
+    resolved: bool = False
+    path: str | None = None
+    line: int | None = None
+
+
+@dataclass(frozen=True)
 class PRDiff:
     """Complete diff for a PR."""
 

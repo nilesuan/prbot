@@ -609,3 +609,123 @@ class TestExpandedContext:
 
         assert exit_code == EXIT_PASS
         assert len(adapter.posted_comments) == 1
+
+
+class TestFindingOutcomes:
+    """C8: each finding is a thread; a fix is a reply and a resolution."""
+
+    @staticmethod
+    def _thread_for(check_id: str = "Q-ERR-01", **overrides: Any):
+        from prbot.review.identity import finding_fingerprint, marker_for
+        from prbot.review.models import Finding
+        from prbot.vcs.models import ReviewThread
+
+        finding = Finding(
+            id="x", category="general", check_id=check_id,
+            title=_finding(check_id=check_id)["title"],
+            description="d", file_path="src/example.py",
+            line_start=2, line_end=2, severity="medium", confidence=85,
+        )
+        base: dict[str, Any] = {
+            "id": f"T_{check_id}",
+            "comment_id": 11,
+            "body": f"previous text\n{marker_for(finding_fingerprint(finding))}",
+            "resolved": False,
+            "path": "src/example.py",
+            "line": 2,
+        }
+        base.update(overrides)
+        return ReviewThread(**base)
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_finding_is_not_posted_twice(self) -> None:
+        adapter = FakeVCSAdapter(review_threads=[self._thread_for()])
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        _, _, inline = adapter.submitted_reviews[0]
+        assert inline == []
+
+    @pytest.mark.asyncio
+    async def test_a_new_finding_is_posted(self) -> None:
+        adapter = FakeVCSAdapter(review_threads=[])
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        _, _, inline = adapter.submitted_reviews[0]
+        assert len(inline) == 1
+        assert "prbot:finding:" in inline[0].body
+
+    @pytest.mark.asyncio
+    async def test_a_finding_that_went_away_is_replied_to_and_resolved(
+        self,
+    ) -> None:
+        adapter = FakeVCSAdapter(review_threads=[self._thread_for()])
+        bedrock = lambda **_: _bedrock_response([])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        assert len(adapter.replies) == 1
+        assert "No longer reported" in adapter.replies[0][1]
+        assert adapter.resolved == ["T_Q-ERR-01"]
+
+    @pytest.mark.asyncio
+    async def test_a_thread_a_human_resolved_is_left_alone(self) -> None:
+        adapter = FakeVCSAdapter(
+            review_threads=[self._thread_for(resolved=True)],
+        )
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        _, _, inline = adapter.submitted_reviews[0]
+        assert inline == []
+        assert adapter.replies == []
+
+    @pytest.mark.asyncio
+    async def test_outcomes_reach_the_audit_record(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from prbot.observability.logging import configure_logging
+
+        configure_logging("INFO")
+        adapter = FakeVCSAdapter(
+            review_threads=[
+                self._thread_for(),
+                self._thread_for(check_id="Q-MAINT-03", id="T_gone"),
+            ],
+        )
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        audit = None
+        for line in capsys.readouterr().out.splitlines():
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            if payload.get("event") == "review.audit":
+                audit = payload
+        assert audit is not None
+        assert audit["findings_persisting"] == 1
+        assert audit["findings_fixed"] == 1
+        assert audit["findings_new"] == 0
+
+    @pytest.mark.asyncio
+    async def test_comment_mode_does_not_touch_threads(self) -> None:
+        adapter = FakeVCSAdapter(review_threads=[self._thread_for()])
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config())
+
+        assert "list_review_threads" not in adapter.calls
+        assert adapter.replies == []

@@ -13,6 +13,12 @@ now in CI.
 
 ### Added
 
+- Finding outcomes. In `review` mode each finding is one comment
+  thread identified by a stable fingerprint, so a repeated finding is
+  not posted twice, a finding that goes away is replied to and
+  resolved in its own thread, and a thread a human resolved is never
+  re-raised. The counts of new, persisting, fixed and human-resolved
+  findings reach the audit record and the metrics sinks.
 - `PRBOT_CONTEXT_LINES` includes numbered lines of surrounding code
   around each hunk, so the enclosing function is visible to the model.
   Defaults to 0.

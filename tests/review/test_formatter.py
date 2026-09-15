@@ -382,3 +382,19 @@ class TestModelOutputIsSanitised:
             "github",
         )
         assert marker in comment
+
+
+class TestFooterReportsProgress:
+    """C8: a review that only lists what is wrong reads as an immovable wall."""
+
+    def test_resolved_findings_are_reported(self) -> None:
+        from prbot.review.formatter import _format_footer
+
+        footer = _format_footer(0, "", fixed_count=3)
+        assert "3" in footer
+        assert "resolved since the last review" in footer
+
+    def test_nothing_is_said_when_nothing_was_resolved(self) -> None:
+        from prbot.review.formatter import _format_footer
+
+        assert "resolved since" not in _format_footer(0, "")

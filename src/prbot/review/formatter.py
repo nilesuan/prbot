@@ -103,6 +103,7 @@ def format_review_comment(
     state_html: str = "",
     platform: Literal["github", "gitlab"] = "github",
     suppressed_count: int = 0,
+    fixed_count: int = 0,
 ) -> str:
     """Format the full review comment (G-28, S83).
 
@@ -119,7 +120,9 @@ def format_review_comment(
         _format_findings_table(reported),
         _format_borderline_section(borderline),
         _format_agent_status(outcomes),
-        _format_footer(hidden_count, state_html, suppressed_count),
+        _format_footer(
+            hidden_count, state_html, suppressed_count, fixed_count,
+        ),
     ]
 
     comment = "\n\n".join(s for s in sections if s)
@@ -294,6 +297,7 @@ def _format_footer(
     hidden_count: int,
     state_html: str,
     suppressed_count: int = 0,
+    fixed_count: int = 0,
 ) -> str:
     """Format footer with metadata, disclaimer, and state record."""
     lines = ["---"]
@@ -309,6 +313,13 @@ def _format_footer(
         lines.append(
             f"_{suppressed_count} finding(s) suppressed by "
             f"configuration._",
+        )
+
+    if fixed_count > 0:
+        # C8: progress is worth stating. A review that only ever lists what
+        # is wrong reads as a wall that never moves.
+        lines.append(
+            f"_{fixed_count} finding(s) resolved since the last review._",
         )
 
     lines.extend(["", _DISCLAIMER])
@@ -392,6 +403,7 @@ def build_inline_comments(
     diff_parser has computed these coordinates since the beginning and
     nothing used them.
     """
+    from prbot.review.identity import finding_fingerprint, marker_for
     from prbot.security.validation import _build_line_index
 
     index = _build_line_index(diff)
@@ -422,6 +434,11 @@ def build_inline_comments(
                 "",
                 "**Suggestion:** " + _sanitise(f.suggestion, _MAX_SUGGESTION),
             ]
+
+        # C8: the fingerprint makes this thread recognisable on the next
+        # run, so the finding is not posted twice and can be closed out when
+        # it goes away. Invisible in rendered markdown.
+        parts += ["", marker_for(finding_fingerprint(f))]
 
         start = f.line_start if f.line_start in covered else None
         comments.append(

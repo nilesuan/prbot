@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from prbot.vcs.models import InlineComment, PRDiff, PRMetadata
+from prbot.vcs.models import InlineComment, PRDiff, PRMetadata, ReviewThread
 
 
 @runtime_checkable
@@ -99,6 +99,31 @@ class VCSAdapter(Protocol):
         take the whole review down with it.
 
         Returns an identifier for the submitted review or summary note.
+        """
+        ...
+
+    async def list_review_threads(self) -> list[ReviewThread]:
+        """List existing review comment threads on the PR/MR (C8).
+
+        Each finding prbot posts is one thread, so this is how a later run
+        recognises what it already said and what a human has since resolved.
+        Threads that are not prbot's are returned too; the caller ignores
+        them by looking for its own marker.
+        """
+        ...
+
+    async def reply_to_thread(
+        self, thread: ReviewThread, body: str,
+    ) -> None:
+        """Post a reply into an existing thread."""
+        ...
+
+    async def resolve_thread(self, thread: ReviewThread) -> bool:
+        """Mark a thread resolved. Returns False if that was not possible.
+
+        Resolution is not available to every token on every platform, and
+        failing to resolve is not a reason to fail a review, so this reports
+        rather than raises.
         """
         ...
 

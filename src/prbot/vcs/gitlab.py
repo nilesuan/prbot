@@ -27,6 +27,7 @@ from prbot.vcs.models import (
     InlineComment,
     PRDiff,
     PRMetadata,
+    ReviewThread,
     validate_response,
 )
 from prbot.vcs.retry import send_with_retry
@@ -271,6 +272,64 @@ class GitLabAdapter:
                 logger.warning("GitLab %s was refused: %s", action, e)
 
         return note_id
+
+    async def list_review_threads(self) -> list[ReviewThread]:
+        """List positioned discussions as review threads (C8).
+
+        GitLab reports resolution state over REST, so unlike GitHub no second
+        API is needed. Discussions without a position are plain notes rather
+        than review threads and are skipped.
+        """
+        url = (
+            f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+            f"/merge_requests/{self._pr_number}/discussions"
+        )
+        collected: list[dict[str, Any]] = []
+        await self._paginate(url, collected.extend)
+
+        threads: list[ReviewThread] = []
+        for discussion in collected:
+            notes = discussion.get("notes") or []
+            if not notes:
+                continue
+            first = notes[0]
+            position = first.get("position") or {}
+            if not position:
+                continue
+            threads.append(ReviewThread(
+                id=str(discussion.get("id", "")),
+                comment_id=first.get("id", 0),
+                body=first.get("body", ""),
+                resolved=bool(first.get("resolved")),
+                path=position.get("new_path"),
+                line=position.get("new_line"),
+            ))
+        return threads
+
+    async def reply_to_thread(
+        self, thread: ReviewThread, body: str,
+    ) -> None:
+        """Reply into an existing discussion."""
+        url = (
+            f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+            f"/merge_requests/{self._pr_number}/discussions/{thread.id}/notes"
+        )
+        await self._request("POST", url, json={"body": body})
+
+    async def resolve_thread(self, thread: ReviewThread) -> bool:
+        """Mark a discussion resolved."""
+        url = (
+            f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+            f"/merge_requests/{self._pr_number}/discussions/{thread.id}"
+        )
+        try:
+            await self._request("PUT", url, json={"resolved": True})
+        except VCSError as e:
+            logger.warning(
+                "Could not resolve discussion %s: %s", thread.id, e,
+            )
+            return False
+        return True
 
     async def close(self) -> None:
         """Close the HTTP client."""

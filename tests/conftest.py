@@ -55,6 +55,7 @@ class FakeVCSAdapter:
         diff: PRDiff | None = None,
         bot_comment: tuple[int, str] | None = None,
         file_contents: dict[str, str] | None = None,
+        review_threads: list[object] | None = None,
         authenticated_user: str = "prbot[bot]",
     ) -> None:
         self.metadata = metadata or PRMetadata(
@@ -83,6 +84,7 @@ class FakeVCSAdapter:
         )
         self.bot_comment = bot_comment
         self.file_contents: dict[str, str] = file_contents or {}
+        self.review_threads: list[object] = list(review_threads or [])
         self._authenticated_user = authenticated_user
 
         # Call recording
@@ -90,6 +92,8 @@ class FakeVCSAdapter:
         self.posted_comments: list[str] = []
         self.updated_comments: list[tuple[int, str]] = []
         self.submitted_reviews: list[tuple[str, str, list[object]]] = []
+        self.replies: list[tuple[str, str]] = []
+        self.resolved: list[str] = []
         self._next_comment_id = 100
 
     async def get_pr_metadata(self) -> PRMetadata:
@@ -130,6 +134,19 @@ class FakeVCSAdapter:
             self.updated_comments.append((comment_id, body))
             return comment_id
         return await self.post_comment(body)
+
+    async def list_review_threads(self) -> list[object]:
+        self.calls.append("list_review_threads")
+        return list(self.review_threads)
+
+    async def reply_to_thread(self, thread: object, body: str) -> None:
+        self.calls.append("reply_to_thread")
+        self.replies.append((getattr(thread, "id", ""), body))
+
+    async def resolve_thread(self, thread: object) -> bool:
+        self.calls.append("resolve_thread")
+        self.resolved.append(getattr(thread, "id", ""))
+        return True
 
     async def submit_review(
         self,

@@ -27,6 +27,7 @@ from prbot.vcs.models import (
     InlineComment,
     PRDiff,
     PRMetadata,
+    ReviewThread,
     validate_response,
 )
 from prbot.vcs.retry import send_with_retry
@@ -44,6 +45,33 @@ _GITHUB_FILE_LIMIT = 3000
 # Link header that points back at itself holds the CI job open until the
 # job timeout, with no log line saying why.
 _MAX_PAGES = 100
+
+# Review thread resolution state lives only in GraphQL; REST does not expose
+# it. The query is kept here rather than inline so the shape is readable.
+_THREADS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          path
+          line
+          comments(first: 1) { nodes { databaseId body } }
+        }
+      }
+    }
+  }
+}
+"""
+
+_RESOLVE_MUTATION = """
+mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) { thread { id } }
+}
+"""
 
 
 class GitHubAdapter:
@@ -259,6 +287,126 @@ class GitHubAdapter:
             payload["comments"] = []
             data = await self._request("POST", url, json=payload)
         return data["id"]
+
+    def _graphql_url(self) -> str:
+        """GraphQL lives beside the REST root, not under it.
+
+        github.com serves it at api.github.com/graphql; Enterprise serves
+        REST at /api/v3 and GraphQL at /api/graphql.
+        """
+        if self._base_url.endswith("/api/v3"):
+            return self._base_url[: -len("/api/v3")] + "/api/graphql"
+        return f"{self._base_url}/graphql"
+
+    async def _graphql(
+        self, query: str, variables: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await send_with_retry(
+            self._client, "POST", self._graphql_url(),
+            classify=_classify_response, label="GitHub",
+            json={"query": query, "variables": variables},
+        )
+        payload = _decode_json(response, "POST", self._graphql_url())
+        if payload.get("errors"):
+            raise VCSResponseError(
+                f"GitHub GraphQL returned errors: {payload['errors']}"
+            )
+        return payload.get("data") or {}
+
+    async def list_review_threads(self) -> list[ReviewThread]:
+        """List review threads, with resolution state where available (C8)."""
+        owner, _, name = self._repo.partition("/")
+        threads: list[ReviewThread] = []
+        cursor: str | None = None
+
+        try:
+            for _ in range(_MAX_PAGES):
+                data = await self._graphql(
+                    _THREADS_QUERY,
+                    {
+                        "owner": owner,
+                        "name": name,
+                        "number": self._pr_number,
+                        "after": cursor,
+                    },
+                )
+                node = (
+                    data.get("repository", {})
+                    .get("pullRequest", {})
+                    .get("reviewThreads", {})
+                )
+                for item in node.get("nodes") or []:
+                    comments = (item.get("comments") or {}).get("nodes") or []
+                    if not comments:
+                        continue
+                    threads.append(ReviewThread(
+                        id=item["id"],
+                        comment_id=comments[0].get("databaseId", 0),
+                        body=comments[0].get("body", ""),
+                        resolved=bool(item.get("isResolved")),
+                        path=item.get("path"),
+                        line=item.get("line"),
+                    ))
+                page = node.get("pageInfo") or {}
+                if not page.get("hasNextPage"):
+                    break
+                cursor = page.get("endCursor")
+            return threads
+        except VCSError as e:
+            # A fine-grained token without GraphQL access, or an Enterprise
+            # install with it disabled. Falling back to REST loses resolution
+            # state, which makes prbot re-report a thread a human closed; that
+            # is worse than ideal and much better than no review.
+            logger.warning(
+                "GitHub GraphQL unavailable (%s); falling back to REST "
+                "review comments without resolution state",
+                e,
+            )
+            return await self._rest_review_threads()
+
+    async def _rest_review_threads(self) -> list[ReviewThread]:
+        """Top-level review comments, resolution state unknown."""
+        url = (
+            f"{self._base_url}/repos/{self._repo}"
+            f"/pulls/{self._pr_number}/comments"
+        )
+        collected: list[dict[str, Any]] = []
+        await self._paginate(url, collected.extend)
+        return [
+            ReviewThread(
+                id=str(c.get("id", "")),
+                comment_id=c.get("id", 0),
+                body=c.get("body", ""),
+                resolved=False,
+                path=c.get("path"),
+                line=c.get("line"),
+            )
+            for c in collected
+            if c.get("in_reply_to_id") is None
+        ]
+
+    async def reply_to_thread(
+        self, thread: ReviewThread, body: str,
+    ) -> None:
+        """Reply into an existing review thread."""
+        url = (
+            f"{self._base_url}/repos/{self._repo}"
+            f"/pulls/{self._pr_number}/comments/{thread.comment_id}/replies"
+        )
+        await self._request("POST", url, json={"body": body})
+
+    async def resolve_thread(self, thread: ReviewThread) -> bool:
+        """Resolve a review thread via GraphQL."""
+        if not thread.id.startswith("T_") and not thread.id.startswith("PRRT"):
+            # A REST fallback id is not a GraphQL node id.
+            logger.info("Cannot resolve thread %s: no node id", thread.id)
+            return False
+        try:
+            await self._graphql(_RESOLVE_MUTATION, {"threadId": thread.id})
+        except VCSError as e:
+            logger.warning("Could not resolve thread %s: %s", thread.id, e)
+            return False
+        return True
 
     async def close(self) -> None:
         """Close the HTTP client."""

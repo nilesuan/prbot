@@ -122,6 +122,37 @@ against `PRBOT_BUDGET_LIMIT_USD`, so splitting cannot quietly multiply the
 bill. Lowering `PRBOT_MAX_DIFF_TOKENS` is now a way to trade money for
 attention: smaller passes mean the model reads less at once.
 
+### One Comment Per Finding, and Closing Them Out
+
+In `review` mode each finding is posted as its own comment thread, stamped
+with an invisible fingerprint of the file, the check and what the finding
+says. Deliberately not the line numbers: a defect on line 12 that becomes
+line 400 because something was inserted above it is the same defect.
+
+On the next review prbot reads back the threads it wrote and sorts them:
+
+| | What prbot does | What it means |
+|---|---|---|
+| Still reported | Leaves the thread alone | Not acted on yet |
+| No longer reported | Replies "No longer reported as of `abc1234`" and resolves the thread | The author fixed it |
+| Resolved by a human | Leaves it alone, never re-raises it | Someone decided it is settled |
+
+That makes the pull request itself the store. Nothing else has to hold state,
+and the record of what happened sits where the people who did it are looking.
+
+It also gives the numbers the thresholds need. Every run records how many
+findings were new, persisting, fixed and human-resolved, which is what turns
+`PRBOT_BLOCKER_THRESHOLD` into a calibration rather than a guess. Send those
+somewhere with `PRBOT_METRICS_FILE` or `PRBOT_METRICS_NAMESPACE`.
+
+Threads without prbot's fingerprint are ignored entirely. Human review threads
+are none of the bot's business.
+
+On GitHub, resolution state and resolving both need GraphQL. If the token
+cannot reach it, prbot falls back to REST: findings are still deduplicated and
+replied to, but a thread a human resolved may be re-reported. It says so in
+the log when that happens.
+
 ### Suppressing a Finding
 
 A nit that comes back on every push is the most common reason a team turns a

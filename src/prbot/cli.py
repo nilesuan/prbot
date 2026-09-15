@@ -146,6 +146,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
         format_review_comment,
     )
     from prbot.review.models import AgentResult
+    from prbot.review.outcomes import reconcile
     from prbot.review.prompts import build_user_prompt
     from prbot.review.runner import run_review
     from prbot.review.scorer import (
@@ -457,6 +458,34 @@ async def run_pipeline(config: PrBotConfig) -> int:
             hidden_count,
         )
 
+        # C8: each finding is one comment thread, so the pull request is
+        # the store. Reconciling against the threads a previous run left
+        # does three things at once: it stops a finding being posted twice,
+        # it lets a finding that has gone away be closed out where the
+        # author is looking, and it turns "was this finding acted on" into
+        # something measurable.
+        inline: list = []
+        outcome_counts: dict[str, int] = {}
+        outcomes_report = None
+
+        if config.review_mode == "review":
+            threads = await adapter.list_review_threads()
+            outcomes_report = reconcile(reported, threads)
+            outcome_counts = outcomes_report.counts()
+            inline = build_inline_comments(
+                [scored for scored in outcomes_report.new], filtered_diff,
+            )
+            logger.info(
+                "review.inline new=%d persisting=%d fixed=%d resolved=%d "
+                "anchored=%d",
+                len(outcomes_report.new),
+                len(outcomes_report.persisting),
+                len(outcomes_report.fixed),
+                len(outcomes_report.human_resolved),
+                len(inline),
+            )
+
+
         # Build ReviewStateRecord with HMAC-SHA256 (G4-09)
         findings_dicts = [
             {
@@ -488,6 +517,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
             hidden_count, outcomes, state_html,
             config.platform,
             suppressed_count=suppressed_count,
+            fixed_count=outcome_counts.get("findings_fixed", 0),
         )
         comment, secret_count = redact_secrets(comment)
         if secret_count > 0:
@@ -497,14 +527,6 @@ async def run_pipeline(config: PrBotConfig) -> int:
             )
 
         # Post or update comment
-        inline: list = []
-        if config.review_mode == "review":
-            inline = build_inline_comments(reported, filtered_diff)
-            logger.info(
-                "review.inline anchored=%d of=%d",
-                len(inline), len(reported),
-            )
-
         comment_posted = False
         if not config.dry_run:
             if config.review_mode == "review":
@@ -519,6 +541,26 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     "review.submitted id=%d event=%s inline=%d",
                     cid, verdict.value, len(inline),
                 )
+
+                # A finding that is no longer reported against newer code has
+                # been dealt with. Say so in its own thread and close it,
+                # rather than leaving the author to work out which of last
+                # week's comments still apply.
+                if outcomes_report is not None:
+                    for thread in outcomes_report.fixed:
+                        try:
+                            await adapter.reply_to_thread(
+                                thread,
+                                "No longer reported as of "
+                                f"`{metadata.head_sha[:8]}`. Resolving.",
+                            )
+                            await adapter.resolve_thread(thread)
+                        except PrBotError as e:
+                            # Closing out a finding is a courtesy, not part
+                            # of delivering the review.
+                            logger.warning(
+                                "Could not close thread %s: %s", thread.id, e,
+                            )
             elif existing:
                 cid = existing[0]
                 await adapter.update_comment(cid, comment)
@@ -622,6 +664,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
             exit_code=exit_code,
             dry_run=config.dry_run,
             cost_usd=total_cost,
+            outcome_counts=outcome_counts,
         )
         emit_audit_record(audit)
         emit_metrics(

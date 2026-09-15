@@ -49,7 +49,8 @@ cover accurately.
 - Whether the adversarial agent, asked to construct a concrete failure rather
   than match a category, finds enough that the other two miss to justify a
   third of the spend. It ships disabled for exactly that reason.
-- Whether a human's response to a finding can be captured without either a
-  GraphQL dependency on GitHub or storing previous findings somewhere. That
-  one is still open, and it is the prerequisite for calibrating the
-  confidence thresholds rather than choosing them.
+- How well fingerprint matching survives a finding being reworded
+  substantially between runs. A large rewording orphans the thread and the
+  finding is posted again as new. The normalisation handles punctuation and
+  case; it cannot handle a model that describes the same defect in genuinely
+  different words.
