@@ -162,6 +162,8 @@ class PrBotConfig(BaseModel, frozen=True):
     agents: list[AgentSpec] | None = Field(default=None, min_length=1)
     log_level: str = "INFO"
     dry_run: bool = False
+    # C3: review again even when this commit has already been reviewed.
+    force_review: bool = False
 
     @field_validator("repo")
     @classmethod
@@ -380,7 +382,7 @@ _INT_FIELDS = frozenset({
     "min_passing_score",
 })
 _FLOAT_FIELDS = frozenset({"budget_limit_usd"})
-_BOOL_FIELDS = frozenset({"dry_run", "datamark_diff"})
+_BOOL_FIELDS = frozenset({"dry_run", "datamark_diff", "force_review"})
 # Pydantic will not coerce a string to list[str], so without this the
 # only way to set a list was a TOML file, and the container workflows
 # pass configuration purely through env: (D6).

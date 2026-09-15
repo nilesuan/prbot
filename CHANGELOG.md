@@ -13,6 +13,9 @@ now in CI.
 
 ### Added
 
+- A commit that has already been reviewed is skipped rather than
+  reviewed again, carrying the previous verdict through to the exit
+  code. `PRBOT_FORCE_REVIEW` or `--force-review` overrides it.
 - Configurable agent roster. Adding a reviewer is configuration rather
   than a change to three modules, and each agent may set its own model.
 - Optional adversarial agent (`X-*` checks), which asks for a concrete

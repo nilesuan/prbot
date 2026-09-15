@@ -92,9 +92,21 @@ Reviews are skipped automatically when they'd be wasted:
 - Bot authors (Dependabot, Renovate, GitHub Actions, self-review loop prevention)
 - Empty diffs after exclusion patterns are applied
 
-### Idempotent Comments
+### Idempotent Comments and Incremental Review
 
-prbot finds and updates its previous comment instead of posting duplicates. State is tracked via an embedded `<!-- prbot:state:... -->` HTML comment with HMAC-SHA256 integrity.
+prbot finds and updates its previous comment instead of posting
+duplicates, using a state record embedded in an HTML comment.
+
+That record also carries the commit the review was for. A re-run against
+a commit that has already been reviewed skips the review entirely and
+carries the previous verdict through to the exit code, which matters on
+a pipeline that reruns, or a PR that is closed and reopened. Set
+`PRBOT_FORCE_REVIEW=true` to review anyway.
+
+The record is advisory, not authenticated: its digest is salted with an
+identifier published beside it. It is only ever read from a comment
+authored by prbot's own token, and anything that matters is verified
+against the API instead.
 
 ### Full Observability
 

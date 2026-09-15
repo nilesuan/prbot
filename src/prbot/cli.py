@@ -93,6 +93,13 @@ def parse_args(
         help="Path to .prbot.toml config file",
     )
     parser.add_argument(
+        "--force-review",
+        action="store_true",
+        dest="force_review",
+        default=None,
+        help="Review again even if this commit was already reviewed",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         dest="dry_run",
@@ -256,6 +263,41 @@ async def run_pipeline(config: PrBotConfig) -> int:
             )
             return EXIT_PASS
 
+        # C3: a commit that has already been reviewed does not need
+        # reviewing again. ReviewStateRecord.from_html_comment was dead code
+        # and post_or_update_comment fetched the previous body and discarded
+        # it, so every re-run of the same push paid for a full review.
+        #
+        # The lookup also happens once now. post_or_update_comment searched
+        # the comment list itself, so using it here would have paginated the
+        # whole list twice.
+        existing = await adapter.find_bot_comment()
+        previous = (
+            ReviewStateRecord.from_html_comment(existing[1])
+            if existing
+            else None
+        )
+
+        if (
+            previous is not None
+            and previous.head_sha == metadata.head_sha
+            and not config.force_review
+        ):
+            # The record is advisory, not authenticated (see
+            # ReviewStateRecord), but it is read only from a comment authored
+            # by this bot, so forging it means already holding write access
+            # to the bot's own comments. Set force_review to ignore it.
+            logger.info(
+                "review.skip reason=already_reviewed sha=%s "
+                "previous_review_id=%s previous_verdict=%s",
+                metadata.head_sha, previous.review_id, previous.verdict,
+            )
+            return (
+                EXIT_BLOCKERS
+                if previous.verdict == "REQUEST_CHANGES"
+                else EXIT_PASS
+            )
+
         # Fetch diff and filter
         raw_diff = await adapter.get_diff()
         filtered_diff = filter_diff(
@@ -397,7 +439,11 @@ async def run_pipeline(config: PrBotConfig) -> int:
         # Post or update comment
         comment_posted = False
         if not config.dry_run:
-            cid = await adapter.post_or_update_comment(comment)
+            if existing:
+                cid = existing[0]
+                await adapter.update_comment(cid, comment)
+            else:
+                cid = await adapter.post_comment(comment)
             logger.info("comment.posted id=%d", cid)
             comment_posted = True
         else:
