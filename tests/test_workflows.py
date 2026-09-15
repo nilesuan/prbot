@@ -205,6 +205,33 @@ class TestGitLabTemplate:
         )
         assert "prbot:latest" not in text
 
+    def test_no_variable_refers_only_to_itself(self) -> None:
+        """`FOO: $FOO` shadows the real variable with an unexpanded literal.
+
+        GitLab does not resolve a self-reference, and job-level variables
+        take precedence over project and group ones, so the job receives the
+        string "$FOO" rather than the configured value. prbot then refuses
+        to start:
+
+            aws_region must match format like 'us-east-1': '$PRBOT_AWS_REGION'
+
+        A CI/CD variable already reaches the job without being restated, so
+        the correct fix is to delete the line rather than rewrite it.
+        """
+        offenders: list[str] = []
+        for name, job in self._template().items():
+            if not isinstance(job, dict):
+                continue
+            for key, value in (job.get("variables") or {}).items():
+                if isinstance(value, str) and value.strip() in (
+                    f"${key}", f"${{{key}}}",
+                ):
+                    offenders.append(f"{name}.{key}")
+        assert not offenders, (
+            f"self-referential CI variables, which GitLab passes through "
+            f"unexpanded: {offenders}"
+        )
+
     def test_image_clears_the_entrypoint(self) -> None:
         """The image declares ENTRYPOINT ["prbot"], GitLab needs a shell.
 
