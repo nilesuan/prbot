@@ -387,6 +387,13 @@ See [docs/github-setup.md](docs/github-setup.md) and [docs/gitlab-setup.md](docs
 
 ## Configuration
 
+prbot does not read `.prbot.toml` from the working directory unless you
+ask it to. A CI runner clones the branch under review into that
+directory, so a configuration file found there is one the reviewed code
+controls, and it can set the API base URL the token is sent to. Name a
+file with `--config`, or set `PRBOT_ALLOW_IMPLICIT_CONFIG=1` for local
+use. The opt-in never applies inside CI.
+
 All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.toml`, or CLI flags. Merge priority: CLI > env > TOML > defaults.
 
 | Variable | Default | Description |
@@ -412,6 +419,7 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_EXCLUDED_PATTERNS` | *(none)* | Comma-separated gitignore-style patterns to exclude |
 | `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |
 | `PRBOT_LOG_LEVEL` | `INFO` | Log level for prbot's own output |
+| `PRBOT_ALLOW_IMPLICIT_CONFIG` | *(unset)* | Allow searching the working directory for `.prbot.toml`; never applies in CI |
 | `PRBOT_METRICS_FILE` | *(none)* | Append run metrics as JSON lines, for a CI artifact |
 | `PRBOT_METRICS_NAMESPACE` | *(none)* | Publish run metrics to CloudWatch under this namespace |
 | `PRBOT_DRY_RUN` | `false` | Print review without posting |

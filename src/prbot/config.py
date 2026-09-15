@@ -99,9 +99,10 @@ def _resolve_addresses(
 ) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     """Every address a hostname resolves to, literals included.
 
-    ipaddress.ip_address accepts the decimal and hex forms of an IPv4
-    address as well as dotted quads, so a literal is checked directly rather
-    than sent to the resolver.
+    ipaddress.ip_address recognises dotted-quad IPv4 and colon-form IPv6
+    only. A decimal or hex host string such as "2852039166" raises
+    ValueError here and falls through to getaddrinfo, which does accept it
+    and is what actually catches that form (GEN-API-04).
     """
     try:
         return [ipaddress.ip_address(hostname)]
@@ -485,11 +486,17 @@ def load_toml_config(
 
     if config_path:
         paths_to_try.append(Path(config_path))
-    elif _in_ci(env_vars):
+    elif _in_ci(env_vars) or not env_vars.get("PRBOT_ALLOW_IMPLICIT_CONFIG"):
+        # Refused by default rather than refused in CI (SEC-CRED-03). The
+        # previous shape named three environment variables and fell through
+        # to the unsafe branch when none was present, so any runner that
+        # happened to set none of them got the implicit search back. Opting
+        # in is for local use and never overrides the CI check, because
+        # there the reviewed tree really is the working directory.
         logger.info(
-            "Skipping the implicit .prbot.toml search: in CI the working "
+            "Skipping the implicit .prbot.toml search: the working "
             "directory may hold the branch under review. Pass --config to "
-            "load a configuration file explicitly.",
+            "name a file, or set PRBOT_ALLOW_IMPLICIT_CONFIG=1 locally.",
         )
         return {}
     else:

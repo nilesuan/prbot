@@ -158,15 +158,26 @@ class GitLabAdapter:
                 self._client, "GET", url,
                 classify=_classify_response, label="GitLab",
                 params={"ref": ref},
+                # SEC-INPUT-04: bound the body at the request
+                # rather than after it has been buffered.
+                headers={
+                    "Range": f"bytes=0-{MAX_CONTEXT_BYTES - 1}",
+                },
             )
         except VCSError as e:
             logger.info("context.unavailable path=%s: %s", path, e)
             return None
 
-        if len(response.content) > MAX_CONTEXT_BYTES:
+        # 206 means the server honoured the Range and had more to give, so
+        # the file is over the bound. 200 with an oversized body means it
+        # ignored the Range; the length check still catches that.
+        if response.status_code == 206 or (
+            len(response.content) > MAX_CONTEXT_BYTES
+        ):
             logger.info(
-                "context.too_large path=%s bytes=%d limit=%d",
+                "context.too_large path=%s bytes=%d limit=%d status=%d",
                 path, len(response.content), MAX_CONTEXT_BYTES,
+                response.status_code,
             )
             return None
         return response.text

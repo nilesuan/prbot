@@ -54,8 +54,24 @@ _MENTION = re.compile(r"(?<![\w`@.-])@([A-Za-z0-9][A-Za-z0-9-]{0,38})\b")
 
 _WHITESPACE = re.compile(r"\s+")
 
-# A URL the model emitted. Wrapped in a code span rather than removed.
-_URL = re.compile(r"(?i)\b((?:https?|ftp)://[^\s<>`\]\)]+)")
+# A URL the model emitted, including the scheme-less "www." form that
+# GitHub autolinks on its own.
+_URL = re.compile(
+    r"(?i)\b(?:(?P<scheme>https?|ftp)://|(?P<www>www\.))"
+    r"(?P<rest>[^\s<>`\]\)]*)",
+)
+
+# Renders identically, is not a link. Placed after the separator so the
+# host stays readable to a person reading the comment.
+_ZWSP = "\u200b"
+
+
+def _defuse_link(match: re.Match[str]) -> str:
+    """Break a URL so it renders as text rather than a link."""
+    rest = match.group("rest")
+    if match.group("scheme"):
+        return f"{match.group('scheme')}:/{_ZWSP}/{rest}"
+    return f"www.{_ZWSP}{rest}"
 
 
 def _sanitise(text: str, limit: int) -> str:
@@ -77,12 +93,13 @@ def _sanitise(text: str, limit: int) -> str:
     # Backtick the handle rather than delete it: the reader still sees who
     # was named, and no notification fires.
     text = _MENTION.sub(r"`@\1`", text)
-    # Same treatment for URLs (SEC-DATA-01). Escaping < stops HTML but not
-    # markdown link syntax, so model text could still post a clickable link
-    # into a comment prbot signs. Wrapping the URL in a code span keeps it
-    # readable and removes the destination from one click away; the bracket
-    # escape stops [text](url) re-forming around it.
-    text = _URL.sub(r"`\1`", text)
+    # Break the link syntax itself rather than relying on a code span to
+    # contain it (SEC-DATA-01). A code span is not containment: a stray
+    # backtick anywhere in the model's text closes it, and GitHub autolinks
+    # a bare "www." host that has no scheme to wrap in the first place.
+    # A zero-width space after the scheme separator, or after "www.", leaves
+    # the text readable and stops the autolinker recognising it.
+    text = _URL.sub(_defuse_link, text)
     return text.replace("[", "&#91;").replace("]", "&#93;")
 
 
@@ -333,10 +350,15 @@ def _format_agent_status(outcomes: list[AgentOutcome]) -> str:
         assert isinstance(errors, list)
 
         if ok == 0:
+            # Every error, not just the first (GEN-ERR-02). Three chunks
+            # failing three different ways is three different diagnoses, and
+            # showing one of them hides the other two.
             lines.append(
-                f"- **{name}**: ❌ no successful pass — {errors[0]}"
-                if errors else f"- **{name}**: ❌ no successful pass",
+                f"- **{name}**: ❌ no successful pass "
+                f"({passes} attempted)",
             )
+            for err in errors:
+                lines.append(f"  - {err}")
             continue
 
         pass_note = f", {passes} passes" if passes > 1 else ""

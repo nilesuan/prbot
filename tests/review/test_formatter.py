@@ -531,13 +531,17 @@ class TestSanitiseNeutralisesLinks:
         from prbot.review.formatter import _sanitise
 
         out = _sanitise("Fetch https://evil.example.com/x for details", 2000)
-        assert "`https://evil.example.com/x`" in out
+        # Not an intact URL any more, so the autolinker does not see one.
+        assert "https://evil.example.com/x" not in out
 
     def test_the_url_is_still_readable(self) -> None:
         from prbot.review.formatter import _sanitise
 
         out = _sanitise("See https://example.com/a for details", 2000)
-        assert "https://example.com/a" in out
+        # The break is a zero-width space, so a reader sees the same text.
+        assert out.replace("\u200b", "") == (
+            "See https://example.com/a for details"
+        )
 
     def test_ordinary_prose_is_unchanged(self) -> None:
         from prbot.review.formatter import _sanitise
@@ -545,3 +549,66 @@ class TestSanitiseNeutralisesLinks:
         assert _sanitise("Catch the specific exception.", 2000) == (
             "Catch the specific exception."
         )
+
+
+class TestLinksCannotBeReconstituted:
+    """SEC-DATA-01: a code span is not containment.
+
+    GFM autolinks a bare 'www.' host with no scheme, and a stray backtick in
+    model text closes the span that was supposed to hold the URL.
+    """
+
+    def test_a_bare_www_host_is_defused(self) -> None:
+        from prbot.review.formatter import _sanitise
+
+        out = _sanitise("Send it to www.attacker.example/collect?d=1", 2000)
+        assert "www.attacker.example/collect" not in out
+
+    def test_a_scheme_url_is_defused(self) -> None:
+        from prbot.review.formatter import _sanitise
+
+        out = _sanitise("See https://attacker.example/x now", 2000)
+        assert "https://attacker.example/x" not in out
+
+    def test_a_stray_backtick_cannot_open_a_span(self) -> None:
+        from prbot.review.formatter import _sanitise
+
+        out = _sanitise("a ` b https://attacker.example/x c", 2000)
+        assert "https://attacker.example/x" not in out
+
+    def test_the_host_is_still_readable(self) -> None:
+        from prbot.review.formatter import _sanitise
+
+        out = _sanitise("See https://example.com/a for details", 2000)
+        assert "example.com" in out
+
+    def test_ordinary_prose_is_unchanged(self) -> None:
+        from prbot.review.formatter import _sanitise
+
+        assert _sanitise("Catch the specific exception.", 2000) == (
+            "Catch the specific exception."
+        )
+
+
+class TestEveryFailureIsShown:
+    """GEN-ERR-02: a totally failed agent showed only its first error."""
+
+    def test_all_errors_are_listed_when_nothing_succeeded(self) -> None:
+        from prbot.review.formatter import _format_agent_status
+
+        out = _format_agent_status([
+            AgentError(agent="general", error_type="throttled", message="one"),
+            AgentError(agent="general", error_type="timeout", message="two"),
+            AgentError(agent="general", error_type="internal", message="three"),
+        ])
+        for token in ("throttled", "timeout", "internal"):
+            assert token in out
+
+    def test_the_pass_count_is_visible_on_total_failure(self) -> None:
+        from prbot.review.formatter import _format_agent_status
+
+        out = _format_agent_status([
+            AgentError(agent="general", error_type="throttled", message="one"),
+            AgentError(agent="general", error_type="timeout", message="two"),
+        ])
+        assert "2" in out

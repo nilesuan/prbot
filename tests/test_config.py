@@ -576,16 +576,20 @@ class TestConfigIsNotReadFromTheReviewedTree:
             "confidence_threshold": 55,
         }
 
-    def test_implicit_search_still_works_outside_ci(
+    def test_implicit_search_works_outside_ci_when_opted_in(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """Opt-in rather than on-by-default, so the guard cannot fail open.
+
+        See TestImplicitConfigSearchIsOptIn for the default.
+        """
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".prbot.toml").write_text(
             '[prbot]\nconfidence_threshold = 61\n',
         )
-        assert load_toml_config(None, env_vars={}) == {
-            "confidence_threshold": 61,
-        }
+        assert load_toml_config(
+            None, env_vars={"PRBOT_ALLOW_IMPLICIT_CONFIG": "1"},
+        ) == {"confidence_threshold": 61}
 
     def test_build_config_does_not_read_the_tree_in_ci(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -682,3 +686,48 @@ class TestSsrfGuardResolvesNames:
     def test_a_literal_internal_ip_is_still_refused(self) -> None:
         with pytest.raises(ConfigError, match="SSRF"):
             _validate_url_not_internal("https://169.254.169.254/")
+
+
+class TestImplicitConfigSearchIsOptIn:
+    """SEC-CRED-03: CI detection was an allowlist that failed open.
+
+    _in_ci named three environment variables and the fallback was the unsafe
+    branch, so any runner that sets none of them got the implicit search back.
+    """
+
+    def test_the_search_is_refused_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".prbot.toml").write_text("[prbot]\nconfidence_threshold = 61\n")
+        assert load_toml_config(None, env_vars={}) == {}
+
+    def test_it_is_allowed_when_opted_in(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".prbot.toml").write_text("[prbot]\nconfidence_threshold = 61\n")
+        assert load_toml_config(
+            None, env_vars={"PRBOT_ALLOW_IMPLICIT_CONFIG": "1"},
+        ) == {"confidence_threshold": 61}
+
+    def test_opting_in_does_not_help_inside_ci(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The reviewed tree is on disk there; the opt-in is for local use."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".prbot.toml").write_text("[prbot]\nconfidence_threshold = 61\n")
+        assert load_toml_config(
+            None,
+            env_vars={
+                "PRBOT_ALLOW_IMPLICIT_CONFIG": "1",
+                "GITHUB_ACTIONS": "true",
+            },
+        ) == {}
+
+    def test_an_explicit_path_needs_no_opt_in(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "c.toml"
+        cfg.write_text("[prbot]\nconfidence_threshold = 55\n")
+        assert load_toml_config(str(cfg), env_vars={}) == {
+            "confidence_threshold": 55,
+        }

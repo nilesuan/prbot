@@ -366,3 +366,69 @@ class TestFileContentIsBounded:
             assert await adapter.get_file_content("big.py", _HEAD) is None
         finally:
             await adapter.close()
+
+
+class TestOversizedBodyIsNeverFullyBuffered:
+    """SEC-INPUT-04: the bound ran after httpx had buffered everything.
+
+    send_with_retry uses the non-streaming API, so response.content was
+    already the whole body by the time the length was checked. The bound
+    limited what was retained, not what was allocated.
+    """
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_the_request_asks_for_a_bounded_range(self) -> None:
+        route = respx.get(
+            "https://api.github.com/repos/owner/repo/contents/big.py",
+        ).mock(return_value=httpx.Response(200, text="import os\n"))
+        adapter = _github()
+        try:
+            await adapter.get_file_content("big.py", _HEAD)
+        finally:
+            await adapter.close()
+        assert route.call_count == 1
+        assert "range" in {
+            k.lower() for k in route.calls[0].request.headers
+        }
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_truncated_response_is_discarded(self) -> None:
+        """206 means the server had more than the bound allowed."""
+        respx.get(
+            "https://api.github.com/repos/owner/repo/contents/big.py",
+        ).mock(return_value=httpx.Response(206, text="x" * 1000))
+        adapter = _github()
+        try:
+            assert await adapter.get_file_content("big.py", _HEAD) is None
+        finally:
+            await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_server_ignoring_range_is_still_bounded(self) -> None:
+        respx.get(
+            "https://api.github.com/repos/owner/repo/contents/big.py",
+        ).mock(return_value=httpx.Response(200, text="x" * 3_000_000))
+        adapter = _github()
+        try:
+            assert await adapter.get_file_content("big.py", _HEAD) is None
+        finally:
+            await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_gitlab_asks_for_a_range_too(self) -> None:
+        route = respx.get(
+            "https://gitlab.com/api/v4/projects/owner%2Frepo"
+            "/repository/files/f.py/raw",
+        ).mock(return_value=httpx.Response(200, text="ok\n"))
+        adapter = _gitlab()
+        try:
+            await adapter.get_file_content("f.py", _HEAD)
+        finally:
+            await adapter.close()
+        assert "range" in {
+            k.lower() for k in route.calls[0].request.headers
+        }
