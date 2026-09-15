@@ -84,6 +84,10 @@ class PrBotConfig(BaseModel, frozen=True):
     general_model_id: str = "au.anthropic.claude-sonnet-4-6"
     security_model_id: str = "au.anthropic.claude-sonnet-4-6"
     max_diff_tokens: int = Field(default=100_000, gt=0)
+    # B5: explicit cap on each agent response. Left to the Bedrock
+    # default, output length is neither reproducible nor visible to the
+    # cost estimate.
+    max_output_tokens: int = Field(default=8192, gt=0)
     budget_limit_usd: float = Field(default=5.00, gt=0)
     timeout_seconds: int = Field(default=300, gt=0)
     api_base_url: str | None = None
@@ -261,7 +265,7 @@ _ENV_PREFIX = "PRBOT_"
 # Fields that should be parsed as specific types from env vars
 _INT_FIELDS = frozenset({
     "pr_number", "confidence_threshold", "blocker_threshold",
-    "max_diff_tokens", "timeout_seconds",
+    "max_diff_tokens", "max_output_tokens", "timeout_seconds",
 })
 _FLOAT_FIELDS = frozenset({"budget_limit_usd"})
 _BOOL_FIELDS = frozenset({"dry_run"})

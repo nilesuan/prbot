@@ -517,3 +517,168 @@ class TestTokenUsageCarriesRealCost:
         usage = _extract_token_usage({}, model_id="au.anthropic.claude-sonnet-4-6")
         assert usage.input_tokens == 0
         assert usage.estimated_cost_usd == 0.0
+
+
+class TestStructuredOutputIsEnforced:
+    """B5: FINDING_JSON_SCHEMA existed and was never sent to Bedrock.
+
+    converse() was called with no toolConfig and no inferenceConfig, so the
+    output shape was a prompt request, max output tokens and temperature were
+    whatever Bedrock defaults to, and _try_parse_json had to guess through
+    three fallbacks with a hard failure if all three missed.
+    """
+
+    @staticmethod
+    def _capture_converse() -> tuple[MagicMock, dict[str, Any]]:
+        captured: dict[str, Any] = {}
+
+        def converse(**kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "usage": {"inputTokens": 1, "outputTokens": 1},
+                "output": {
+                    "message": {
+                        "content": [
+                            {
+                                "toolUse": {
+                                    "name": "report_findings",
+                                    "input": {"findings": []},
+                                },
+                            },
+                        ],
+                    },
+                },
+            }
+
+        client = MagicMock()
+        client.converse.side_effect = converse
+        return client, captured
+
+    def _invoke(self, **overrides: Any) -> dict[str, Any]:
+        from prbot.review.runner import _invoke_bedrock
+
+        client, captured = self._capture_converse()
+        boto3 = MagicMock()
+        boto3.client.return_value = client
+        kwargs: dict[str, Any] = {
+            "model_id": "au.anthropic.claude-sonnet-4-6",
+            "system_prompt": "sys",
+            "user_prompt": "usr",
+            "aws_region": "ap-southeast-2",
+            "max_output_tokens": 4096,
+        }
+        kwargs.update(overrides)
+        with patch.dict("sys.modules", {"boto3": boto3}):
+            _invoke_bedrock(**kwargs)
+        return captured
+
+    def test_schema_is_sent_as_a_tool(self) -> None:
+        from prbot.review.models import FINDING_JSON_SCHEMA
+
+        captured = self._invoke()
+        tools = captured["toolConfig"]["tools"]
+        assert len(tools) == 1
+        assert tools[0]["toolSpec"]["inputSchema"]["json"] == FINDING_JSON_SCHEMA
+
+    def test_the_tool_is_forced(self) -> None:
+        captured = self._invoke()
+        choice = captured["toolConfig"]["toolChoice"]
+        assert "tool" in choice, "the model may still answer in prose"
+
+    def test_max_output_tokens_is_explicit(self) -> None:
+        captured = self._invoke(max_output_tokens=1234)
+        assert captured["inferenceConfig"]["maxTokens"] == 1234
+
+    def test_temperature_is_zero(self) -> None:
+        captured = self._invoke()
+        assert captured["inferenceConfig"]["temperature"] == 0.0
+
+
+class TestParseFindingsReadsToolUse:
+    """B5: structured output arrives in a toolUse block, not a text block."""
+
+    @staticmethod
+    def _finding(**overrides: Any) -> dict[str, Any]:
+        base = {
+            "check_id": "Q-ERR-01",
+            "title": "Bare except",
+            "description": "d",
+            "file_path": "src/app.py",
+            "line_start": 10,
+            "line_end": 12,
+            "severity": "medium",
+            "confidence": 80,
+            "suggestion": "s",
+        }
+        base.update(overrides)
+        return base
+
+    def test_reads_findings_from_tool_use(self) -> None:
+        response = {
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "toolUse": {
+                                "name": "report_findings",
+                                "input": {"findings": [self._finding()]},
+                            },
+                        },
+                    ],
+                },
+            },
+        }
+        findings = _parse_findings(response, "general")
+        assert len(findings) == 1
+        assert findings[0].check_id == "Q-ERR-01"
+
+    def test_prefers_tool_use_over_stray_prose(self) -> None:
+        response = {
+            "output": {
+                "message": {
+                    "content": [
+                        {"text": "Let me look at this diff."},
+                        {
+                            "toolUse": {
+                                "name": "report_findings",
+                                "input": {"findings": [self._finding()]},
+                            },
+                        },
+                    ],
+                },
+            },
+        }
+        assert len(_parse_findings(response, "general")) == 1
+
+    def test_text_block_still_parses_as_a_fallback(self) -> None:
+        response = {
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "text": json.dumps(
+                                {"findings": [self._finding()]},
+                            ),
+                        },
+                    ],
+                },
+            },
+        }
+        assert len(_parse_findings(response, "general")) == 1
+
+    def test_empty_tool_use_is_no_findings_not_an_error(self) -> None:
+        response = {
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "toolUse": {
+                                "name": "report_findings",
+                                "input": {"findings": []},
+                            },
+                        },
+                    ],
+                },
+            },
+        }
+        assert _parse_findings(response, "general") == []

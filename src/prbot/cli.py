@@ -279,6 +279,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
             diff_text,
             [a["model_id"] for a in agents],
             config.budget_limit_usd,
+            estimated_output_tokens=config.max_output_tokens,
         )
 
         # Run 2-agent review
@@ -286,6 +287,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
         outcomes = await run_review(
             filtered_diff, metadata, agents,
             budget, config.aws_region,
+            max_output_tokens=config.max_output_tokens,
         )
 
         # Hallucination validation
