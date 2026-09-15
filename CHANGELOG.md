@@ -113,6 +113,12 @@ now in CI.
 
 ### Security
 
+- Refreshed the pinned base image and applied Debian security updates
+  on top of it, and bumped urllib3 to 2.7.0. The Trivy gate went from
+  61 CRITICAL/HIGH findings to 0. The digest pin fixes what is built
+  from; it does not stop the packages inside it ageing, and the last
+  successful build was six months old.
+
 - Fork reviews are gated before the OIDC role is assumed. The previous gate
   used `exit 0` inside a step, which does not stop later steps.
 - Image signature verification is pinned to this repository's workflows and
