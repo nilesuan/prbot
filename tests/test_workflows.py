@@ -154,3 +154,119 @@ class TestImageVerification:
         assert "steps.image.outputs.ref" in runs, (
             "the container launched is not the reference that was verified"
         )
+
+
+class TestGitLabTemplate:
+    """A7: the OIDC path must work inside the shipped image."""
+
+    @staticmethod
+    def _template() -> dict[str, Any]:
+        path = _ROOT / ".gitlab" / "ci" / "prbot.yml"
+        assert path.is_file()
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _scripts(template: dict[str, Any]) -> str:
+        parts: list[str] = []
+        for job in template.values():
+            if not isinstance(job, dict):
+                continue
+            for key in ("before_script", "script", "after_script"):
+                block = job.get(key) or []
+                parts.extend(str(line) for line in block)
+        return "\n".join(parts)
+
+    def test_does_not_shell_out_to_the_aws_cli(self) -> None:
+        """The image ships a Python venv only; there is no `aws` binary."""
+        scripts = self._scripts(self._template())
+        assert "aws sts" not in scripts
+        assert not re.search(r"(^|\s)aws\s", scripts), (
+            "GitLab template invokes the AWS CLI, which is not in the image"
+        )
+
+    def test_uses_boto3_native_web_identity(self) -> None:
+        template = self._template()
+        variables: dict[str, str] = {}
+        for job in template.values():
+            if isinstance(job, dict):
+                variables.update(job.get("variables") or {})
+        assert "AWS_WEB_IDENTITY_TOKEN_FILE" in variables
+        assert "AWS_ROLE_ARN" in variables
+
+    def test_writes_the_token_to_the_file_boto3_reads(self) -> None:
+        scripts = self._scripts(self._template())
+        assert "AWS_WEB_IDENTITY_TOKEN_FILE" in scripts
+
+    def test_image_is_not_a_mutable_latest_tag(self) -> None:
+        text = (_ROOT / ".gitlab" / "ci" / "prbot.yml").read_text(
+            encoding="utf-8",
+        )
+        assert "prbot:latest" not in text
+
+
+class TestIAMPolicy:
+    """A6: the shipped policy must permit the shipped defaults."""
+
+    @staticmethod
+    def _policy() -> dict[str, Any]:
+        import json
+
+        path = _ROOT / "src" / "prbot" / "iam_policy.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _allowed_resources(policy: dict[str, Any]) -> list[str]:
+        out: list[str] = []
+        for statement in policy["Statement"]:
+            if statement.get("Effect") != "Allow":
+                continue
+            actions = statement.get("Action") or []
+            if not any(a.startswith("bedrock:") for a in actions):
+                continue
+            resource = statement.get("Resource")
+            out.extend(
+                [resource] if isinstance(resource, str) else list(resource),
+            )
+        return out
+
+    @staticmethod
+    def _matches(arn_pattern: str, arn: str) -> bool:
+        escaped = re.escape(arn_pattern).replace(r"\*", ".*")
+        return re.fullmatch(escaped, arn) is not None
+
+    def test_permits_the_default_models(self) -> None:
+        from prbot.config import PrBotConfig
+
+        defaults = PrBotConfig.model_fields
+        model_ids = {
+            defaults["general_model_id"].default,
+            defaults["security_model_id"].default,
+        }
+        resources = self._allowed_resources(self._policy())
+        for model_id in model_ids:
+            arn = (
+                f"arn:aws:bedrock:ap-southeast-2:123456789012:"
+                f"inference-profile/{model_id}"
+            )
+            assert any(self._matches(p, arn) for p in resources), (
+                f"policy does not permit the default model {model_id!r}; "
+                f"allowed resources are {resources}"
+            )
+
+    def test_permits_the_foundation_models_a_profile_routes_to(self) -> None:
+        """Cross-region profiles also need the underlying model ARNs."""
+        resources = self._allowed_resources(self._policy())
+        arn = (
+            "arn:aws:bedrock:ap-southeast-2::foundation-model/"
+            "anthropic.claude-sonnet-4-6"
+        )
+        assert any(self._matches(p, arn) for p in resources), (
+            "policy grants the inference profile but not the foundation "
+            "models it routes to"
+        )
+
+    def test_does_not_grant_bedrock_star(self) -> None:
+        for statement in self._policy()["Statement"]:
+            if statement.get("Effect") != "Allow":
+                continue
+            assert "bedrock:*" not in (statement.get("Action") or [])

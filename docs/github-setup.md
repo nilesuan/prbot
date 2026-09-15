@@ -118,7 +118,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
         with:
           role-to-assume: ${{ vars.PRBOT_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.PRBOT_AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ vars.PRBOT_AWS_REGION || 'ap-southeast-2' }}
 
       - name: Run prbot
         uses: docker://ghcr.io/nilesuan/prbot:latest
@@ -157,24 +157,21 @@ jobs:
   review:
     name: Fork PR Review
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.full_name != github.repository
     environment: fork-review  # Require manual approval for first-time contributors
+    # Every gate is a job-level condition. `exit 0` inside a run: step ends
+    # that step successfully and lets the job continue, so an unknown author
+    # would still reach the OIDC role and a paid review.
+    if: >-
+      github.event.pull_request.head.repo.full_name != github.repository
+      && github.event.pull_request.state != 'closed'
+      && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR'
+      && github.event.pull_request.author_association != 'NONE'
     steps:
-      # Skip unknown contributors
-      - name: Check author association
-        env:
-          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
-        run: |
-          if [ "$AUTHOR_ASSOCIATION" = "FIRST_TIME_CONTRIBUTOR" ] || [ "$AUTHOR_ASSOCIATION" = "NONE" ]; then
-            echo "::warning::Skipping review for $AUTHOR_ASSOCIATION"
-            exit 0
-          fi
-
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
         with:
           role-to-assume: ${{ vars.PRBOT_FORK_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.PRBOT_AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ vars.PRBOT_AWS_REGION || 'ap-southeast-2' }}
 
       - name: Run prbot
         uses: docker://ghcr.io/nilesuan/prbot:latest
