@@ -34,6 +34,15 @@ class VCSAdapter(Protocol):
         """
         ...
 
+    async def get_file_content(self, path: str, ref: str) -> str | None:
+        """Fetch a file's text at a revision, or None if unavailable (B8).
+
+        Returns None rather than raising for a file that does not exist at
+        that revision, is binary, or is too large: expanded context is an
+        improvement to the prompt, not a precondition for reviewing.
+        """
+        ...
+
     async def get_authenticated_user(self) -> str:
         """Get the login/username of the authenticated token holder.
 

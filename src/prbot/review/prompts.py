@@ -114,6 +114,8 @@ def build_user_prompt(
     metadata: PRMetadata,
     *,
     datamark_diff: bool = True,
+    file_contents: dict[str, str] | None = None,
+    context_lines: int = 0,
 ) -> str:
     """Build the user prompt containing PR metadata and diff.
 
@@ -121,6 +123,7 @@ def build_user_prompt(
     not in the system prompt. All content is datamarked for prompt injection
     defense (story-6-1).
     """
+    from prbot.review.context import build_context_excerpt
     from prbot.security.datamarking import (
         apply_diff_datamarking,
         apply_metadata_datamarking,
@@ -146,7 +149,23 @@ def build_user_prompt(
             dm_patch = apply_diff_datamarking(f.patch)
         else:
             dm_patch = f.patch
-        files_section.append(f"{header}\n```diff\n{dm_patch}\n```")
+        block = f"{header}\n```diff\n{dm_patch}\n```"
+
+        # B8: the enclosing function is rarely inside the hunk, so a
+        # judgement about architecture or testing is otherwise made without
+        # the thing being judged.
+        if context_lines > 0 and file_contents is not None:
+            excerpt = build_context_excerpt(
+                f, file_contents.get(f.path), context_lines,
+            )
+            if excerpt:
+                block += (
+                    f"\n\nSurrounding code at {safe_path} "
+                    f"(head revision, numbered):\n"
+                    f"```\n{excerpt}\n```"
+                )
+
+        files_section.append(block)
 
     files_text = "\n\n".join(files_section)
     truncation_note = ""

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -140,6 +141,24 @@ class GitHubAdapter:
             base_sha=base_sha,
             truncated=len(files) >= _GITHUB_FILE_LIMIT,
         )
+
+    async def get_file_content(self, path: str, ref: str) -> str | None:
+        """Fetch a file's text at a revision (B8)."""
+        url = (
+            f"{self._base_url}/repos/{self._repo}"
+            f"/contents/{quote(path)}"
+        )
+        try:
+            response = await send_with_retry(
+                self._client, "GET", url,
+                classify=_classify_response, label="GitHub",
+                params={"ref": ref},
+                headers={"Accept": "application/vnd.github.raw+json"},
+            )
+        except VCSError as e:
+            logger.info("context.unavailable path=%s: %s", path, e)
+            return None
+        return response.text
 
     async def get_authenticated_user(self) -> str:
         """Get authenticated user login, cached after first call."""

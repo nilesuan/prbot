@@ -137,6 +137,23 @@ class GitLabAdapter:
             truncated=overflow,
         )
 
+    async def get_file_content(self, path: str, ref: str) -> str | None:
+        """Fetch a file's text at a revision (B8)."""
+        url = (
+            f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+            f"/repository/files/{quote(path, safe='')}/raw"
+        )
+        try:
+            response = await send_with_retry(
+                self._client, "GET", url,
+                classify=_classify_response, label="GitLab",
+                params={"ref": ref},
+            )
+        except VCSError as e:
+            logger.info("context.unavailable path=%s: %s", path, e)
+            return None
+        return response.text
+
     async def get_authenticated_user(self) -> str:
         """Get authenticated user username, cached after first call."""
         if self._authenticated_user is None:

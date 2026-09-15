@@ -43,7 +43,13 @@ cover accurately.
 - Whether datamarking the patch content, as opposed to the metadata, helps or
   hurts finding precision. `PRBOT_DATAMARK_DIFF` and
   `scripts/measure_datamarking.py` exist to answer it with data.
-- Whether giving the model the full text of changed files, rather than the
-  hunks alone, raises precision enough to justify the tokens.
-- Whether a third adversarial agent, asked to construct a concrete failure
-  rather than match a category, finds the defects a checklist cannot.
+- Whether giving the model the surrounding code, rather than the hunks alone,
+  raises precision enough to justify the tokens. `PRBOT_CONTEXT_LINES` exists
+  to answer it.
+- Whether the adversarial agent, asked to construct a concrete failure rather
+  than match a category, finds enough that the other two miss to justify a
+  third of the spend. It ships disabled for exactly that reason.
+- Whether a human's response to a finding can be captured without either a
+  GraphQL dependency on GitHub or storing previous findings somewhere. That
+  one is still open, and it is the prerequisite for calibrating the
+  confidence thresholds rather than choosing them.

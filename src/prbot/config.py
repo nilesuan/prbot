@@ -176,6 +176,10 @@ class PrBotConfig(BaseModel, frozen=True):
     # default, output length is neither reproducible nor visible to the
     # cost estimate.
     max_output_tokens: int = Field(default=8192, gt=0)
+    # B8: lines of surrounding head-revision code to include around
+    # each hunk. 0 keeps the diff-only behaviour. Whether the extra
+    # tokens buy precision is a question for measurement.
+    context_lines: int = Field(default=0, ge=0, le=200)
     budget_limit_usd: float = Field(default=5.00, gt=0)
     timeout_seconds: int = Field(default=300, gt=0)
     api_base_url: str | None = None
@@ -424,6 +428,7 @@ _ENV_PREFIX = "PRBOT_"
 _INT_FIELDS = frozenset({
     "pr_number", "confidence_threshold", "blocker_threshold",
     "max_diff_tokens", "max_output_tokens", "timeout_seconds",
+    "context_lines",
     "min_passing_score",
 })
 _FLOAT_FIELDS = frozenset({"budget_limit_usd"})

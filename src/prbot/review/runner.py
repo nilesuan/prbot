@@ -65,6 +65,8 @@ async def run_review(
     aws_region: str,
     max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
     datamark_diff: bool = True,
+    file_contents: dict[str, str] | None = None,
+    context_lines: int = 0,
 ) -> list[AgentOutcome]:
     """Run review agents concurrently (S1, S88).
 
@@ -79,7 +81,10 @@ async def run_review(
         List of AgentOutcome (AgentResult or AgentError) for each agent.
     """
     user_prompt = build_user_prompt(
-        pr_diff, metadata, datamark_diff=datamark_diff,
+        pr_diff, metadata,
+        datamark_diff=datamark_diff,
+        file_contents=file_contents,
+        context_lines=context_lines,
     )
 
     tasks = [

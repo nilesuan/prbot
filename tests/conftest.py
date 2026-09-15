@@ -54,6 +54,7 @@ class FakeVCSAdapter:
         metadata: PRMetadata | None = None,
         diff: PRDiff | None = None,
         bot_comment: tuple[int, str] | None = None,
+        file_contents: dict[str, str] | None = None,
         authenticated_user: str = "prbot[bot]",
     ) -> None:
         self.metadata = metadata or PRMetadata(
@@ -81,6 +82,7 @@ class FakeVCSAdapter:
             base_sha=_BASE_SHA,
         )
         self.bot_comment = bot_comment
+        self.file_contents: dict[str, str] = file_contents or {}
         self._authenticated_user = authenticated_user
 
         # Call recording
@@ -97,6 +99,10 @@ class FakeVCSAdapter:
     async def get_diff(self) -> PRDiff:
         self.calls.append("get_diff")
         return self.diff
+
+    async def get_file_content(self, path: str, ref: str) -> str | None:
+        self.calls.append("get_file_content")
+        return self.file_contents.get(path)
 
     async def get_authenticated_user(self) -> str:
         self.calls.append("get_authenticated_user")

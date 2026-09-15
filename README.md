@@ -98,6 +98,18 @@ being anchored to a line the platform would reject. An inline position the
 platform refuses, usually a line that has moved, is dropped with a warning:
 losing one anchor is acceptable, losing the review is not.
 
+### Surrounding Code
+
+A hunk carries three lines of context, which is rarely the enclosing function,
+so a judgement about architecture or test coverage is being made without the
+thing being judged. `PRBOT_CONTEXT_LINES=30` includes that many numbered lines
+of the head revision around each hunk.
+
+It defaults to 0. The extra tokens are real and whether they buy enough
+precision to be worth it is a question for measurement on your own pull
+requests, not one to settle by argument. The excerpt is datamarked like the
+patch, since it is file content from the same pull request.
+
 ### Large Diffs
 
 A diff larger than `PRBOT_MAX_DIFF_TOKENS` used to be refused outright, so the
@@ -360,6 +372,7 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | Security review model |
 | `PRBOT_MAX_DIFF_TOKENS` | `100000` | Tokens per review call; a larger diff is reviewed in several passes |
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
+| `PRBOT_CONTEXT_LINES` | `0` | Lines of surrounding code to include around each hunk |
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Max estimated cost per review |
 | `PRBOT_TIMEOUT_SECONDS` | `300` | Review timeout |
 | `PRBOT_DRAFT_BEHAVIOR` | `skip` | `skip` or `review` for draft PRs |

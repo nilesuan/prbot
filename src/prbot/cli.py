@@ -327,10 +327,33 @@ async def run_pipeline(config: PrBotConfig) -> int:
         # the run, so the largest pull requests got no review at all. It is
         # reviewed in pieces instead, bounded by the same max_diff_tokens
         # that used to refuse it.
+        # B8: fetch the surrounding code when asked for it. A file that
+        # cannot be fetched simply has no excerpt; expanded context improves
+        # the prompt and is never a precondition for reviewing.
+        file_contents: dict[str, str] = {}
+        if config.context_lines > 0:
+            for file_diff in filtered_diff.files:
+                if file_diff.status == "removed":
+                    continue
+                content = await adapter.get_file_content(
+                    file_diff.path, metadata.head_sha,
+                )
+                if content is not None:
+                    file_contents[file_diff.path] = content
+            logger.info(
+                "context.fetched files=%d of=%d lines=%d",
+                len(file_contents),
+                len(filtered_diff.files),
+                config.context_lines,
+            )
+
         chunks = chunk_diff(filtered_diff, config.max_diff_tokens)
         chunk_texts = [
             build_user_prompt(
-                chunk, metadata, datamark_diff=config.datamark_diff,
+                chunk, metadata,
+                datamark_diff=config.datamark_diff,
+                file_contents=file_contents,
+                context_lines=config.context_lines,
             )
             for chunk in chunks
         ]
@@ -362,6 +385,8 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     budget, config.aws_region,
                     max_output_tokens=config.max_output_tokens,
                     datamark_diff=config.datamark_diff,
+                    file_contents=file_contents,
+                    context_lines=config.context_lines,
                 ),
             )
 

@@ -13,6 +13,9 @@ now in CI.
 
 ### Added
 
+- `PRBOT_CONTEXT_LINES` includes numbered lines of surrounding code
+  around each hunk, so the enclosing function is visible to the model.
+  Defaults to 0.
 - A diff larger than `PRBOT_MAX_DIFF_TOKENS` is reviewed in several
   passes and the findings merged, instead of the run being refused.
 - Metrics emission: a `review.metrics` event always, a JSON lines file

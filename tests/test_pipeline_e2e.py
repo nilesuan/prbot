@@ -568,3 +568,44 @@ class TestChunkedReview:
         assert audit is not None
         assert len(audit["agents"]) > 2
         assert all(a["status"] == "success" for a in audit["agents"])
+
+
+class TestExpandedContext:
+    """B8: the enclosing function is rarely inside the hunk."""
+
+    @pytest.mark.asyncio
+    async def test_no_content_is_fetched_by_default(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response([])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config())
+
+        assert "get_file_content" not in adapter.calls
+
+    @pytest.mark.asyncio
+    async def test_context_reaches_the_prompt_when_configured(self) -> None:
+        source = "\n".join(f"line {i}" for i in range(1, 30))
+        adapter = FakeVCSAdapter(file_contents={"src/example.py": source})
+        seen: list[str] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            seen.append(kwargs["user_prompt"])
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(context_lines=5))
+
+        assert "get_file_content" in adapter.calls
+        assert "Surrounding code" in seen[0]
+
+    @pytest.mark.asyncio
+    async def test_an_unfetchable_file_does_not_stop_the_review(self) -> None:
+        adapter = FakeVCSAdapter(file_contents={})
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(_config(context_lines=5))
+
+        assert exit_code == EXIT_PASS
+        assert len(adapter.posted_comments) == 1
