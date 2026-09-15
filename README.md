@@ -356,6 +356,8 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_EXCLUDED_PATTERNS` | *(none)* | Comma-separated gitignore-style patterns to exclude |
 | `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |
 | `PRBOT_LOG_LEVEL` | `INFO` | Log level for prbot's own output |
+| `PRBOT_METRICS_FILE` | *(none)* | Append run metrics as JSON lines, for a CI artifact |
+| `PRBOT_METRICS_NAMESPACE` | *(none)* | Publish run metrics to CloudWatch under this namespace |
 | `PRBOT_DRY_RUN` | `false` | Print review without posting |
 | `PRBOT_SECRET_NAME` | *(none)* | Secrets Manager secret holding the VCS token |
 | `PRBOT_API_BASE_URL` | platform default | API base URL for GitHub Enterprise or self-hosted GitLab |

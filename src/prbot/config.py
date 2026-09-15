@@ -201,6 +201,11 @@ class PrBotConfig(BaseModel, frozen=True):
     # C4: findings this repository has decided not to be told about.
     suppress: list[SuppressionRule] = Field(default_factory=list)
     log_level: str = "INFO"
+    # C7: optional metrics sinks. Without them the audit record is one
+    # log line per run, which cannot answer how often reviews block or
+    # what they cost over time.
+    metrics_namespace: str | None = None
+    metrics_file: str | None = None
     dry_run: bool = False
     # C3: review again even when this commit has already been reviewed.
     force_review: bool = False

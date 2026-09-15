@@ -423,3 +423,33 @@ class TestReviewMode:
             await run_pipeline(_config(review_mode="review", dry_run=True))
 
         assert adapter.submitted_reviews == []
+
+
+class TestMetricsSink:
+    """C7: the run's numbers must be collectable, not just loggable."""
+
+    @pytest.mark.asyncio
+    async def test_metrics_are_written_when_a_file_is_configured(
+        self, tmp_path: Any,
+    ) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+        target = tmp_path / "metrics.jsonl"
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(metrics_file=str(target)))
+
+        payload = json.loads(target.read_text().strip())
+        assert payload["reported_count"] == 1
+        assert payload["dimensions"]["verdict"] == "COMMENT"
+        assert payload["cost_usd"] > 0
+
+    @pytest.mark.asyncio
+    async def test_no_file_is_written_by_default(self, tmp_path: Any) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response([])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config())
+
+        assert list(tmp_path.iterdir()) == []

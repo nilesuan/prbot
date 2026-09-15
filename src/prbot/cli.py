@@ -134,6 +134,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
         bind_review_context,
         clear_review_context,
     )
+    from prbot.observability.metrics import emit_metrics
     from prbot.observability.residency import (
         log_data_flow,
         validate_data_residency,
@@ -578,6 +579,12 @@ async def run_pipeline(config: PrBotConfig) -> int:
             cost_usd=total_cost,
         )
         emit_audit_record(audit)
+        emit_metrics(
+            audit,
+            namespace=config.metrics_namespace,
+            metrics_file=config.metrics_file,
+            region=config.aws_region,
+        )
 
         return exit_code
 

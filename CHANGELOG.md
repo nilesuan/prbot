@@ -13,6 +13,9 @@ now in CI.
 
 ### Added
 
+- Metrics emission: a `review.metrics` event always, a JSON lines file
+  via `PRBOT_METRICS_FILE`, and CloudWatch via
+  `PRBOT_METRICS_NAMESPACE`. No sink can fail a review.
 - Finding suppression via `[[prbot.suppress]]`, matching on check family,
   path and a severity ceiling. A reason is required, and the number of
   suppressed findings appears in every comment and in the audit record.
