@@ -66,7 +66,10 @@ def _validate_url_not_internal(url: str) -> str:
 # --- Config model ---
 
 _REPO_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
-_AWS_REGION_PATTERN = re.compile(r"^[a-z]{2}(-[a-z]+-\d+)$")
+# Two-letter area, one or more hyphenated parts, then a number. The
+# single-part form rejected every partition with a qualifier in the
+# name: us-gov-west-1, us-iso-east-1 and us-isob-east-1 (D5).
+_AWS_REGION_PATTERN = re.compile(r"^[a-z]{2}(?:-[a-z]+)+-\d+$")
 _SECRET_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9/_+=.@-]+$")
 _LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 

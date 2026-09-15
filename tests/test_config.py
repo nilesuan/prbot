@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -449,4 +450,35 @@ class TestDryRunPrecedence:
                 cli_args=self._args(),
                 env_vars={"PRBOT_DRY_RUN": "yep"},
                 toml_config={},
+            )
+
+
+class TestRegionValidationMatchesAws:
+    """D5: the pattern rejected GovCloud and ISO regions outright."""
+
+    ACCEPTED: ClassVar[list[str]] = [
+        "ap-southeast-2", "ap-southeast-4", "us-east-1", "eu-central-1",
+        "il-central-1", "mx-central-1", "us-gov-west-1", "us-gov-east-1",
+        "us-iso-east-1", "us-isob-east-1", "ca-central-1", "sa-east-1",
+    ]
+    REJECTED: ClassVar[list[str]] = [
+        "", "US-EAST-1", "us east 1", "useast1", "u-east-1", "us-east",
+    ]
+
+    @pytest.mark.parametrize("region", ACCEPTED)
+    def test_real_regions_are_accepted(self, region: str) -> None:
+        config = PrBotConfig(
+            platform="github", repo="o/r", pr_number=1,
+            aws_region=region, allowed_regions=[],
+            general_model_id="anthropic.claude-sonnet-4-6",
+            security_model_id="anthropic.claude-sonnet-4-6",
+        )
+        assert config.aws_region == region
+
+    @pytest.mark.parametrize("region", REJECTED)
+    def test_malformed_regions_are_rejected(self, region: str) -> None:
+        with pytest.raises(ValidationError):
+            PrBotConfig(
+                platform="github", repo="o/r", pr_number=1,
+                aws_region=region, allowed_regions=[],
             )

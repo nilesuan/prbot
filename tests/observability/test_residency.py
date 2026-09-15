@@ -80,3 +80,28 @@ class TestLogDataFlow:
         assert data["event"] == "data_flow.path"
         assert data["source_platform"] == "github"
         assert data["processing_region"] == "ap-southeast-2"
+
+
+class TestAustralianRegionGroup:
+    """D5: the au. profile group listed only Sydney."""
+
+    def test_melbourne_accepts_an_au_profile(self) -> None:
+        validate_data_residency(
+            "ap-southeast-4", [], ["au.anthropic.claude-sonnet-4-6"],
+        )
+
+    def test_sydney_still_accepts_an_au_profile(self) -> None:
+        validate_data_residency(
+            "ap-southeast-2", [], ["au.anthropic.claude-sonnet-4-6"],
+        )
+
+    def test_melbourne_is_in_the_ap_group_too(self) -> None:
+        validate_data_residency(
+            "ap-southeast-4", [], ["apac.anthropic.claude-sonnet-4-6"],
+        )
+
+    def test_a_us_profile_in_melbourne_is_still_rejected(self) -> None:
+        with pytest.raises(ConfigError):
+            validate_data_residency(
+                "ap-southeast-4", [], ["us.anthropic.claude-sonnet-4-6"],
+            )
