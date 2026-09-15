@@ -26,12 +26,12 @@ class ReviewVerdict(enum.StrEnum):
 
 def has_blocker_findings(
     reported: list[ScoredFinding],
-    blocker_threshold: int = 80,
+    blocker_confidence: int = 70,
 ) -> bool:
-    """Check if any finding is a blocker (critical/high + high confidence)."""
+    """Check if any finding is a blocker (critical/high at high confidence)."""
     return any(
         sf.finding.severity in ("critical", "high")
-        and sf.finding.confidence >= blocker_threshold
+        and sf.finding.confidence >= blocker_confidence
         for sf in reported
     )
 
@@ -40,19 +40,31 @@ def determine_verdict(
     outcomes: list[AgentOutcome],
     reported: list[ScoredFinding],
     score: ReviewScore,
-    blocker_threshold: int = 80,
+    blocker_confidence: int = 70,
+    min_passing_score: int = 70,
 ) -> ReviewVerdict:
-    """Determine review verdict using 8-scenario decision table (S15).
+    """Determine review verdict using a deterministic decision table (S15).
+
+    Two thresholds, deliberately separate (B3):
+
+    - blocker_confidence is a *confidence*. A critical or high finding at or
+      above it blocks, however good the rest of the review looks.
+    - min_passing_score is a *quality score*. A review below it blocks even
+      with no individual blocker, because the weight of findings says so.
+
+    These were previously one value compared against both quantities, and
+    has_blocker_findings was written, tested and never called, so the
+    documented "no blockers" condition checked nothing.
 
     Scenarios:
     1. No findings, all agents OK → APPROVE
-    2. No findings, agent failed → COMMENT (incomplete data)
+    2. Any agent failed → COMMENT (never approve or reject on partial data)
     3. Both agents failed → COMMENT (G-28)
-    4. Findings present, score >= threshold, no blockers → COMMENT
-    5. Findings present, score < threshold → REQUEST_CHANGES
-    6. Critical override (critical finding at high confidence) → REQUEST_CHANGES
-    7. Agent failed + findings → COMMENT (never REQUEST_CHANGES)
-    8. Agent failed + no findings → COMMENT
+    4. Critical finding at or above blocker confidence → REQUEST_CHANGES
+    5. Critical or high finding at or above blocker confidence →
+       REQUEST_CHANGES
+    6. Score below the passing mark → REQUEST_CHANGES
+    7. Findings present, no blocker, score passes → COMMENT
     """
     has_errors = any(isinstance(o, AgentError) for o in outcomes)
     has_results = any(isinstance(o, AgentResult) for o in outcomes)
@@ -75,13 +87,25 @@ def determine_verdict(
         # Scenario 1: Clean review
         return ReviewVerdict.APPROVE
 
-    # Scenario 6: Critical override
+    # Scenario 4: Critical override
     if score.critical_override:
+        logger.info("Critical finding above blocker confidence")
         return ReviewVerdict.REQUEST_CHANGES
 
-    # Scenario 5: Score below threshold
-    if score.clamped_score < blocker_threshold:
+    # Scenario 5: Any blocker-grade finding
+    if has_blocker_findings(reported, blocker_confidence):
+        logger.info(
+            "Blocker finding at or above confidence %d", blocker_confidence,
+        )
         return ReviewVerdict.REQUEST_CHANGES
 
-    # Scenario 4: Findings present but above threshold
+    # Scenario 6: Score below the passing mark
+    if score.clamped_score < min_passing_score:
+        logger.info(
+            "Score %d below passing mark %d",
+            score.clamped_score, min_passing_score,
+        )
+        return ReviewVerdict.REQUEST_CHANGES
+
+    # Scenario 7: Findings present, nothing blocking
     return ReviewVerdict.COMMENT

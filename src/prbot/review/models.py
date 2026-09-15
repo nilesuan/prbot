@@ -36,6 +36,10 @@ class Finding:
     severity: Literal["critical", "high", "medium", "low", "info"]
     confidence: int  # 0-100
     suggestion: str = ""
+    # Which agents reported this defect. Two agents arriving at the same
+    # finding independently is evidence, and it is the only way to tell a
+    # merged finding from a single-agent one after deduplication (B1).
+    reported_by: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

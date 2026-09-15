@@ -80,7 +80,12 @@ class PrBotConfig(BaseModel, frozen=True):
     aws_region: str = "ap-southeast-2"
     allowed_regions: list[str] = Field(default_factory=lambda: ["ap-southeast-2"])
     confidence_threshold: int = Field(default=70, ge=0, le=100)
+    # Minimum *confidence* at which a critical or high finding blocks.
     blocker_threshold: int = Field(default=70, ge=0, le=100)
+    # Minimum *quality score* (0-100) a review must reach to pass. A
+    # different quantity from blocker_threshold that happens to share a
+    # range; comparing one against the other was a category error (B3).
+    min_passing_score: int = Field(default=70, ge=0, le=100)
     general_model_id: str = "au.anthropic.claude-sonnet-4-6"
     security_model_id: str = "au.anthropic.claude-sonnet-4-6"
     max_diff_tokens: int = Field(default=100_000, gt=0)
@@ -266,6 +271,7 @@ _ENV_PREFIX = "PRBOT_"
 _INT_FIELDS = frozenset({
     "pr_number", "confidence_threshold", "blocker_threshold",
     "max_diff_tokens", "max_output_tokens", "timeout_seconds",
+    "min_passing_score",
 })
 _FLOAT_FIELDS = frozenset({"budget_limit_usd"})
 _BOOL_FIELDS = frozenset({"dry_run"})

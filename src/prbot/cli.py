@@ -341,7 +341,8 @@ async def run_pipeline(config: PrBotConfig) -> int:
         )
         verdict = determine_verdict(
             outcomes, reported, score,
-            config.blocker_threshold,
+            blocker_confidence=config.blocker_threshold,
+            min_passing_score=config.min_passing_score,
         )
         logger.info(
             "verdict=%s score=%d findings=%d hidden=%d",

@@ -7,10 +7,11 @@ applies weighted severity deductions, and detects critical overrides.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from typing import Literal
 
-from prbot.review.models import AgentError, AgentOutcome, AgentResult, Finding
+from prbot.review.models import AgentOutcome, AgentResult, Finding
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,91 @@ SEVERITY_WEIGHTS: dict[str, float] = {
 }
 
 ConfidenceBand = Literal["reported", "borderline", "hidden"]
+
+# Most severe first, so a merged finding takes the worst reading.
+_SEVERITY_RANK: dict[str, int] = {
+    "critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4,
+}
+
+_TITLE_NOISE = re.compile(r"[^a-z0-9 ]+")
+
+
+def _normalise_title(title: str) -> str:
+    """Reduce a title to comparable words."""
+    return " ".join(_TITLE_NOISE.sub(" ", title.lower()).split())
+
+
+def _overlaps(a: Finding, b: Finding) -> bool:
+    """Whether two findings cover any line in common."""
+    return a.line_start <= b.line_end and b.line_start <= a.line_end
+
+
+def _same_defect(a: Finding, b: Finding) -> bool:
+    """Whether two findings describe one defect (B1).
+
+    Same file and overlapping lines is necessary but not sufficient: a line
+    can carry both a quality problem and a security problem. What settles it
+    is agreement on what the problem is, either the same check or the same
+    title. The title test matters because the agents use different check
+    prefixes, so one defect seen by both is reported as Q-... by one and
+    S-... by the other.
+    """
+    if a.file_path != b.file_path or not _overlaps(a, b):
+        return False
+    if a.check_id == b.check_id:
+        return True
+    return _normalise_title(a.title) == _normalise_title(b.title)
+
+
+def _merge(a: Finding, b: Finding) -> Finding:
+    """Combine two reports of one defect, taking the worse reading."""
+    worse = min(a, b, key=lambda f: _SEVERITY_RANK.get(f.severity, 99))
+    richer = max((a, b), key=lambda f: len(f.description))
+    return replace(
+        worse,
+        confidence=max(a.confidence, b.confidence),
+        description=richer.description,
+        suggestion=richer.suggestion or worse.suggestion,
+        line_start=min(a.line_start, b.line_start),
+        line_end=max(a.line_end, b.line_end),
+        reported_by=tuple(sorted(set(a.reported_by) | set(b.reported_by))),
+    )
+
+
+def deduplicate_findings(outcomes: list[AgentOutcome]) -> list[Finding]:
+    """Collapse findings that describe the same defect (B1).
+
+    score_findings previously concatenated every agent's findings, so a
+    defect both agents noticed was reported twice and deducted twice. Two
+    agents overlapping on credentials, input validation and error handling
+    is the normal case, not an edge case, and it moved verdicts.
+    """
+    merged: list[Finding] = []
+    duplicates = 0
+
+    for outcome in outcomes:
+        if not isinstance(outcome, AgentResult):
+            continue
+        for finding in outcome.findings:
+            candidate = finding
+            if not candidate.reported_by:
+                candidate = replace(
+                    candidate, reported_by=(outcome.agent,),
+                )
+            for i, existing in enumerate(merged):
+                if _same_defect(existing, candidate):
+                    merged[i] = _merge(existing, candidate)
+                    duplicates += 1
+                    break
+            else:
+                merged.append(candidate)
+
+    if duplicates:
+        logger.info(
+            "Scoring: merged %d duplicate finding(s) across agents (B1)",
+            duplicates,
+        )
+    return merged
 
 
 @dataclass(frozen=True)
@@ -78,7 +164,7 @@ def classify_confidence_band(
 def score_findings(
     outcomes: list[AgentOutcome],
     threshold: int = 70,
-    blocker_threshold: int = 80,
+    blocker_threshold: int = 70,
 ) -> tuple[list[ScoredFinding], list[ScoredFinding], int, ReviewScore]:
     """Score all findings from agent outcomes (G4-04).
 
@@ -95,27 +181,21 @@ def score_findings(
     hidden_count = 0
     critical_override = False
 
-    for outcome in outcomes:
-        if isinstance(outcome, AgentError):
-            continue
-        if not isinstance(outcome, AgentResult):
-            continue
+    for finding in deduplicate_findings(outcomes):
+        scored = ScoredFinding.from_finding(finding, threshold)
 
-        for finding in outcome.findings:
-            scored = ScoredFinding.from_finding(finding, threshold)
-
-            if scored.band == "reported":
-                reported.append(scored)
-                # Check critical override
-                if (
-                    finding.severity == "critical"
-                    and finding.confidence >= blocker_threshold
-                ):
-                    critical_override = True
-            elif scored.band == "borderline":
-                borderline.append(scored)
-            else:
-                hidden_count += 1
+        if scored.band == "reported":
+            reported.append(scored)
+            # Check critical override
+            if (
+                finding.severity == "critical"
+                and finding.confidence >= blocker_threshold
+            ):
+                critical_override = True
+        elif scored.band == "borderline":
+            borderline.append(scored)
+        else:
+            hidden_count += 1
 
     total_deductions = sum(sf.deduction for sf in reported)
     raw_score = 100.0 - total_deductions

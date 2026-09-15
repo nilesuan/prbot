@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from prbot.review.models import AgentError, AgentResult, Finding, TokenUsage
-from prbot.review.scorer import ScoredFinding, score_findings
+from prbot.review.scorer import ReviewScore, ScoredFinding, score_findings
 from prbot.review.verdict import (
     ReviewVerdict,
     determine_verdict,
@@ -140,9 +140,133 @@ class TestHasBlockerFindings:
     def test_critical_high_confidence(self) -> None:
         finding = _make_finding(severity="critical", confidence=90)
         sf = ScoredFinding.from_finding(finding, threshold=70)
-        assert has_blocker_findings([sf], blocker_threshold=80)
+        assert has_blocker_findings([sf], blocker_confidence=80)
 
     def test_medium_not_blocker(self) -> None:
         finding = _make_finding(severity="medium", confidence=90)
         sf = ScoredFinding.from_finding(finding, threshold=70)
-        assert not has_blocker_findings([sf], blocker_threshold=80)
+        assert not has_blocker_findings([sf], blocker_confidence=80)
+
+
+class TestVerdictScalesAreSeparate:
+    """B3: a 0-100 quality score was compared against a confidence threshold.
+
+    They share a range and mean different things, and has_blocker_findings
+    was written, tested and never called by determine_verdict.
+    """
+
+    @staticmethod
+    def _score(clamped: int, critical_override: bool = False) -> ReviewScore:
+        return ReviewScore(
+            raw_score=float(clamped),
+            clamped_score=clamped,
+            total_deductions=100.0 - clamped,
+            finding_count=1,
+            critical_override=critical_override,
+        )
+
+    @staticmethod
+    def _scored(severity: str, confidence: int) -> ScoredFinding:
+        return ScoredFinding(
+            finding=Finding(
+                id="general-1",
+                category="general",
+                check_id="Q-ERR-01",
+                title="t",
+                description="d",
+                file_path="src/app.py",
+                line_start=1,
+                line_end=1,
+                severity=severity,
+                confidence=confidence,
+            ),
+            band="reported",
+            deduction=1.0,
+        )
+
+    def test_a_high_confidence_blocker_requests_changes(self) -> None:
+        """Even when the score stays above the passing mark."""
+        reported = [self._scored("critical", 95)]
+        verdict = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported,
+            self._score(99),
+            blocker_confidence=80,
+            min_passing_score=70,
+        )
+        assert verdict == ReviewVerdict.REQUEST_CHANGES
+
+    def test_a_low_confidence_blocker_does_not(self) -> None:
+        reported = [self._scored("critical", 50)]
+        verdict = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported,
+            self._score(99),
+            blocker_confidence=80,
+            min_passing_score=70,
+        )
+        assert verdict == ReviewVerdict.COMMENT
+
+    def test_score_below_the_passing_mark_requests_changes(self) -> None:
+        reported = [self._scored("low", 50)]
+        verdict = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported,
+            self._score(40),
+            blocker_confidence=80,
+            min_passing_score=70,
+        )
+        assert verdict == ReviewVerdict.REQUEST_CHANGES
+
+    def test_passing_score_with_no_blocker_comments(self) -> None:
+        reported = [self._scored("medium", 75)]
+        verdict = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported,
+            self._score(88),
+            blocker_confidence=80,
+            min_passing_score=70,
+        )
+        assert verdict == ReviewVerdict.COMMENT
+
+    def test_the_two_thresholds_are_independent(self) -> None:
+        """Raising the blocker confidence must not move the passing mark."""
+        reported = [self._scored("high", 85)]
+        strict = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported, self._score(88),
+            blocker_confidence=80, min_passing_score=70,
+        )
+        lenient = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported, self._score(88),
+            blocker_confidence=90, min_passing_score=70,
+        )
+        assert strict == ReviewVerdict.REQUEST_CHANGES
+        assert lenient == ReviewVerdict.COMMENT
+
+
+class TestConfigDefaultsAgreeWithFunctionDefaults:
+    """B3: config defaulted blocker_threshold to 70, the functions to 80."""
+
+    def test_blocker_confidence_defaults_match(self) -> None:
+        import inspect
+
+        from prbot.config import PrBotConfig
+
+        sig = inspect.signature(determine_verdict)
+        assert (
+            sig.parameters["blocker_confidence"].default
+            == PrBotConfig.model_fields["blocker_threshold"].default
+        )
+
+    def test_passing_score_defaults_match(self) -> None:
+        import inspect
+
+        from prbot.config import PrBotConfig
+
+        sig = inspect.signature(determine_verdict)
+        assert (
+            sig.parameters["min_passing_score"].default
+            == PrBotConfig.model_fields["min_passing_score"].default
+        )
