@@ -24,7 +24,9 @@ class TestParseArgs:
             parse_args(["--version"])
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
-        assert "0.1.0" in captured.out
+        from prbot import __version__
+
+        assert __version__ in captured.out
 
     def test_all_flags(self) -> None:
         args = parse_args([

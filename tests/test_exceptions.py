@@ -134,7 +134,11 @@ class TestVersion:
         import prbot
 
         assert hasattr(prbot, "__version__")
-        assert prbot.__version__ == "0.1.0"
+        # The value itself is checked in tests/test_release_metadata.py,
+        # which compares it with pyproject.toml. Pinning a literal here
+        # only makes every version bump fail two unrelated tests.
+        assert isinstance(prbot.__version__, str)
+        assert prbot.__version__.count(".") == 2
 
 
 class TestMainModule:

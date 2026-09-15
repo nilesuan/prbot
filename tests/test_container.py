@@ -77,8 +77,10 @@ class TestDockerfile:
              "import prbot; print(prbot.__version__)"],
             capture_output=True, text=True, timeout=30,
         )
+        from prbot import __version__
+
         assert result.returncode == 0
-        assert "0.1.0" in result.stdout
+        assert __version__ in result.stdout
 
     def test_entrypoint_help(self, built_image: str) -> None:
         result = subprocess.run(
