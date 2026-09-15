@@ -20,7 +20,9 @@
 .prbot-base:
   # A5: pinned to an immutable version tag rather than :latest. To pin
   # harder, replace with a digest: ghcr.io/nilesuan/prbot@sha256:...
-  image: ghcr.io/nilesuan/prbot:v0.2.0
+  # No "v" prefix: the git tag is v0.2.0, but the published image tag is
+  # 0.2.0, because build.yml strips it via type=semver,pattern={{version}}.
+  image: ghcr.io/nilesuan/prbot:0.2.0
   variables:
     # SEC-CRED-03: do not clone the branch under review. prbot fetches the
     # diff over the API and needs no working copy, and a checkout would put
