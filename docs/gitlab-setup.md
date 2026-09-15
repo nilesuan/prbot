@@ -118,7 +118,7 @@ Add to your `.gitlab-ci.yml`:
 ```yaml
 prbot-review:
   stage: test
-  image: ghcr.io/nilesuan/prbot:0.3.1
+  image: ghcr.io/nilesuan/prbot:0.3.2
   id_tokens:
     GITLAB_OIDC_TOKEN:
       aud: https://your-gitlab.example.com  # must match the role trust policy
@@ -150,7 +150,7 @@ prbot-review:
 ```yaml
 prbot-review:
   stage: test
-  image: ghcr.io/nilesuan/prbot:0.3.1
+  image: ghcr.io/nilesuan/prbot:0.3.2
   variables:
     PRBOT_PLATFORM: gitlab
     PRBOT_REPO: $CI_PROJECT_PATH
@@ -214,16 +214,16 @@ The prbot image is hosted on GitHub Container Registry (`ghcr.io`). If your GitL
 
 ```bash
 # Pull from GHCR and push to your registry
-docker pull ghcr.io/nilesuan/prbot:0.3.1
-docker tag ghcr.io/nilesuan/prbot:0.3.1 registry.example.com/prbot:0.3.1
-docker push registry.example.com/prbot:0.3.1
+docker pull ghcr.io/nilesuan/prbot:0.3.2
+docker tag ghcr.io/nilesuan/prbot:0.3.2 registry.example.com/prbot:0.3.2
+docker push registry.example.com/prbot:0.3.2
 ```
 
 Then update the job:
 
 ```yaml
 prbot-review:
-  image: registry.example.com/prbot:0.3.1
+  image: registry.example.com/prbot:0.3.2
   # ...
 ```
 
