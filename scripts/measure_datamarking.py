@@ -16,7 +16,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from prbot.review.prompts import estimate_prompt_tokens
+from prbot.review.prompts import build_system_prompt, estimate_prompt_tokens
 from prbot.security.datamarking import (
     apply_datamarking,
     apply_diff_datamarking,
@@ -53,6 +53,14 @@ def main(argv: list[str]) -> int:
         "mark-everything": apply_datamarking,
     }
 
+    # The number that decides anything is the whole prompt, not the patch.
+    # The system prompt is the same in every arm and is around 2,000 tokens,
+    # so it dilutes the patch ratio by a lot on a small diff and by very
+    # little on a large one. Reporting only the patch ratio overstates what
+    # a review actually costs; the eval suite measured 1.06x at the prompt
+    # level on a 15-line diff where the patch alone was 1.88x.
+    system_tokens = estimate_prompt_tokens(build_system_prompt("general"))
+
     totals = dict.fromkeys(strategies, 0)
     print(f"{len(samples)} diffs from {rev_range}\n")
     print(f"{'strategy':<24}{'est. tokens':>14}{'vs none':>10}")
@@ -69,10 +77,21 @@ def main(argv: list[str]) -> int:
         print(f"{name:<24}{totals[name]:>14,}{ratio:>9.2f}x")
 
     print()
-    print("Input cost per review at $3.00/M input tokens:")
+    print(
+        f"Whole-prompt ratio, including the {system_tokens:,}-token system "
+        "prompt that is identical in every arm:",
+    )
+    print(f"{'strategy':<24}{'est. tokens':>14}{'vs none':>10}")
+    print("-" * 48)
+    prompt_base = (totals["none"] / len(samples)) + system_tokens
     for name in strategies:
-        per_review = totals[name] / len(samples)
-        # Two agents each receive the prompt
+        per = (totals[name] / len(samples)) + system_tokens
+        print(f"{name:<24}{per:>14,.0f}{per / prompt_base:>9.2f}x")
+
+    print()
+    print("Input cost per review at $3.00/M input tokens, two agents:")
+    for name in strategies:
+        per_review = (totals[name] / len(samples)) + system_tokens
         print(
             f"  {name:<24}${(per_review / 1_000_000) * 3.00 * 2:>8.4f}",
         )
