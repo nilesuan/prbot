@@ -266,6 +266,26 @@ _INT_FIELDS = frozenset({
 _FLOAT_FIELDS = frozenset({"budget_limit_usd"})
 _BOOL_FIELDS = frozenset({"dry_run"})
 
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
+
+
+def _parse_bool(key: str, value: str) -> bool:
+    """Parse a boolean env var, rejecting values it cannot interpret.
+
+    Silently treating a typo as False hides the setting the caller asked
+    for, which is how PRBOT_DRY_RUN went unnoticed (A1).
+    """
+    lowered = value.strip().lower()
+    if lowered in _TRUE_VALUES:
+        return True
+    if lowered in _FALSE_VALUES:
+        return False
+    raise ConfigError(
+        f"Invalid boolean for {key}: {value!r}. "
+        f"Use one of {sorted(_TRUE_VALUES | _FALSE_VALUES - {''})}."
+    )
+
 
 def build_config(
     cli_args: dict[str, Any] | None = None,
@@ -304,7 +324,7 @@ def build_config(
             except ValueError as e:
                 raise ConfigError(f"Invalid float for {key}: {value!r}") from e
         elif field_name in _BOOL_FIELDS:
-            merged[field_name] = value.lower() in ("1", "true", "yes")
+            merged[field_name] = _parse_bool(key, value)
         else:
             merged[field_name] = value
 

@@ -96,6 +96,10 @@ def parse_args(
         "--dry-run",
         action="store_true",
         dest="dry_run",
+        # default=None, not the store_true default of False: build_config
+        # overlays every CLI value that is not None, so a False here would
+        # overwrite PRBOT_DRY_RUN and .prbot.toml on every run (A1).
+        default=None,
         help="Run analysis without posting comment",
     )
     return parser.parse_args(argv)

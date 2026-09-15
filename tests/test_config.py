@@ -396,3 +396,57 @@ class TestAsyncSmoke:
     @pytest.mark.asyncio
     async def test_async_test_runs(self) -> None:
         assert 1 + 1 == 2
+
+
+class TestDryRunPrecedence:
+    """A1: dry_run must be settable from env and TOML, not only the flag."""
+
+    @staticmethod
+    def _args(*extra: str) -> dict[str, object]:
+        from prbot.cli import parse_args
+
+        base = ["--platform", "github", "--repo", "o/r", "--pr", "1"]
+        return vars(parse_args(base + list(extra)))
+
+    def test_absent_flag_is_none_not_false(self) -> None:
+        """A store_true default of False overwrites every lower layer."""
+        assert self._args()["dry_run"] is None
+
+    def test_env_var_survives_cli_overlay(self) -> None:
+        config = build_config(
+            cli_args=self._args(),
+            env_vars={"PRBOT_DRY_RUN": "true"},
+            toml_config={},
+        )
+        assert config.dry_run is True
+
+    def test_toml_survives_cli_overlay(self) -> None:
+        config = build_config(
+            cli_args=self._args(),
+            env_vars={},
+            toml_config={"dry_run": True},
+        )
+        assert config.dry_run is True
+
+    def test_flag_still_wins_over_env(self) -> None:
+        config = build_config(
+            cli_args=self._args("--dry-run"),
+            env_vars={"PRBOT_DRY_RUN": "false"},
+            toml_config={},
+        )
+        assert config.dry_run is True
+
+    def test_defaults_to_false(self) -> None:
+        config = build_config(
+            cli_args=self._args(), env_vars={}, toml_config={},
+        )
+        assert config.dry_run is False
+
+    def test_env_var_rejects_unparseable_boolean(self) -> None:
+        """A typo previously fell through to False in silence."""
+        with pytest.raises(ConfigError, match="boolean"):
+            build_config(
+                cli_args=self._args(),
+                env_vars={"PRBOT_DRY_RUN": "yep"},
+                toml_config={},
+            )

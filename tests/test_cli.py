@@ -45,7 +45,9 @@ class TestParseArgs:
         assert args.platform is None
         assert args.pr_number is None
         assert args.repo is None
-        assert args.dry_run is False
+        # None, not False: an absent flag must not overwrite the env var or
+        # TOML layers in build_config (A1).
+        assert args.dry_run is None
 
 
 class TestMain:
