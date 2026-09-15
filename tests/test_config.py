@@ -482,3 +482,68 @@ class TestRegionValidationMatchesAws:
                 platform="github", repo="o/r", pr_number=1,
                 aws_region=region, allowed_regions=[],
             )
+
+
+class TestListValuedConfigFromEnvironment:
+    """D6: README documented PRBOT_EXCLUDED_PATTERNS; it raised ConfigError.
+
+    Pydantic will not coerce a string to list[str], so the only way to set a
+    list was a TOML file. The container workflows pass configuration purely
+    through env:, which made the documented setting unreachable exactly where
+    it is most needed.
+    """
+
+    @staticmethod
+    def _build(**env: str) -> PrBotConfig:
+        base = {
+            "PRBOT_PLATFORM": "github",
+            "PRBOT_REPO": "o/r",
+            "PRBOT_PR_NUMBER": "1",
+        }
+        base.update(env)
+        return build_config(cli_args=None, env_vars=base, toml_config={})
+
+    def test_excluded_patterns_from_env(self) -> None:
+        config = self._build(
+            PRBOT_EXCLUDED_PATTERNS="*.lock,**/vendor/**,*.min.js",
+        )
+        assert config.excluded_patterns == [
+            "*.lock", "**/vendor/**", "*.min.js",
+        ]
+
+    def test_surrounding_whitespace_is_trimmed(self) -> None:
+        config = self._build(PRBOT_EXCLUDED_PATTERNS=" *.lock , **/dist/** ")
+        assert config.excluded_patterns == ["*.lock", "**/dist/**"]
+
+    def test_empty_entries_are_dropped(self) -> None:
+        config = self._build(PRBOT_EXCLUDED_PATTERNS="*.lock,,,*.map")
+        assert config.excluded_patterns == ["*.lock", "*.map"]
+
+    def test_a_single_value_needs_no_comma(self) -> None:
+        config = self._build(PRBOT_EXCLUDED_PATTERNS="*.lock")
+        assert config.excluded_patterns == ["*.lock"]
+
+    def test_an_empty_value_is_an_empty_list(self) -> None:
+        config = self._build(PRBOT_EXCLUDED_PATTERNS="")
+        assert config.excluded_patterns == []
+
+    def test_allowed_regions_from_env(self) -> None:
+        config = self._build(
+            PRBOT_ALLOWED_REGIONS="ap-southeast-2,ap-southeast-4",
+            PRBOT_AWS_REGION="ap-southeast-4",
+            PRBOT_GENERAL_MODEL_ID="anthropic.claude-sonnet-4-6",
+            PRBOT_SECURITY_MODEL_ID="anthropic.claude-sonnet-4-6",
+        )
+        assert config.allowed_regions == ["ap-southeast-2", "ap-southeast-4"]
+
+    def test_toml_lists_still_work(self) -> None:
+        config = build_config(
+            cli_args=None,
+            env_vars={
+                "PRBOT_PLATFORM": "github",
+                "PRBOT_REPO": "o/r",
+                "PRBOT_PR_NUMBER": "1",
+            },
+            toml_config={"excluded_patterns": ["a", "b"]},
+        )
+        assert config.excluded_patterns == ["a", "b"]

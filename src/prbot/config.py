@@ -285,6 +285,10 @@ _INT_FIELDS = frozenset({
 })
 _FLOAT_FIELDS = frozenset({"budget_limit_usd"})
 _BOOL_FIELDS = frozenset({"dry_run", "datamark_diff"})
+# Pydantic will not coerce a string to list[str], so without this the
+# only way to set a list was a TOML file, and the container workflows
+# pass configuration purely through env: (D6).
+_LIST_FIELDS = frozenset({"excluded_patterns", "allowed_regions"})
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
@@ -345,6 +349,10 @@ def build_config(
                 raise ConfigError(f"Invalid float for {key}: {value!r}") from e
         elif field_name in _BOOL_FIELDS:
             merged[field_name] = _parse_bool(key, value)
+        elif field_name in _LIST_FIELDS:
+            merged[field_name] = [
+                item.strip() for item in value.split(",") if item.strip()
+            ]
         else:
             merged[field_name] = value
 
