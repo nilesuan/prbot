@@ -205,6 +205,38 @@ class TestGitLabTemplate:
         )
         assert "prbot:latest" not in text
 
+    def test_image_clears_the_entrypoint(self) -> None:
+        """The image declares ENTRYPOINT ["prbot"], GitLab needs a shell.
+
+        GitLab appends its shell-detection command rather than replacing the
+        entrypoint, so without `entrypoint: [""]` the container runs
+        `prbot sh -c '...'` and argparse refuses it:
+
+            prbot: error: unrecognized arguments: sh -c if [ -x /bin/bash ]
+
+        The job then exits 2 before a review starts, which is how this
+        template shipped: every GitLab user got that, and no test looked at
+        the image key as anything but a string. GitHub Actions is unaffected
+        because it calls `docker run` directly and never asks for a shell.
+        """
+        dockerfile = (_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        assert "ENTRYPOINT" in dockerfile, (
+            "no ENTRYPOINT in the image, so this test guards nothing"
+        )
+
+        for name, job in self._template().items():
+            image = job.get("image") if isinstance(job, dict) else None
+            if image is None:
+                continue
+            assert isinstance(image, dict), (
+                f"{name}: image is a bare string, so the entrypoint is not "
+                f"cleared and GitLab cannot start a shell in this image"
+            )
+            assert image.get("entrypoint") == [""], (
+                f"{name}: entrypoint must be cleared, got "
+                f"{image.get('entrypoint')!r}"
+            )
+
 
 class TestIAMPolicy:
     """A6: the shipped policy must permit the shipped defaults."""

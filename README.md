@@ -359,7 +359,11 @@ Add to `.gitlab-ci.yml`:
 ```yaml
 prbot-review:
   stage: test
-  image: ghcr.io/nilesuan/prbot:0.4.0
+  image:
+    name: ghcr.io/nilesuan/prbot:0.4.0
+    # Required: the image's ENTRYPOINT is prbot itself, so GitLab
+    # cannot start a shell in it without clearing this.
+    entrypoint: [""]
   id_tokens:
     GITLAB_OIDC_TOKEN:
       aud: https://gitlab.com  # must match the role's trust policy
