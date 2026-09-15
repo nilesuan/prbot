@@ -11,8 +11,8 @@ dependencies = [
     "httpx>=0.28,<1",
     "boto3>=1.36,<2",
     "pydantic>=2.10,<3",
-    "structlog>=25.1,<26",
-    "pathspec>=0.12,<1",
+    "structlog>=25.1,<27",
+    "pathspec>=0.12,<2",
 ]
 
 [project.scripts]
