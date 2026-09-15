@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The Dockerfile stripped pip, setuptools and wheel from the runtime image
+  using a hardcoded `python3.12` site-packages path. Any base image bump
+  pointed every `rm` at a path that does not exist, and `rm -rf` succeeds on
+  a missing path, so the build stayed green while the installers survived.
+  On a `python:3.14-slim` base that put pip back in the image, and pip
+  vendors its own copy of msgpack, so the image gained two HIGH advisories
+  (msgpack and setuptools) that the 3.12 image did not have. The path is now
+  asked of the interpreter, and the build fails if either package survives
+  the strip.
+- `test_no_pip_in_runtime` could not see this. It runs `which pip`, and
+  `/usr/local/bin/pip` is not version-specific, so the binary was removed
+  while the package stayed. A new test checks the filesystem instead, which
+  is what Trivy scans. It deliberately does not check `import pip`: PATH
+  puts the virtual environment's interpreter first and that cannot see
+  system site-packages, so an import check passes even when every file is
+  still present.
+
 ## [0.3.2] - 2026-09-16
 
 ### Added
