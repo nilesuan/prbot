@@ -16,6 +16,7 @@ import asyncio
 import logging
 import sys
 import uuid
+from typing import Any
 
 from prbot import __version__
 from prbot.config import PrBotConfig, build_config
@@ -107,6 +108,186 @@ def parse_args(
     return parser.parse_args(argv)
 
 
+def _summarise_agents(
+    agents: list[dict[str, str]],
+    outcomes: list[Any],
+    budget_limit_usd: float,
+) -> tuple[list[Any], float]:
+    """Build the per-agent audit rows and total what the run cost.
+
+    With chunking there is one outcome per agent per chunk, and they are
+    appended in roster order, so the agent configuration repeats across the
+    outcome list. Extracted from run_pipeline (GEN-ARCH-01).
+
+    The cost compared here is what Bedrock actually charged for, not the
+    pre-flight character-count estimate (A8). The money is already spent by
+    the time this runs, so exceeding the budget is a warning rather than a
+    failure; the value of the number is that it can calibrate the estimate.
+    """
+    from prbot.observability.audit import AgentAuditInfo
+    from prbot.review.models import AgentResult
+
+    agent_infos: list[Any] = []
+    cycle = [agents[i % len(agents)] for i in range(len(outcomes))]
+
+    for a_cfg, outcome in zip(cycle, outcomes, strict=True):
+        if isinstance(outcome, AgentResult):
+            agent_infos.append(AgentAuditInfo(
+                name=a_cfg["name"],
+                model_id=a_cfg["model_id"],
+                status="success",
+                finding_count=len(outcome.findings),
+                input_tokens=outcome.token_usage.input_tokens,
+                output_tokens=outcome.token_usage.output_tokens,
+                latency_ms=outcome.latency_ms,
+                cost_usd=outcome.token_usage.estimated_cost_usd,
+            ))
+        else:
+            agent_infos.append(AgentAuditInfo(
+                name=a_cfg["name"],
+                model_id=a_cfg["model_id"],
+                status=f"error:{type(outcome).__name__}",
+                finding_count=0,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=0,
+            ))
+
+    total_cost = sum(info.cost_usd for info in agent_infos)
+    if total_cost > budget_limit_usd:
+        logger.warning(
+            "cost.over_budget actual=%.4f limit=%.2f",
+            total_cost, budget_limit_usd,
+        )
+    else:
+        logger.info(
+            "cost.actual usd=%.4f limit=%.2f", total_cost, budget_limit_usd,
+        )
+
+    return agent_infos, total_cost
+
+
+def _apply_safety(
+    outcomes: list[Any],
+    chunks: list[Any],
+    filtered_diff: Any,
+    agent_count: int,
+) -> tuple[list[Any], int, int]:
+    """Validate findings against their own chunk, then redact PII.
+
+    Returns the rewritten outcomes and the two counts the audit record
+    carries. Extracted from run_pipeline (GEN-ARCH-01).
+
+    The chunk index matters: an agent only ever saw one chunk's files, so
+    validating against the whole diff accepts a finding naming a file that
+    agent never read. run_review emits exactly agent_count outcomes per
+    chunk in roster order, which is what makes the arithmetic sound.
+    """
+    from prbot.review.models import AgentResult
+    from prbot.security.redaction import redact_finding_pii
+    from prbot.security.validation import validate_findings_against_diff
+
+    hallucinations_removed = 0
+    pii_redacted_total = 0
+
+    for i, outcome in enumerate(outcomes):
+        if not isinstance(outcome, AgentResult):
+            continue
+
+        source_chunk = (
+            chunks[i // agent_count] if chunks else filtered_diff
+        )
+        findings = outcome.findings
+
+        if findings:
+            pre_count = len(findings)
+            findings = validate_findings_against_diff(findings, source_chunk)
+            hallucinations_removed += pre_count - len(findings)
+
+        cleaned = []
+        for finding in findings:
+            scrubbed, count = redact_finding_pii(finding)
+            pii_redacted_total += count
+            cleaned.append(scrubbed)
+
+        outcomes[i] = AgentResult(
+            agent=outcome.agent,
+            findings=cleaned,
+            token_usage=outcome.token_usage,
+            latency_ms=outcome.latency_ms,
+            model_id=outcome.model_id,
+        )
+
+    return outcomes, hallucinations_removed, pii_redacted_total
+
+
+async def _run_preflight(
+    config: PrBotConfig,
+    adapter: Any,
+    metadata: Any,
+    authenticated_user: str,
+) -> tuple[int | None, tuple[int, str] | None]:
+    """Decide whether this pull request should be reviewed at all.
+
+    Returns (exit_code, existing_comment). A non-None exit code means stop;
+    the caller returns it. The existing comment is carried out because the
+    already-reviewed check has to fetch it and the posting step needs it,
+    and looking it up twice paginates the whole comment list twice.
+
+    Extracted from run_pipeline, which had grown to bundle a dozen stages
+    in one function (GEN-ARCH-01).
+    """
+    from prbot.vcs.models import ReviewStateRecord
+
+    # Closed or merged (S81)
+    if metadata.state in ("closed", "merged"):
+        logger.info(
+            "preflight.skip reason=pr_%s pr=#%d",
+            metadata.state, metadata.number,
+        )
+        return EXIT_PASS, None
+
+    # Draft (S34)
+    if metadata.is_draft and config.draft_behavior == "skip":
+        logger.info("preflight.skip reason=draft pr=#%d", metadata.number)
+        return EXIT_PASS, None
+
+    # Bot self-review loop (S71, G4-03)
+    if _is_bot_author(
+        metadata.author, authenticated_user=authenticated_user,
+    ):
+        logger.info(
+            "preflight.skip reason=bot_author author=%s pr=#%d",
+            metadata.author, metadata.number,
+        )
+        return EXIT_PASS, None
+
+    # Already reviewed at this commit (C3). The state record is advisory,
+    # not authenticated, but it is read only from a comment authored by this
+    # bot, so forging it means already holding write access to that comment.
+    existing = await adapter.find_bot_comment()
+    previous = (
+        ReviewStateRecord.from_html_comment(existing[1]) if existing else None
+    )
+    if (
+        previous is not None
+        and previous.head_sha == metadata.head_sha
+        and not config.force_review
+    ):
+        logger.info(
+            "review.skip reason=already_reviewed sha=%s "
+            "previous_review_id=%s previous_verdict=%s",
+            metadata.head_sha, previous.review_id, previous.verdict,
+        )
+        return (
+            EXIT_BLOCKERS
+            if previous.verdict == "REQUEST_CHANGES"
+            else EXIT_PASS
+        ), existing
+
+    return None, existing
+
+
 async def run_pipeline(config: PrBotConfig) -> int:
     """Run the full review pipeline.
 
@@ -120,7 +301,6 @@ async def run_pipeline(config: PrBotConfig) -> int:
         validate_token_scopes,
     )
     from prbot.observability.audit import (
-        AgentAuditInfo,
         build_audit_record,
         compute_diff_hash,
         emit_audit_record,
@@ -155,11 +335,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
     )
     from prbot.security.diff_filter import filter_diff
     from prbot.security.redaction import (
-        redact_finding_pii,
         redact_secrets,
-    )
-    from prbot.security.validation import (
-        validate_findings_against_diff,
     )
     from prbot.vcs import create_vcs_adapter
     from prbot.vcs.models import ReviewStateRecord
@@ -240,73 +416,17 @@ async def run_pipeline(config: PrBotConfig) -> int:
             config.platform, config.aws_region, config.platform,
         )
 
-        # Pre-flight: Skip closed/merged PRs (S81)
-        if metadata.state in ("closed", "merged"):
-            logger.info(
-                "preflight.skip reason=pr_%s pr=#%d",
-                metadata.state, metadata.number,
-            )
-            return EXIT_PASS
-
-        # Pre-flight: Handle draft PRs (S34)
-        if (
-            metadata.is_draft
-            and config.draft_behavior == "skip"
-        ):
-            logger.info(
-                "preflight.skip reason=draft pr=#%d",
-                metadata.number,
-            )
-            return EXIT_PASS
-
-        # Pre-flight: Bot self-review loop (S71, G4-03)
+        # Pre-flight short circuits, in the order that costs least first
+        # (GEN-ARCH-01). Returns an exit code when the review should not
+        # happen, and the existing bot comment when it should.
         authenticated_user = await adapter.get_authenticated_user()
-        if _is_bot_author(
-            metadata.author,
-            authenticated_user=authenticated_user,
-        ):
-            logger.info(
-                "preflight.skip reason=bot_author author=%s "
-                "pr=#%d",
-                metadata.author, metadata.number,
-            )
-            return EXIT_PASS
-
-        # C3: a commit that has already been reviewed does not need
-        # reviewing again. ReviewStateRecord.from_html_comment was dead code
-        # and post_or_update_comment fetched the previous body and discarded
-        # it, so every re-run of the same push paid for a full review.
-        #
-        # The lookup also happens once now. post_or_update_comment searched
-        # the comment list itself, so using it here would have paginated the
-        # whole list twice.
-        existing = await adapter.find_bot_comment()
-        previous = (
-            ReviewStateRecord.from_html_comment(existing[1])
-            if existing
-            else None
+        skip, existing = await _run_preflight(
+            config, adapter, metadata, authenticated_user,
         )
+        if skip is not None:
+            return skip
 
-        if (
-            previous is not None
-            and previous.head_sha == metadata.head_sha
-            and not config.force_review
-        ):
-            # The record is advisory, not authenticated (see
-            # ReviewStateRecord), but it is read only from a comment authored
-            # by this bot, so forging it means already holding write access
-            # to the bot's own comments. Set force_review to ignore it.
-            logger.info(
-                "review.skip reason=already_reviewed sha=%s "
-                "previous_review_id=%s previous_verdict=%s",
-                metadata.head_sha, previous.review_id, previous.verdict,
-            )
-            return (
-                EXIT_BLOCKERS
-                if previous.verdict == "REQUEST_CHANGES"
-                else EXIT_PASS
-            )
-
+        # Fetch diff and filter
         # Fetch diff and filter
         raw_diff = await adapter.get_diff()
         filtered_diff = filter_diff(
@@ -395,49 +515,12 @@ async def run_pipeline(config: PrBotConfig) -> int:
             )
 
         # Hallucination validation
-        # GEN-ARCH-01: validate each outcome against the chunk that
-        # produced it, not the whole diff. An agent only ever saw one
-        # chunk's files, so checking against filtered_diff accepted a
-        # finding naming a file from a chunk that agent never read, which
-        # is exactly the invented cross-reference this check exists to
-        # catch. outcomes are appended chunk by chunk in roster order, so
-        # outcome i belongs to chunk i // len(agents).
-        for i, outcome in enumerate(outcomes):
-            source_chunk = chunks[i // len(agents)] if chunks else filtered_diff
-            if (
-                isinstance(outcome, AgentResult)
-                and outcome.findings
-            ):
-                pre_count = len(outcome.findings)
-                validated = validate_findings_against_diff(
-                    outcome.findings, source_chunk,
-                )
-                hallucinations_removed += (
-                    pre_count - len(validated)
-                )
-                outcomes[i] = AgentResult(
-                    agent=outcome.agent,
-                    findings=validated,
-                    token_usage=outcome.token_usage,
-                    latency_ms=outcome.latency_ms,
-                    model_id=outcome.model_id,
-                )
-
-        # PII redaction across every prose field, not description alone (B6)
-        for i, outcome in enumerate(outcomes):
-            if isinstance(outcome, AgentResult):
-                redacted_findings = []
-                for finding in outcome.findings:
-                    cleaned, count = redact_finding_pii(finding)
-                    pii_redacted_total += count
-                    redacted_findings.append(cleaned)
-                outcomes[i] = AgentResult(
-                    agent=outcome.agent,
-                    findings=redacted_findings,
-                    token_usage=outcome.token_usage,
-                    latency_ms=outcome.latency_ms,
-                    model_id=outcome.model_id,
-                )
+        # Post-model safety layers, in order: each finding is checked
+        # against the chunk that produced it, then PII is removed from every
+        # prose field (GEN-ARCH-01).
+        outcomes, hallucinations_removed, pii_redacted_total = _apply_safety(
+            outcomes, chunks, filtered_diff, len(agents),
+        )
 
         # C4: apply suppressions after deduplication so one rule silences a
         # defect both agents reported, and before scoring so a suppressed
@@ -635,48 +718,11 @@ async def run_pipeline(config: PrBotConfig) -> int:
         else:
             exit_code = EXIT_PASS
 
-        # Emit audit record
-        agent_infos = []
-        # With chunking there is one outcome per agent per chunk, so the
-        # agent config repeats across the outcome list in roster order.
-        agent_cycle = [agents[i % len(agents)] for i in range(len(outcomes))]
-        for a_cfg, outcome in zip(agent_cycle, outcomes, strict=True):
-            if isinstance(outcome, AgentResult):
-                agent_infos.append(AgentAuditInfo(
-                    name=a_cfg["name"],
-                    model_id=a_cfg["model_id"],
-                    status="success",
-                    finding_count=len(outcome.findings),
-                    input_tokens=outcome.token_usage.input_tokens,
-                    output_tokens=outcome.token_usage.output_tokens,
-                    latency_ms=outcome.latency_ms,
-                    cost_usd=outcome.token_usage.estimated_cost_usd,
-                ))
-            else:
-                err_type = type(outcome).__name__
-                agent_infos.append(AgentAuditInfo(
-                    name=a_cfg["name"],
-                    model_id=a_cfg["model_id"],
-                    status=f"error:{err_type}",
-                    finding_count=0,
-                    input_tokens=0,
-                    output_tokens=0,
-                    latency_ms=0,
-                ))
-
-        # A8: compare what the run actually cost with the budget, not just
-        # the pre-flight character-count estimate.
-        total_cost = sum(info.cost_usd for info in agent_infos)
-        if total_cost > config.budget_limit_usd:
-            logger.warning(
-                "cost.over_budget actual=%.4f limit=%.2f",
-                total_cost, config.budget_limit_usd,
-            )
-        else:
-            logger.info(
-                "cost.actual usd=%.4f limit=%.2f",
-                total_cost, config.budget_limit_usd,
-            )
+        # Per-agent audit rows and what the run actually cost
+        # (GEN-ARCH-01).
+        agent_infos, total_cost = _summarise_agents(
+            agents, outcomes, config.budget_limit_usd,
+        )
 
         audit = build_audit_record(
             review_id=review_id,
