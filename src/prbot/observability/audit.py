@@ -65,6 +65,10 @@ class AuditRecord:
     reported_count: int
     borderline_count: int
     hidden_count: int
+    # C4: how many findings configuration removed. Recorded so a growing
+    # suppression list is visible in the audit trail, not only in a comment
+    # nobody re-reads.
+    suppressed_count: int
 
     # Cost — what the run actually spent, not the pre-flight estimate
     cost_usd: float
@@ -116,6 +120,7 @@ def build_audit_record(
     borderline_count: int,
     hidden_count: int,
     hallucinations_removed: int,
+    suppressed_count: int = 0,
     pii_redacted: int,
     secrets_redacted: int,
     comment_posted: bool,
@@ -151,6 +156,7 @@ def build_audit_record(
         reported_count=reported_count,
         borderline_count=borderline_count,
         hidden_count=hidden_count,
+        suppressed_count=suppressed_count,
         hallucinations_removed=hallucinations_removed,
         pii_redacted=pii_redacted,
         secrets_redacted=secrets_redacted,

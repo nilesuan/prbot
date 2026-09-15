@@ -113,6 +113,39 @@ class AgentSpec(BaseModel, frozen=True):
         return v
 
 
+class SuppressionRule(BaseModel, frozen=True):
+    """A finding this repository has decided not to be told about (C4).
+
+    A reason is required. A suppression without one is indistinguishable from
+    a bug six months later, and the count of suppressed findings is reported
+    in every comment so that the list cannot quietly grow into a gag.
+    """
+
+    check_id: str
+    reason: str
+    path: str | None = None
+    max_severity: Literal["critical", "high", "medium", "low", "info"] | None = (
+        None
+    )
+
+    @field_validator("check_id")
+    @classmethod
+    def validate_check_id(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("check_id must not be empty")
+        return v.strip()
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError(
+                "reason must not be empty: an undocumented suppression is "
+                "indistinguishable from a bug later"
+            )
+        return v.strip()
+
+
 # The roster prbot ships with. A repository overrides it wholesale by
 # setting `agents`, which is also how a third agent is added.
 DEFAULT_AGENTS: list[dict[str, str]] = [
@@ -165,6 +198,8 @@ class PrBotConfig(BaseModel, frozen=True):
     # and a security agent, whose models come from general_model_id and
     # security_model_id so existing configuration keeps working.
     agents: list[AgentSpec] | None = Field(default=None, min_length=1)
+    # C4: findings this repository has decided not to be told about.
+    suppress: list[SuppressionRule] = Field(default_factory=list)
     log_level: str = "INFO"
     dry_run: bool = False
     # C3: review again even when this commit has already been reviewed.

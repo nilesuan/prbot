@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Literal
 
 from prbot.review.models import AgentOutcome, AgentResult, Finding
+from prbot.security.diff_filter import _compile
 
 logger = logging.getLogger(__name__)
 
@@ -220,3 +221,64 @@ def score_findings(
         )
 
     return reported, borderline, hidden_count, score
+
+
+_SEVERITY_ORDER: list[str] = ["critical", "high", "medium", "low", "info"]
+
+
+def _rule_matches(rule: object, finding: Finding) -> bool:
+    """Whether a suppression rule covers a finding (C4)."""
+    check_id = getattr(rule, "check_id", "")
+    if not finding.check_id.startswith(check_id):
+        return False
+
+    ceiling = getattr(rule, "max_severity", None)
+    if ceiling is not None:
+        # A rule written to silence nits must not also silence a critical
+        # that happens to share the check family.
+        try:
+            if _SEVERITY_ORDER.index(finding.severity) < _SEVERITY_ORDER.index(
+                ceiling,
+            ):
+                return False
+        except ValueError:
+            return False
+
+    path = getattr(rule, "path", None)
+    if not path:
+        return True
+    return _compile((path,)).match_file(finding.file_path)
+
+
+def apply_suppressions(
+    findings: list[Finding],
+    rules: list[object],
+) -> tuple[list[Finding], list[tuple[Finding, str]]]:
+    """Split findings into those to report and those suppressed (C4).
+
+    Returns (kept, [(finding, reason), ...]). Suppressed findings are
+    returned rather than discarded so the comment can say how many were
+    hidden and the audit record can carry the number: a suppression list
+    nobody can see is how a review bot becomes decorative.
+    """
+    if not rules:
+        return list(findings), []
+
+    kept: list[Finding] = []
+    suppressed: list[tuple[Finding, str]] = []
+
+    for finding in findings:
+        for rule in rules:
+            if _rule_matches(rule, finding):
+                suppressed.append((finding, getattr(rule, "reason", "")))
+                logger.info(
+                    "Suppressed %s in %s: %s",
+                    finding.check_id,
+                    finding.file_path,
+                    getattr(rule, "reason", ""),
+                )
+                break
+        else:
+            kept.append(finding)
+
+    return kept, suppressed

@@ -150,7 +150,11 @@ async def run_pipeline(config: PrBotConfig) -> int:
     from prbot.review.models import AgentResult
     from prbot.review.prompts import build_user_prompt
     from prbot.review.runner import run_review
-    from prbot.review.scorer import score_findings
+    from prbot.review.scorer import (
+        apply_suppressions,
+        deduplicate_findings,
+        score_findings,
+    )
     from prbot.review.verdict import (
         ReviewVerdict,
         determine_verdict,
@@ -380,10 +384,19 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     model_id=outcome.model_id,
                 )
 
+        # C4: apply suppressions after deduplication so one rule silences a
+        # defect both agents reported, and before scoring so a suppressed
+        # finding does not deduct.
+        merged = deduplicate_findings(outcomes)
+        kept, suppressed = apply_suppressions(merged, config.suppress)
+        suppressed_count = len(suppressed)
+        if suppressed_count:
+            logger.info("findings.suppressed count=%d", suppressed_count)
+
         # Score findings and determine verdict
         reported, borderline, hidden_count, score = (
             score_findings(
-                outcomes,
+                [AgentResult(agent="merged", findings=kept)],
                 threshold=config.confidence_threshold,
                 blocker_threshold=config.blocker_threshold,
             )
@@ -431,6 +444,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
             verdict, score, reported, borderline,
             hidden_count, outcomes, state_html,
             config.platform,
+            suppressed_count=suppressed_count,
         )
         comment, secret_count = redact_secrets(comment)
         if secret_count > 0:
@@ -555,6 +569,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
             borderline_count=len(borderline),
             hidden_count=hidden_count,
             hallucinations_removed=hallucinations_removed,
+            suppressed_count=suppressed_count,
             pii_redacted=pii_redacted_total,
             secrets_redacted=secret_count,
             comment_posted=comment_posted,

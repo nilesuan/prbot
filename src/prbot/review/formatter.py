@@ -102,6 +102,7 @@ def format_review_comment(
     outcomes: list[AgentOutcome],
     state_html: str = "",
     platform: Literal["github", "gitlab"] = "github",
+    suppressed_count: int = 0,
 ) -> str:
     """Format the full review comment (G-28, S83).
 
@@ -118,7 +119,7 @@ def format_review_comment(
         _format_findings_table(reported),
         _format_borderline_section(borderline),
         _format_agent_status(outcomes),
-        _format_footer(hidden_count, state_html),
+        _format_footer(hidden_count, state_html, suppressed_count),
     ]
 
     comment = "\n\n".join(s for s in sections if s)
@@ -289,13 +290,25 @@ def _format_agent_status(outcomes: list[AgentOutcome]) -> str:
     return "\n".join(lines)
 
 
-def _format_footer(hidden_count: int, state_html: str) -> str:
+def _format_footer(
+    hidden_count: int,
+    state_html: str,
+    suppressed_count: int = 0,
+) -> str:
     """Format footer with metadata, disclaimer, and state record."""
     lines = ["---"]
 
     if hidden_count > 0:
         lines.append(
             f"_{hidden_count} low-confidence findings hidden._",
+        )
+
+    if suppressed_count > 0:
+        # Always stated. A suppression list nobody can see stops being a
+        # policy and becomes a gag (C4).
+        lines.append(
+            f"_{suppressed_count} finding(s) suppressed by "
+            f"configuration._",
         )
 
     lines.extend(["", _DISCLAIMER])

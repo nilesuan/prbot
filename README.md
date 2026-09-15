@@ -98,6 +98,28 @@ being anchored to a line the platform would reject. An inline position the
 platform refuses, usually a line that has moved, is dropped with a warning:
 losing one anchor is acceptable, losing the review is not.
 
+### Suppressing a Finding
+
+A nit that comes back on every push is the most common reason a team turns a
+review bot off. Suppress one in `.prbot.toml`:
+
+```toml
+[[prbot.suppress]]
+check_id = "Q-MAINT"          # a whole family, or "Q-MAINT-03" for one check
+path = "src/legacy/**"        # optional, gitignore syntax
+max_severity = "medium"       # optional: never silence a critical
+reason = "Rewrite tracked in PROJ-123"
+```
+
+`reason` is required, because an undocumented suppression is indistinguishable
+from a bug six months later. Every comment states how many findings the
+configuration removed, and the audit record carries the count, so the list
+cannot quietly grow into a gag.
+
+`max_severity` is worth setting. Without it, a rule written to silence long
+functions also silences a critical finding that happens to share the check
+family.
+
 ### Smart Pre-flight Skipping
 
 Reviews are skipped automatically when they'd be wasted:
