@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
 import structlog
 
@@ -94,3 +95,104 @@ class TestReviewContext:
         captured = capsys.readouterr()
         data = json.loads(captured.out.strip())
         assert "repo" not in data
+
+
+class TestStdlibLoggingIsRedacted:
+    """A3: stdlib records must take the same path as structlog records.
+
+    Sixteen modules use logging.getLogger and two use structlog.get_logger.
+    configure_logging previously wired the redaction processor into structlog
+    only and then called logging.basicConfig, so the pipeline's own log lines
+    went to stderr as unredacted plain text.
+    """
+
+    @staticmethod
+    def _emit(capsys, message: str, level: str = "INFO") -> tuple[str, str]:
+        import logging as stdlib_logging
+
+        configure_logging(level)
+        stdlib_logging.getLogger("prbot.test").info(message)
+        for handler in stdlib_logging.getLogger().handlers:
+            handler.flush()
+        captured = capsys.readouterr()
+        return captured.out, captured.err
+
+    def test_stdlib_records_go_to_stdout(self, capsys) -> None:
+        out, err = self._emit(capsys, "hello from the pipeline")
+        assert "hello from the pipeline" in out
+        assert "hello from the pipeline" not in err
+
+    def test_stdlib_records_are_json(self, capsys) -> None:
+        out, _ = self._emit(capsys, "structured please")
+        payload = json.loads(out.strip().splitlines()[-1])
+        assert payload["event"] == "structured please"
+        assert payload["level"] == "info"
+        assert "timestamp" in payload
+
+    def test_stdlib_records_are_redacted(self, capsys) -> None:
+        secret = "ghs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        out, err = self._emit(capsys, f"auth token={secret}")
+        assert secret not in out
+        assert secret not in err
+        assert "REDACTED" in out
+
+    def test_review_context_reaches_stdlib_records(self, capsys) -> None:
+        import logging as stdlib_logging
+
+        configure_logging("INFO")
+        bind_review_context("o/r", 7, "a" * 40, review_id="rid-1")
+        try:
+            stdlib_logging.getLogger("prbot.test").info("with context")
+            for handler in stdlib_logging.getLogger().handlers:
+                handler.flush()
+            payload = json.loads(
+                capsys.readouterr().out.strip().splitlines()[-1],
+            )
+        finally:
+            clear_review_context()
+        assert payload["repo"] == "o/r"
+        assert payload["pr_number"] == 7
+        assert payload["review_id"] == "rid-1"
+
+    def test_configure_logging_is_idempotent(self, capsys) -> None:
+        """Calling it twice must not duplicate every line."""
+        import logging as stdlib_logging
+
+        configure_logging("INFO")
+        configure_logging("INFO")
+        stdlib_logging.getLogger("prbot.test").info("once only")
+        for handler in stdlib_logging.getLogger().handlers:
+            handler.flush()
+        out = capsys.readouterr().out
+        assert out.count("once only") == 1
+
+    def test_boto_wire_logging_stays_capped(self, capsys) -> None:
+        """botocore DEBUG prints request signing material."""
+        import logging as stdlib_logging
+
+        configure_logging("DEBUG")
+        assert stdlib_logging.getLogger("botocore").level >= stdlib_logging.INFO
+        assert stdlib_logging.getLogger("urllib3").level >= stdlib_logging.INFO
+
+
+class TestRedactorCoversEveryKnownTokenShape:
+    """A3: the structlog list omitted shapes auth/token.py already knew."""
+
+    SAMPLES: ClassVar[list[str]] = [
+        "ghp_" + "a" * 36,
+        "ghs_" + "b" * 36,
+        "gho_" + "c" * 36,
+        "github_pat_" + "d" * 30,
+        "glpat-" + "e" * 20,
+        "AKIAIOSFODNN7EXAMPLE",
+        "ASIAIOSFODNN7EXAMPLE",
+    ]
+
+    def test_every_shape_is_redacted(self) -> None:
+        for sample in self.SAMPLES:
+            result = _redact_processor(
+                None, "", {"event": f"saw {sample} in a header"},
+            )
+            assert sample not in result["event"], (
+                f"{sample[:12]}... survived redaction"
+            )

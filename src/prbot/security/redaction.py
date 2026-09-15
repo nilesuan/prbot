@@ -10,8 +10,10 @@ import re
 
 # Secret patterns — compiled regexes for credential detection
 SECRET_PATTERNS: list[re.Pattern[str]] = [
-    # AWS Access Key ID (always starts with AKIA)
-    re.compile(r"AKIA[0-9A-Z]{16}"),
+    # AWS Access Key ID: AKIA is a long-lived user key, ASIA a temporary
+    # STS key. ASIA is what OIDC federation hands the job, so it is the one
+    # most likely to appear in this process.
+    re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     # AWS Secret Key — narrowed per GAP-8: requires aws_secret label context
     re.compile(
         r"(?i)(?:aws_secret_access_key|secret_access_key|aws_secret)"

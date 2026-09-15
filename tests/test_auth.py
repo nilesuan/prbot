@@ -18,7 +18,6 @@ from prbot.auth.credentials import validate_aws_session_credentials
 from prbot.auth.token import (
     TokenResult,
     redact_tokens_from_string,
-    redact_tokens_processor,
     resolve_token,
 )
 from prbot.config import PrBotConfig
@@ -305,30 +304,34 @@ class TestRedactTokensFromString:
         assert "<REDACTED>" in result
 
 
-class TestRedactTokensProcessor:
-    """Test structlog processor."""
+class TestLogRedactionProcessor:
+    """A3: the processor that is actually installed by configure_logging."""
 
     def test_redacts_event_string(self) -> None:
+        from prbot.observability.logging import _redact_processor
+
         token = "ghp_" + "a" * 36
-        event_dict: dict[str, object] = {
-            "event": f"Using token {token}",
-        }
-        result = redact_tokens_processor(None, "info", event_dict)
+        event_dict: dict[str, object] = {"event": f"Using token {token}"}
+        result = _redact_processor(None, "info", event_dict)
         assert token not in str(result["event"])
         assert "<REDACTED>" in str(result["event"])
 
     def test_redacts_arbitrary_string_values(self) -> None:
+        from prbot.observability.logging import _redact_processor
+
         token = "glpat-" + "b" * 20
         event_dict: dict[str, object] = {
             "event": "auth",
             "header": f"PRIVATE-TOKEN: {token}",
         }
-        result = redact_tokens_processor(None, "info", event_dict)
+        result = _redact_processor(None, "info", event_dict)
         assert token not in str(result["header"])
 
     def test_ignores_non_string_values(self) -> None:
+        from prbot.observability.logging import _redact_processor
+
         event_dict: dict[str, object] = {"event": "test", "count": 42}
-        result = redact_tokens_processor(None, "info", event_dict)
+        result = _redact_processor(None, "info", event_dict)
         assert result["count"] == 42
 
 
