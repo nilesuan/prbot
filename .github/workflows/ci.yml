@@ -1,0 +1,47 @@
+# Lint and test gate (D1)
+#
+# Nothing previously ran pytest or ruff in CI, so a green local suite was
+# not a gate on anything. This runs both on every push to main and every
+# pull request.
+#
+# Action pins: actions/checkout is SHA-pinned (NG-15). uv is installed by
+# its official standalone installer at a pinned version rather than via a
+# third-party action, so no additional action SHA has to be trusted.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.10.9"
+
+jobs:
+  lint-and-test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install uv
+        run: |
+          curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check src/ tests/
+
+      - name: Test
+        run: uv run pytest tests/ -q --cov=prbot --cov-report=term-missing

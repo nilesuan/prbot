@@ -49,7 +49,12 @@ def _get_profile_region_group(model_id: str) -> str | None:
 
 def _region_in_group(region: str, group: str) -> bool:
     """Check if a region belongs to a geographic group."""
-    groups = {"us": _US_REGIONS, "eu": _EU_REGIONS, "ap": _AP_REGIONS, "au": _AU_REGIONS}
+    groups = {
+        "us": _US_REGIONS,
+        "eu": _EU_REGIONS,
+        "ap": _AP_REGIONS,
+        "au": _AU_REGIONS,
+    }
     return region in groups.get(group, set())
 
 
