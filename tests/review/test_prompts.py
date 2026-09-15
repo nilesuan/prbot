@@ -41,8 +41,17 @@ class TestLoadCheckSpec:
             load_check_spec("foo/bar")
 
     def test_rejects_nonexistent_agent(self) -> None:
-        with pytest.raises(ConfigError, match="Invalid agent name"):
+        """An unknown name is now a missing spec, not a rejected name (C5).
+
+        Names are validated by shape so a repository can add its own agent;
+        whether a spec exists is a separate question with its own message.
+        """
+        with pytest.raises(ConfigError, match="No check spec"):
             load_check_spec("nonexistent_agent_xyz")
+
+    def test_rejects_an_unsafe_agent_name(self) -> None:
+        with pytest.raises(ConfigError, match="Invalid agent name"):
+            load_check_spec("../etc/passwd")
 
 
 class TestBuildSystemPrompt:

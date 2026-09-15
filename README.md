@@ -15,6 +15,42 @@ Both default to Claude Sonnet. Either can be pointed at a different model with `
 
 Two models catch what one misses. If one agent fails, the other still produces findings -- partial failure never blocks the review.
 
+### Adversarial Agent (optional)
+
+A third agent that asks a different question. The two default agents work from
+category checklists, so they find what resembles a listed pattern and miss what
+fits no category. The adversarial agent is asked to construct a concrete
+failure instead, and every one of its findings must carry a `failure_scenario`:
+the trigger, then the wrong outcome. A finding without one is dropped, so a
+model that hedges produces nothing rather than noise.
+
+Its categories are about behaviour rather than shape: silent no-ops (a guard
+that does not guard, a glob that matches nothing, a config value overwritten
+before it is read), boundaries and degenerate input, failure and partial
+failure, ordering and concurrency, and contract drift.
+
+It is off by default, because a third agent is roughly 50% more spend per
+review. Enable it by declaring the roster:
+
+```toml
+[[prbot.agents]]
+name = "general"
+check_prefix = "Q-"
+
+[[prbot.agents]]
+name = "security"
+check_prefix = "S-"
+
+[[prbot.agents]]
+name = "adversarial"
+check_prefix = "X-"
+```
+
+The roster is also how you add your own agent: drop `myagent.md` into a
+directory, point `PRBOT_PROMPTS_DIR` at it, and give the agent a name and a
+check prefix. Each entry may set its own `model_id`, and `enabled = false`
+turns one off without deleting it.
+
 ### Confidence-Based Scoring
 
 Not all findings are equal. prbot uses confidence bands to reduce noise:

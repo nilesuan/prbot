@@ -74,6 +74,53 @@ _SECRET_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9/_+=.@-]+$")
 _LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
 
+_AGENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_CHECK_PREFIX_PATTERN = re.compile(r"^[A-Z][A-Z0-9]*-$")
+
+
+class AgentSpec(BaseModel, frozen=True):
+    """One review agent (C5).
+
+    The name selects the check spec, `{name}.md`, so it is validated as a
+    single safe path segment rather than against an allowlist: an allowlist
+    is what made adding an agent a code change in three modules.
+    """
+
+    name: str
+    check_prefix: str
+    model_id: str | None = None
+    enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        if not _AGENT_NAME_PATTERN.match(v):
+            raise ValueError(
+                f"agent name must be lowercase letters, digits, hyphens or "
+                f"underscores, starting with a letter, at most 32 "
+                f"characters: {v!r}"
+            )
+        return v
+
+    @field_validator("check_prefix")
+    @classmethod
+    def validate_check_prefix(cls, v: str) -> str:
+        if not _CHECK_PREFIX_PATTERN.match(v):
+            raise ValueError(
+                f"check_prefix must be uppercase alphanumerics followed by a "
+                f"hyphen, such as 'Q-' or 'IAC-': {v!r}"
+            )
+        return v
+
+
+# The roster prbot ships with. A repository overrides it wholesale by
+# setting `agents`, which is also how a third agent is added.
+DEFAULT_AGENTS: list[dict[str, str]] = [
+    {"name": "general", "check_prefix": "Q-"},
+    {"name": "security", "check_prefix": "S-"},
+]
+
+
 class PrBotConfig(BaseModel, frozen=True):
     """Immutable configuration for prbot."""
 
@@ -109,6 +156,10 @@ class PrBotConfig(BaseModel, frozen=True):
     # scripts/measure_datamarking.py.
     datamark_diff: bool = True
     excluded_patterns: list[str] = Field(default_factory=list)
+    # C5: the review roster. None means the shipped default of a general
+    # and a security agent, whose models come from general_model_id and
+    # security_model_id so existing configuration keeps working.
+    agents: list[AgentSpec] | None = Field(default=None, min_length=1)
     log_level: str = "INFO"
     dry_run: bool = False
 
@@ -161,6 +212,51 @@ class PrBotConfig(BaseModel, frozen=True):
                 f"log_level must be one of {sorted(_LOG_LEVELS)}: {v!r}"
             )
         return upper
+
+    @field_validator("agents")
+    @classmethod
+    def validate_unique_agent_names(
+        cls, v: list[AgentSpec] | None,
+    ) -> list[AgentSpec] | None:
+        if v is not None:
+            names = [a.name for a in v]
+            duplicates = {n for n in names if names.count(n) > 1}
+            if duplicates:
+                raise ValueError(
+                    f"duplicate agent names: {sorted(duplicates)}"
+                )
+        return v
+
+    def agent_roster(self) -> list[AgentSpec]:
+        """The agents this review will run, with models resolved.
+
+        Raises:
+            ConfigError: if every configured agent is disabled.
+        """
+        default_model = {
+            "general": self.general_model_id,
+            "security": self.security_model_id,
+        }
+        specs = self.agents
+        if specs is None:
+            specs = [AgentSpec(**spec) for spec in DEFAULT_AGENTS]
+
+        resolved = [
+            spec.model_copy(
+                update={
+                    "model_id": spec.model_id
+                    or default_model.get(spec.name, self.general_model_id),
+                },
+            )
+            for spec in specs
+            if spec.enabled
+        ]
+        if not resolved:
+            raise ConfigError(
+                "at least one agent must be enabled; the whole roster is "
+                "disabled"
+            )
+        return resolved
 
     @model_validator(mode="after")
     def validate_threshold_ordering(self) -> PrBotConfig:

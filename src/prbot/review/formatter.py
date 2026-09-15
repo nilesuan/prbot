@@ -220,6 +220,12 @@ def _format_findings_table(reported: list[ScoredFinding]) -> str:
             _sanitise(f.description, _MAX_DESCRIPTION),
             "",
         ])
+        if f.failure_scenario:
+            lines.extend([
+                "**How it breaks:** "
+                + _sanitise(f.failure_scenario, _MAX_DESCRIPTION),
+                "",
+            ])
         if f.suggestion:
             lines.extend([
                 f"**Suggestion:** {_sanitise(f.suggestion, _MAX_SUGGESTION)}",

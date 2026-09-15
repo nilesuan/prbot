@@ -103,8 +103,16 @@ class TestRunReview:
     @pytest.mark.asyncio
     async def test_both_agents_succeed(self, mock_bedrock: MagicMock) -> None:
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
-            {"name": "security", "model_id": "us.anthropic.claude-opus-4-0-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
+            {
+                "name": "security",
+                "model_id": "us.anthropic.claude-opus-4-0-20250514",
+                "check_prefix": "S-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -132,10 +140,12 @@ class TestRunReview:
                 {
                     "name": "general",
                     "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                    "check_prefix": "Q-",
                 },
                 {
                     "name": "security",
                     "model_id": "us.anthropic.claude-opus-4-0-20250514",
+                    "check_prefix": "S-",
                 },
             ]
             budget = TimeoutBudget(300.0)
@@ -153,8 +163,16 @@ class TestRunReview:
     ) -> None:
         """Both agents produce AgentResult outcomes."""
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
-            {"name": "security", "model_id": "us.anthropic.claude-opus-4-0-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
+            {
+                "name": "security",
+                "model_id": "us.anthropic.claude-opus-4-0-20250514",
+                "check_prefix": "S-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -175,6 +193,7 @@ class TestRunReview:
                 {
                     "name": "general",
                     "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                    "check_prefix": "Q-",
                 },
             ]
             budget = TimeoutBudget(300.0)
@@ -194,7 +213,11 @@ class TestRunSingleAgent:
         self, mock_bedrock: MagicMock,
     ) -> None:
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -226,6 +249,7 @@ class TestRunSingleAgent:
                 {
                     "name": "general",
                     "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                    "check_prefix": "Q-",
                 },
             ]
             budget = TimeoutBudget(300.0)
@@ -253,6 +277,7 @@ class TestRunSingleAgent:
                 {
                     "name": "general",
                     "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                    "check_prefix": "Q-",
                 },
             ]
             budget = TimeoutBudget(300.0)
@@ -280,6 +305,7 @@ class TestRunSingleAgent:
                 {
                     "name": "general",
                     "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                    "check_prefix": "Q-",
                 },
             ]
             # Very short budget to trigger timeout
@@ -295,7 +321,11 @@ class TestRunSingleAgent:
         self, mock_bedrock: MagicMock,
     ) -> None:
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -311,7 +341,11 @@ class TestRunSingleAgent:
         response = _make_bedrock_response([_make_finding_dict()])
         mock_bedrock.return_value = response
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -325,7 +359,11 @@ class TestRunSingleAgent:
     @pytest.mark.asyncio
     async def test_model_id_recorded(self, mock_bedrock: MagicMock) -> None:
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -367,7 +405,7 @@ class TestParseFindings:
     def test_accepts_security_prefix_for_security_agent(self) -> None:
         finding = _make_finding_dict(check_id="S-INPUT-01")
         response = _make_bedrock_response([finding])
-        findings = _parse_findings(response, "security")
+        findings = _parse_findings(response, "security", "S-")
         assert len(findings) == 1
         assert findings[0].category == "security"
 

@@ -13,6 +13,13 @@ now in CI.
 
 ### Added
 
+- Configurable agent roster. Adding a reviewer is configuration rather
+  than a change to three modules, and each agent may set its own model.
+- Optional adversarial agent (`X-*` checks), which asks for a concrete
+  failure scenario rather than a category match, and drops any finding
+  that does not carry one. Off by default: a third agent is roughly 50%
+  more spend per review.
+
 - CI workflow running `ruff check` and `pytest` on every push and pull
   request. Nothing previously ran either.
 - Structured output enforcement: `FINDING_JSON_SCHEMA` is sent as a forced

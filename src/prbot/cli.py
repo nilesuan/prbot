@@ -163,8 +163,19 @@ async def run_pipeline(config: PrBotConfig) -> int:
         review_id=review_id,
     )
 
+    # C5: the roster is configuration, not three hardcoded modules
+    roster = config.agent_roster()
+    agents = [
+        {
+            "name": spec.name,
+            "model_id": spec.model_id or config.general_model_id,
+            "check_prefix": spec.check_prefix,
+        }
+        for spec in roster
+    ]
+
     # Validate data residency before any API calls
-    model_ids = [config.general_model_id, config.security_model_id]
+    model_ids = [a["model_id"] for a in agents]
     validate_data_residency(
         config.aws_region, config.allowed_regions, model_ids,
     )
@@ -271,16 +282,6 @@ async def run_pipeline(config: PrBotConfig) -> int:
             datamark_diff=config.datamark_diff,
         )
         validate_diff_size(diff_text, config.max_diff_tokens)
-        agents = [
-            {
-                "name": "general",
-                "model_id": config.general_model_id,
-            },
-            {
-                "name": "security",
-                "model_id": config.security_model_id,
-            },
-        ]
         estimate_cost(
             diff_text,
             [a["model_id"] for a in agents],

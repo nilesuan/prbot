@@ -86,6 +86,7 @@ async def run_review(
         _run_single_agent(
             agent_name=agent["name"],
             model_id=agent["model_id"],
+            check_prefix=agent["check_prefix"],
             user_prompt=user_prompt,
             budget=budget,
             aws_region=aws_region,
@@ -114,6 +115,7 @@ async def run_review(
 async def _run_single_agent(
     agent_name: str,
     model_id: str,
+    check_prefix: str,
     user_prompt: str,
     budget: TimeoutBudget,
     aws_region: str,
@@ -143,7 +145,7 @@ async def _run_single_agent(
             )
 
             token_usage = _extract_token_usage(response, model_id)
-            findings = _parse_findings(response, agent_name)
+            findings = _parse_findings(response, agent_name, check_prefix)
             latency_ms = int((time.monotonic() - start_time) * 1000)
 
             return AgentResult(
@@ -326,6 +328,7 @@ def _extract_token_usage(
 def _parse_findings(
     response: dict[str, Any],
     agent_name: str,
+    check_prefix: str = "Q-",
 ) -> list[Finding]:
     """Parse findings from Bedrock response with validation (G-08, G-18).
 
@@ -375,8 +378,7 @@ def _parse_findings(
     if not isinstance(raw_findings, list):
         return []
 
-    category = "security" if agent_name == "security" else "general"
-    valid_prefixes = {"S-"} if category == "security" else {"Q-"}
+    category = agent_name
 
     findings: list[Finding] = []
     for i, f in enumerate(raw_findings):
@@ -410,7 +412,7 @@ def _parse_findings(
 
         # G-08: Validate check_id prefix
         check_id = f.get("check_id", "")
-        if not any(check_id.startswith(p) for p in valid_prefixes):
+        if not check_id.startswith(check_prefix):
             logger.warning(
                 "Dropping finding with unknown check_id: %s",
                 check_id,
@@ -428,6 +430,19 @@ def _parse_findings(
             confidence = 0
         confidence = max(0, min(100, confidence))
 
+        # A finding whose whole purpose is a reproducible trigger is not
+        # a finding without one. The adversarial spec says so; this enforces
+        # it, so a model that hedges produces nothing rather than noise.
+        failure_scenario = f.get("failure_scenario", "")
+        if not isinstance(failure_scenario, str):
+            failure_scenario = ""
+        if check_prefix == "X-" and not failure_scenario.strip():
+            logger.warning(
+                "Dropping %s finding with no failure_scenario: %s",
+                check_prefix, check_id,
+            )
+            continue
+
         findings.append(Finding(
             id=f"{agent_name}-{i + 1}",
             category=category,
@@ -440,6 +455,7 @@ def _parse_findings(
             severity=severity,
             confidence=confidence,
             suggestion=f.get("suggestion", ""),
+            failure_scenario=failure_scenario,
         ))
 
     return findings

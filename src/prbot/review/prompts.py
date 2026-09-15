@@ -22,8 +22,10 @@ logger = logging.getLogger(__name__)
 _CHARS_PER_TOKEN = 4
 _SAFETY_MULTIPLIER = 1.5
 
-# Valid agent names — used for path traversal prevention and validation
-_VALID_AGENTS = frozenset({"general", "security"})
+# An agent name selects its check spec, {name}.md, so it must be a single
+# safe path segment. This is a shape check rather than an allowlist (C5):
+# an allowlist made adding an agent a code change in three modules.
+_AGENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
 def load_check_spec(agent: str) -> str:
@@ -40,9 +42,10 @@ def load_check_spec(agent: str) -> str:
     Raises:
         ConfigError: If agent name is invalid or file not found.
     """
-    if agent not in _VALID_AGENTS:
+    if not _AGENT_NAME_PATTERN.match(agent):
         raise ConfigError(
-            f"Invalid agent name: {agent!r} (expected one of {sorted(_VALID_AGENTS)})"
+            f"Invalid agent name: {agent!r} (lowercase letters, digits, "
+            "hyphens and underscores only, starting with a letter)"
         )
 
     # Allow override via env var for custom prompt directories
@@ -63,7 +66,14 @@ def load_check_spec(agent: str) -> str:
     # Default: load from package data
     files = importlib.resources.files("prbot.prompts")
     resource = files.joinpath(f"{agent}.md")
-    return resource.read_text(encoding="utf-8")
+    try:
+        return resource.read_text(encoding="utf-8")
+    except FileNotFoundError as e:
+        raise ConfigError(
+            f"No check spec for agent {agent!r}. Add {agent}.md to the "
+            "prompts directory, or set PRBOT_PROMPTS_DIR to a directory "
+            "containing it."
+        ) from e
 
 
 def sanitize_path_for_prompt(path: str) -> str:
