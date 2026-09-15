@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from prbot.security.diff_filter import (
     _matches_exclusion,
     filter_diff,
@@ -151,3 +153,86 @@ class TestFilterDiff:
         result = filter_diff(diff)
         assert result.head_sha == sha
         assert result.truncated is True
+
+
+class TestGlobSemantics:
+    """A2: patterns must match at the depths users expect (gitignore rules).
+
+    PurePosixPath.match matches from the right and does not treat ** as
+    recursive, so `**/node_modules/*` matched nothing real and `vendor/**`
+    matched nothing at all.
+    """
+
+    def test_builtin_excludes_root_level_node_modules(self) -> None:
+        assert is_generated_file("node_modules/pkg/index.js")
+
+    def test_builtin_excludes_nested_node_modules(self) -> None:
+        assert is_generated_file("web/node_modules/pkg/index.js")
+
+    def test_builtin_excludes_deeply_nested_files(self) -> None:
+        assert is_generated_file("web/node_modules/a/b/c/deep.js")
+
+    def test_builtin_excludes_root_level_dist(self) -> None:
+        assert is_generated_file("dist/app.js")
+
+    def test_builtin_excludes_nested_dist(self) -> None:
+        assert is_generated_file("frontend/src/dist/app.js")
+
+    def test_builtin_excludes_lockfile_at_any_depth(self) -> None:
+        assert is_generated_file("uv.lock")
+        assert is_generated_file("services/api/uv.lock")
+
+    def test_builtin_does_not_overmatch_similar_names(self) -> None:
+        assert not is_generated_file("src/distribution.py")
+        assert not is_generated_file("src/my_node_modules_helper.py")
+        assert not is_generated_file("src/app.py")
+
+    def test_user_anchored_pattern_matches_subtree(self) -> None:
+        assert _matches_exclusion("vendor/lib/x.go", ["vendor/**"])
+        assert _matches_exclusion("vendor/a/b/c/x.go", ["vendor/**"])
+
+    def test_user_recursive_pattern_matches_at_any_depth(self) -> None:
+        assert _matches_exclusion("a/vendor/lib/x.go", ["**/vendor/**"])
+        assert _matches_exclusion("vendor/lib/x.go", ["**/vendor/**"])
+
+    def test_user_suffix_pattern_matches_at_any_depth(self) -> None:
+        assert _matches_exclusion("poetry.lock", ["*.lock"])
+        assert _matches_exclusion("sub/dir/poetry.lock", ["*.lock"])
+
+    def test_user_pattern_does_not_match_unrelated_file(self) -> None:
+        assert not _matches_exclusion("src/app.py", ["vendor/**", "*.lock"])
+
+    def test_invalid_pattern_is_reported_not_swallowed(self) -> None:
+        """A pattern that cannot compile must not silently match nothing.
+
+        A bare "!" is a negation with nothing to negate, which git itself
+        rejects. ("[" is not invalid here: gitignore treats an unclosed
+        bracket as a literal.)
+        """
+        from prbot.exceptions import ConfigError
+
+        with pytest.raises(ConfigError, match="Invalid exclusion pattern"):
+            _matches_exclusion("src/app.py", ["!"])
+
+
+class TestShippedConfigPatterns:
+    """The patterns in .prbot.toml must actually exclude what they name."""
+
+    @staticmethod
+    def _shipped() -> list[str]:
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent.parent
+        with (root / ".prbot.toml").open("rb") as handle:
+            return tomllib.load(handle)["prbot"]["excluded_patterns"]
+
+    def test_vendor_pattern_excludes_vendored_code(self) -> None:
+        assert _matches_exclusion("vendor/github.com/x/y.go", self._shipped())
+
+    def test_node_modules_pattern_excludes_dependencies(self) -> None:
+        assert _matches_exclusion("node_modules/left-pad/index.js", self._shipped())
+        assert _matches_exclusion("web/node_modules/left-pad/index.js", self._shipped())
+
+    def test_shipped_patterns_leave_source_alone(self) -> None:
+        assert not _matches_exclusion("src/prbot/cli.py", self._shipped())

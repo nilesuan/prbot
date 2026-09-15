@@ -10,11 +10,13 @@ timeout_seconds = 300
 draft_behavior = "skip"
 
 # Glob patterns for files to exclude from review
+# Gitignore syntax. A pattern with no separator matches at any depth; a
+# leading "**/" matches the root as well as any subdirectory.
 excluded_patterns = [
     "*.lock",
     "*.min.js",
     "*.min.css",
-    "vendor/**",
-    "node_modules/**",
+    "**/vendor/**",
+    "**/node_modules/**",
     "*.generated.*",
 ]

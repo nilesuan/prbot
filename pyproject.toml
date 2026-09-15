@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.10,<3",
     "tenacity>=9.0,<10",
     "structlog>=25.1,<26",
+    "pathspec>=0.12,<1",
 ]
 
 [project.scripts]
