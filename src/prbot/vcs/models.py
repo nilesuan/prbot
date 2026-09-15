@@ -99,6 +99,9 @@ class ReviewThread:
     resolved: bool = False
     path: str | None = None
     line: int | None = None
+    # Who wrote the first comment. The finding marker alone is not identity:
+    # anyone who can comment can paste it (SEC-AUTH-02).
+    author: str = ""
 
 
 @dataclass(frozen=True)

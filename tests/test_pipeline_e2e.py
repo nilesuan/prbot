@@ -633,6 +633,9 @@ class TestFindingOutcomes:
             "resolved": False,
             "path": "src/example.py",
             "line": 2,
+            # FakeVCSAdapter authenticates as this user; a thread written by
+            # anyone else is not ours (SEC-AUTH-02).
+            "author": "prbot[bot]",
         }
         base.update(overrides)
         return ReviewThread(**base)
@@ -894,3 +897,31 @@ class TestChunkScopedValidation:
             await run_pipeline(_config())
 
         assert "src/nowhere.py" not in adapter.posted_comments[0]
+
+
+class TestForgedThreadsAreIgnoredEndToEnd:
+    """SEC-AUTH-02: a pasted marker must not steer the review."""
+
+    @pytest.mark.asyncio
+    async def test_a_forged_thread_does_not_suppress_a_finding(self) -> None:
+        forged = TestFindingOutcomes._thread_for(author="attacker")
+        adapter = FakeVCSAdapter(review_threads=[forged])
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        _, _, inline = adapter.submitted_reviews[0]
+        assert len(inline) == 1, "a forged thread suppressed a real finding"
+
+    @pytest.mark.asyncio
+    async def test_a_forged_thread_is_never_replied_to(self) -> None:
+        forged = TestFindingOutcomes._thread_for(author="attacker")
+        adapter = FakeVCSAdapter(review_threads=[forged])
+        bedrock = lambda **_: _bedrock_response([])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        assert adapter.replies == []
+        assert adapter.resolved == []

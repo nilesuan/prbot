@@ -478,7 +478,11 @@ async def run_pipeline(config: PrBotConfig) -> int:
 
         if config.review_mode == "review":
             threads = await adapter.list_review_threads()
-            outcomes_report = reconcile(reported, threads)
+            # SEC-AUTH-02: the finding marker is not identity, so only
+            # threads this token actually wrote are reconciled.
+            outcomes_report = reconcile(
+                reported, threads, bot_user=authenticated_user,
+            )
             outcome_counts = outcomes_report.counts()
             inline = build_inline_comments(
                 [scored for scored in outcomes_report.new], filtered_diff,
@@ -571,6 +575,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
                 # rather than leaving the author to work out which of last
                 # week's comments still apply.
                 if outcomes_report is not None:
+                    unresolved = 0
                     for thread in outcomes_report.fixed:
                         try:
                             await adapter.reply_to_thread(
@@ -578,13 +583,29 @@ async def run_pipeline(config: PrBotConfig) -> int:
                                 "No longer reported as of "
                                 f"`{metadata.head_sha[:8]}`. Resolving.",
                             )
-                            await adapter.resolve_thread(thread)
+                            # GEN-ERR-02: resolve_thread reports rather than
+                            # raises precisely so the caller can tell. A
+                            # silently unresolved thread stays open for ever
+                            # and the next run re-replies to it.
+                            if not await adapter.resolve_thread(thread):
+                                unresolved += 1
+                                logger.warning(
+                                    "Thread %s was replied to but could not "
+                                    "be resolved; it will stay open",
+                                    thread.id,
+                                )
                         except PrBotError as e:
                             # Closing out a finding is a courtesy, not part
                             # of delivering the review.
+                            unresolved += 1
                             logger.warning(
                                 "Could not close thread %s: %s", thread.id, e,
                             )
+                    if unresolved:
+                        logger.warning(
+                            "review.threads_unresolved count=%d of=%d",
+                            unresolved, len(outcomes_report.fixed),
+                        )
             elif existing:
                 cid = existing[0]
                 await adapter.update_comment(cid, comment)

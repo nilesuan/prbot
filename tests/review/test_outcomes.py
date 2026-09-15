@@ -181,3 +181,62 @@ class TestReconcile:
             "findings_fixed": 0,
             "findings_human_resolved": 0,
         }
+
+
+class TestOnlyOurOwnThreadsAreReconciled:
+    """SEC-AUTH-02: the marker was the only identity check.
+
+    Anyone who can comment on a pull request can paste prbot's finding
+    marker into a review comment. Without an authorship check that comment
+    became a thread prbot believed it had written: a marker matching a
+    current finding suppressed that finding as already-reported, and one
+    matching nothing got a 'no longer reported' reply and was resolved.
+    """
+
+    @staticmethod
+    def _thread(fingerprint: str, author: str, **kw: Any) -> ReviewThread:
+        base: dict[str, Any] = {
+            "id": "t1", "comment_id": 1,
+            "body": f"text\n{marker_for(fingerprint)}",
+            "resolved": False, "path": "src/app.py", "line": 11,
+            "author": author,
+        }
+        base.update(kw)
+        return ReviewThread(**base)
+
+    def test_a_forged_thread_does_not_suppress_a_finding(self) -> None:
+        finding = _finding()
+        forged = self._thread(finding_fingerprint(finding), "attacker")
+        report = reconcile([_scored(finding)], [forged], bot_user="prbot[bot]")
+        assert len(report.new) == 1
+        assert report.persisting == []
+
+    def test_a_forged_thread_is_not_replied_to_or_resolved(self) -> None:
+        forged = self._thread(finding_fingerprint(_finding()), "attacker")
+        report = reconcile([], [forged], bot_user="prbot[bot]")
+        assert report.fixed == []
+
+    def test_our_own_thread_still_reconciles(self) -> None:
+        finding = _finding()
+        ours = self._thread(finding_fingerprint(finding), "prbot[bot]")
+        report = reconcile([_scored(finding)], [ours], bot_user="prbot[bot]")
+        assert len(report.persisting) == 1
+
+    def test_authorship_matching_is_case_insensitive(self) -> None:
+        finding = _finding()
+        ours = self._thread(finding_fingerprint(finding), "PRBot[Bot]")
+        report = reconcile([_scored(finding)], [ours], bot_user="prbot[bot]")
+        assert len(report.persisting) == 1
+
+    def test_an_unknown_bot_user_falls_back_to_the_marker(self) -> None:
+        """If identity cannot be established, do not silently drop state."""
+        finding = _finding()
+        ours = self._thread(finding_fingerprint(finding), "prbot[bot]")
+        report = reconcile([_scored(finding)], [ours], bot_user="")
+        assert len(report.persisting) == 1
+
+    def test_a_thread_with_no_author_recorded_is_ignored(self) -> None:
+        finding = _finding()
+        anon = self._thread(finding_fingerprint(finding), "")
+        report = reconcile([_scored(finding)], [anon], bot_user="prbot[bot]")
+        assert len(report.new) == 1

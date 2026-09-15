@@ -51,18 +51,42 @@ class OutcomeReport:
 def reconcile(
     reported: list[ScoredFinding],
     threads: list[ReviewThread],
+    bot_user: str = "",
 ) -> OutcomeReport:
     """Match this run's findings against the threads a previous run left.
 
     Threads without prbot's marker are ignored entirely. Human review threads
     are none of prbot's business, and touching one would be the fastest way
     to make a team turn the bot off.
+
+    SEC-AUTH-02: the marker is not identity. Anyone who can comment on the
+    pull request can paste it, and a forged thread would otherwise be taken
+    as prbot's own: a marker matching a live finding suppressed that finding
+    as already-reported, and one matching nothing drew a 'no longer reported'
+    reply and a resolve. A thread counts as ours only when its first comment
+    was written by the authenticated user.
+
+    When bot_user is empty the identity could not be established, so the
+    marker is used alone rather than discarding all prior state, which would
+    re-post every finding on the pull request.
     """
     ours: dict[str, ReviewThread] = {}
+    ignored = 0
     for thread in threads:
         fingerprint = extract_fingerprint(thread.body)
-        if fingerprint is not None:
-            ours[fingerprint] = thread
+        if fingerprint is None:
+            continue
+        if bot_user and thread.author.lower() != bot_user.lower():
+            ignored += 1
+            continue
+        ours[fingerprint] = thread
+
+    if ignored:
+        logger.warning(
+            "Ignored %d thread(s) carrying prbot's finding marker but "
+            "written by another author",
+            ignored,
+        )
 
     new: list[ScoredFinding] = []
     persisting: list[tuple[ScoredFinding, ReviewThread]] = []

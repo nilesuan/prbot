@@ -303,6 +303,7 @@ class GitLabAdapter:
                 resolved=bool(first.get("resolved")),
                 path=position.get("new_path"),
                 line=position.get("new_line"),
+                author=(first.get("author") or {}).get("username", ""),
             ))
         return threads
 

@@ -59,7 +59,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
           isResolved
           path
           line
-          comments(first: 1) { nodes { databaseId body } }
+          comments(first: 1) { nodes { databaseId body author { login } } }
         }
       }
     }
@@ -339,6 +339,9 @@ class GitHubAdapter:
                     comments = (item.get("comments") or {}).get("nodes") or []
                     if not comments:
                         continue
+                    author = (comments[0].get("author") or {}).get(
+                        "login", "",
+                    )
                     threads.append(ReviewThread(
                         id=item["id"],
                         comment_id=comments[0].get("databaseId", 0),
@@ -346,6 +349,7 @@ class GitHubAdapter:
                         resolved=bool(item.get("isResolved")),
                         path=item.get("path"),
                         line=item.get("line"),
+                        author=author,
                     ))
                 page = node.get("pageInfo") or {}
                 if not page.get("hasNextPage"):
@@ -380,6 +384,7 @@ class GitHubAdapter:
                 resolved=False,
                 path=c.get("path"),
                 line=c.get("line"),
+                author=(c.get("user") or {}).get("login", ""),
             )
             for c in collected
             if c.get("in_reply_to_id") is None
