@@ -729,3 +729,82 @@ class TestFindingOutcomes:
 
         assert "list_review_threads" not in adapter.calls
         assert adapter.replies == []
+
+
+class TestInlineBodiesAreRedacted:
+    """SEC-CRED-02: redact_secrets was applied to the summary only.
+
+    The inline bodies are built from description, failure_scenario and
+    suggestion, which is exactly where a credential the model echoed back
+    from the diff would appear, and nothing between construction and posting
+    scrubbed them.
+    """
+
+    SECRET = "ghp_" + "b" * 36
+
+    @pytest.mark.asyncio
+    async def test_a_secret_in_an_inline_body_is_redacted(self) -> None:
+        adapter = FakeVCSAdapter()
+        leaky = _finding(description=f"Hardcoded {self.SECRET} on this line.")
+        bedrock = lambda **_: _bedrock_response([leaky])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        _, _, inline = adapter.submitted_reviews[0]
+        assert len(inline) == 1
+        assert self.SECRET not in inline[0].body
+        assert "[REDACTED]" in inline[0].body
+
+    @pytest.mark.asyncio
+    async def test_a_secret_in_a_suggestion_is_redacted(self) -> None:
+        adapter = FakeVCSAdapter()
+        leaky = _finding(suggestion=f"Replace it with {self.SECRET} instead.")
+        bedrock = lambda **_: _bedrock_response([leaky])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        _, _, inline = adapter.submitted_reviews[0]
+        assert self.SECRET not in inline[0].body
+
+    @pytest.mark.asyncio
+    async def test_inline_redactions_reach_the_audit_count(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from prbot.observability.logging import configure_logging
+
+        configure_logging("INFO")
+        adapter = FakeVCSAdapter()
+        leaky = _finding(description=f"Hardcoded {self.SECRET} here.")
+        bedrock = lambda **_: _bedrock_response([leaky])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        audit = None
+        for line in capsys.readouterr().out.splitlines():
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            if payload.get("event") == "review.audit":
+                audit = payload
+        assert audit is not None
+        # The summary and the inline body each carried the secret
+        assert audit["secrets_redacted"] >= 2
+
+    @pytest.mark.asyncio
+    async def test_ordinary_inline_text_is_untouched(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        _, _, inline = adapter.submitted_reviews[0]
+        # The inline body carries the check id, description and suggestion;
+        # the title lives in the summary table.
+        assert "The handler catches every exception." in inline[0].body
+        assert "Q-ERR-01" in inline[0].body
+        assert "[REDACTED]" not in inline[0].body

@@ -520,6 +520,22 @@ async def run_pipeline(config: PrBotConfig) -> int:
             fixed_count=outcome_counts.get("findings_fixed", 0),
         )
         comment, secret_count = redact_secrets(comment)
+
+        # SEC-CRED-02: the inline bodies are built from description,
+        # failure_scenario and suggestion, which is exactly where a
+        # credential the model echoed back out of the diff would sit. Every
+        # body that is about to be posted goes through the same scrubber as
+        # the summary, and its hits are counted the same way.
+        if inline:
+            from dataclasses import replace as _replace
+
+            scrubbed = []
+            for item in inline:
+                body, hits = redact_secrets(item.body)
+                secret_count += hits
+                scrubbed.append(_replace(item, body=body))
+            inline = scrubbed
+
         if secret_count > 0:
             logger.warning(
                 "Redacted %d secret(s) from review comment",
