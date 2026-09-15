@@ -18,7 +18,7 @@ from typing import Any
 
 import structlog
 
-from prbot.security.redaction import SECRET_PATTERNS
+from prbot.security.redaction import redact_secrets
 
 _REDACTED = "<REDACTED>"
 
@@ -36,9 +36,7 @@ def redact_secrets_in_text(text: str) -> str:
     known to one and unknown to the other, which is how ghs_, gho_ and
     github_pat_ came to be redacted from review comments but not from logs.
     """
-    for pattern in SECRET_PATTERNS:
-        text = pattern.sub(_REDACTED, text)
-    return text
+    return redact_secrets(text)[0]
 
 
 def _redact_processor(

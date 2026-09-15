@@ -146,7 +146,10 @@ async def run_pipeline(config: PrBotConfig) -> int:
         determine_verdict,
     )
     from prbot.security.diff_filter import filter_diff
-    from prbot.security.redaction import redact_pii, redact_secrets
+    from prbot.security.redaction import (
+        redact_finding_pii,
+        redact_secrets,
+    )
     from prbot.security.validation import (
         validate_findings_against_diff,
     )
@@ -311,18 +314,14 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     model_id=outcome.model_id,
                 )
 
-        # PII redaction
+        # PII redaction across every prose field, not description alone (B6)
         for i, outcome in enumerate(outcomes):
             if isinstance(outcome, AgentResult):
-                from dataclasses import replace
-
                 redacted_findings = []
                 for finding in outcome.findings:
-                    desc, count = redact_pii(finding.description)
+                    cleaned, count = redact_finding_pii(finding)
                     pii_redacted_total += count
-                    redacted_findings.append(
-                        replace(finding, description=desc),
-                    )
+                    redacted_findings.append(cleaned)
                 outcomes[i] = AgentResult(
                     agent=outcome.agent,
                     findings=redacted_findings,

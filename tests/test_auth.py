@@ -268,22 +268,22 @@ class TestRedactTokensFromString:
     def test_ghp_classic_pat(self) -> None:
         token = "ghp_" + "A" * 36
         result = redact_tokens_from_string(f"token: {token}")
-        assert "<REDACTED>" in result
+        assert "[REDACTED]" in result
         assert token not in result
 
     def test_github_fine_grained_pat(self) -> None:
         token = "github_pat_" + "a" * 82
         result = redact_tokens_from_string(f"Bearer {token}")
-        assert "<REDACTED>" in result
+        assert "[REDACTED]" in result
         assert token not in result
 
     def test_ghs_app_token(self) -> None:
         token = "ghs_" + "A" * 36
-        assert "<REDACTED>" in redact_tokens_from_string(token)
+        assert "[REDACTED]" in redact_tokens_from_string(token)
 
     def test_glpat_gitlab(self) -> None:
         token = "glpat-" + "a" * 20
-        assert "<REDACTED>" in redact_tokens_from_string(token)
+        assert "[REDACTED]" in redact_tokens_from_string(token)
 
     def test_no_tokens_unchanged(self) -> None:
         text = "This has no tokens at all"
@@ -294,14 +294,14 @@ class TestRedactTokensFromString:
         glpat = "glpat-" + "b" * 20
         text = f"first={ghp} second={glpat}"
         result = redact_tokens_from_string(text)
-        assert result.count("<REDACTED>") == 2
+        assert result.count("[REDACTED]") == 2
 
     def test_token_in_url(self) -> None:
         token = "ghp_" + "x" * 36
         text = f"https://api.github.com?token={token}"
         result = redact_tokens_from_string(text)
         assert token not in result
-        assert "<REDACTED>" in result
+        assert "[REDACTED]" in result
 
 
 class TestLogRedactionProcessor:
@@ -314,7 +314,7 @@ class TestLogRedactionProcessor:
         event_dict: dict[str, object] = {"event": f"Using token {token}"}
         result = _redact_processor(None, "info", event_dict)
         assert token not in str(result["event"])
-        assert "<REDACTED>" in str(result["event"])
+        assert "[REDACTED]" in str(result["event"])
 
     def test_redacts_arbitrary_string_values(self) -> None:
         from prbot.observability.logging import _redact_processor

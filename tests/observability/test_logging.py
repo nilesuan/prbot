@@ -21,23 +21,23 @@ class TestRedactProcessor:
     def test_redacts_github_pat(self) -> None:
         event = {"token": "ghp_abc123def456ghi789jkl012mno345pqr678"}
         result = _redact_processor(None, "", event)
-        assert "<REDACTED>" in result["token"]
+        assert "[REDACTED]" in result["token"]
         assert "ghp_" not in result["token"]
 
     def test_redacts_gitlab_pat(self) -> None:
         event = {"token": "glpat-abcdef1234567890abcd"}
         result = _redact_processor(None, "", event)
-        assert "<REDACTED>" in result["token"]
+        assert "[REDACTED]" in result["token"]
 
     def test_redacts_aws_key(self) -> None:
         event = {"key": "AKIAIOSFODNN7EXAMPLE"}
         result = _redact_processor(None, "", event)
-        assert "<REDACTED>" in result["key"]
+        assert "[REDACTED]" in result["key"]
 
     def test_redacts_bearer_token(self) -> None:
         event = {"auth": "Bearer eyJhbGciOiJIUzI1NiJ9.abc"}
         result = _redact_processor(None, "", event)
-        assert "<REDACTED>" in result["auth"]
+        assert "[REDACTED]" in result["auth"]
 
     def test_preserves_non_sensitive(self) -> None:
         event = {"msg": "hello world", "count": 42}

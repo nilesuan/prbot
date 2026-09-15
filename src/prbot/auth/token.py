@@ -46,9 +46,9 @@ _PLATFORM_TOKEN_VARS: dict[str, list[str]] = {
 
 
 def redact_tokens_from_string(text: str) -> str:
-    """Replace all recognized token patterns in text with <REDACTED>."""
+    """Replace all recognized token patterns in text with [REDACTED]."""
     for pattern in TOKEN_PATTERNS:
-        text = pattern.sub("<REDACTED>", text)
+        text = pattern.sub("[REDACTED]", text)
     return text
 
 
