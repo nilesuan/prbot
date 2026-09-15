@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- Bumped four transitive dependencies to clear their advisories. idna 3.11 to
+  3.19 is the only one that reaches the shipped image and closes
+  CVE-2026-45409; cryptography, pygments and requests are development-only.
+  Trivy now reports no advisory at any severity against the lockfile.
+
 ## [0.2.0] - 2026-09-15
 
 A correctness and hardening release. Several shipped controls did not do what
