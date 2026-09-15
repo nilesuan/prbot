@@ -13,6 +13,8 @@ now in CI.
 
 ### Added
 
+- A diff larger than `PRBOT_MAX_DIFF_TOKENS` is reviewed in several
+  passes and the findings merged, instead of the run being refused.
 - Metrics emission: a `review.metrics` event always, a JSON lines file
   via `PRBOT_METRICS_FILE`, and CloudWatch via
   `PRBOT_METRICS_NAMESPACE`. No sink can fail a review.
@@ -49,6 +51,12 @@ now in CI.
 - `scripts/measure_datamarking.py` for comparing datamarking strategies.
 
 ### Changed
+
+- `PRBOT_MAX_DIFF_TOKENS` now means tokens per review pass rather than
+  the point at which a review is refused. `DiffTooLargeError` and
+  `validate_diff_size` are removed: no diff is too large to review,
+  only too expensive, which `BudgetExceededError` already covers with
+  the same exit code.
 
 - Exclusion patterns use gitignore semantics via `pathspec`. Patterns such as
   `vendor/**` and `**/node_modules/*` previously matched nothing.

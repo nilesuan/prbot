@@ -8,7 +8,6 @@ import pytest
 
 from prbot.exceptions import (
     BudgetExceededError,
-    DiffTooLargeError,
     TimeoutBudgetExhausted,
 )
 from prbot.review.budget import (
@@ -16,7 +15,6 @@ from prbot.review.budget import (
     TimeoutBudget,
     estimate_cost,
     get_model_pricing,
-    validate_diff_size,
 )
 
 
@@ -72,22 +70,6 @@ class TestCostEstimate:
         )
         assert double.estimated_cost_usd > single.estimated_cost_usd
 
-
-class TestValidateDiffSize:
-    """Tests for validate_diff_size."""
-
-    def test_within_limit(self) -> None:
-        tokens = validate_diff_size("small diff", max_diff_tokens=100000)
-        assert tokens > 0
-
-    def test_exceeds_limit_raises(self) -> None:
-        with pytest.raises(DiffTooLargeError, match="exceeds"):
-            validate_diff_size("x" * 10000, max_diff_tokens=1)
-
-    def test_returns_token_count(self) -> None:
-        # 400 chars / 4 * 1.5 = 150 tokens
-        tokens = validate_diff_size("x" * 400, max_diff_tokens=200)
-        assert tokens == 150
 
 
 class TestTimeoutBudget:

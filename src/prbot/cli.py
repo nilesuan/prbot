@@ -139,11 +139,8 @@ async def run_pipeline(config: PrBotConfig) -> int:
         log_data_flow,
         validate_data_residency,
     )
-    from prbot.review.budget import (
-        TimeoutBudget,
-        estimate_cost,
-        validate_diff_size,
-    )
+    from prbot.review.budget import TimeoutBudget, estimate_cost
+    from prbot.review.chunking import chunk_diff
     from prbot.review.formatter import (
         build_inline_comments,
         format_review_comment,
@@ -326,27 +323,47 @@ async def run_pipeline(config: PrBotConfig) -> int:
             )
             return EXIT_PASS
 
-        # Validate diff size and estimate cost
-        diff_text = build_user_prompt(
-            filtered_diff, metadata,
-            datamark_diff=config.datamark_diff,
-        )
-        validate_diff_size(diff_text, config.max_diff_tokens)
+        # C6: a diff over the limit used to raise DiffTooLargeError and end
+        # the run, so the largest pull requests got no review at all. It is
+        # reviewed in pieces instead, bounded by the same max_diff_tokens
+        # that used to refuse it.
+        chunks = chunk_diff(filtered_diff, config.max_diff_tokens)
+        chunk_texts = [
+            build_user_prompt(
+                chunk, metadata, datamark_diff=config.datamark_diff,
+            )
+            for chunk in chunks
+        ]
+        diff_text = "\n\n".join(chunk_texts)
+
+        # The budget bounds the whole run, not each chunk. Checking chunks
+        # individually would let ten chunks each under the limit cost ten
+        # times it.
         estimate_cost(
             diff_text,
             [a["model_id"] for a in agents],
             config.budget_limit_usd,
-            estimated_output_tokens=config.max_output_tokens,
+            estimated_output_tokens=(
+                config.max_output_tokens * max(len(chunks), 1)
+            ),
         )
+        if len(chunks) > 1:
+            logger.info(
+                "review.chunked chunks=%d files=%d",
+                len(chunks), len(filtered_diff.files),
+            )
 
-        # Run 2-agent review
         budget = TimeoutBudget(config.timeout_seconds)
-        outcomes = await run_review(
-            filtered_diff, metadata, agents,
-            budget, config.aws_region,
-            max_output_tokens=config.max_output_tokens,
-            datamark_diff=config.datamark_diff,
-        )
+        outcomes = []
+        for chunk in chunks:
+            outcomes.extend(
+                await run_review(
+                    chunk, metadata, agents,
+                    budget, config.aws_region,
+                    max_output_tokens=config.max_output_tokens,
+                    datamark_diff=config.datamark_diff,
+                ),
+            )
 
         # Hallucination validation
         for i, outcome in enumerate(outcomes):
@@ -505,7 +522,10 @@ async def run_pipeline(config: PrBotConfig) -> int:
 
         # Emit audit record
         agent_infos = []
-        for a_cfg, outcome in zip(agents, outcomes, strict=True):
+        # With chunking there is one outcome per agent per chunk, so the
+        # agent config repeats across the outcome list in roster order.
+        agent_cycle = [agents[i % len(agents)] for i in range(len(outcomes))]
+        for a_cfg, outcome in zip(agent_cycle, outcomes, strict=True):
             if isinstance(outcome, AgentResult):
                 agent_infos.append(AgentAuditInfo(
                     name=a_cfg["name"],

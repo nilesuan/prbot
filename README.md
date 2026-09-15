@@ -98,6 +98,18 @@ being anchored to a line the platform would reject. An inline position the
 platform refuses, usually a line that has moved, is dropped with a warning:
 losing one anchor is acceptable, losing the review is not.
 
+### Large Diffs
+
+A diff larger than `PRBOT_MAX_DIFF_TOKENS` used to be refused outright, so the
+pull requests most worth reviewing got no review. It is now reviewed in
+several passes, packed by file in their original order, and the findings are
+merged and deduplicated as though they came from one pass.
+
+The cost of the whole run is estimated before any call is made and checked
+against `PRBOT_BUDGET_LIMIT_USD`, so splitting cannot quietly multiply the
+bill. Lowering `PRBOT_MAX_DIFF_TOKENS` is now a way to trade money for
+attention: smaller passes mean the model reads less at once.
+
 ### Suppressing a Finding
 
 A nit that comes back on every push is the most common reason a team turns a
@@ -346,7 +358,7 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_MIN_PASSING_SCORE` | `70` | Minimum **score** (0-100) a review must reach to pass |
 | `PRBOT_GENERAL_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | General review model |
 | `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | Security review model |
-| `PRBOT_MAX_DIFF_TOKENS` | `100000` | Max diff size before rejection |
+| `PRBOT_MAX_DIFF_TOKENS` | `100000` | Tokens per review call; a larger diff is reviewed in several passes |
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Max estimated cost per review |
 | `PRBOT_TIMEOUT_SECONDS` | `300` | Review timeout |

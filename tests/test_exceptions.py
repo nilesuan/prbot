@@ -87,10 +87,7 @@ class TestExceptionHierarchy:
 
         assert BudgetExceededError("test").exit_code == 2
 
-    def test_diff_too_large_overrides_to_2(self) -> None:
-        from prbot.exceptions import DiffTooLargeError
 
-        assert DiffTooLargeError("test").exit_code == 2
 
     def test_timeout_budget_exhausted_exit_code_3(self) -> None:
         from prbot.exceptions import TimeoutBudgetExhausted

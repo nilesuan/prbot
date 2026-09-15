@@ -95,12 +95,6 @@ class BudgetExceededError(ReviewError):
     exit_code = 2
 
 
-class DiffTooLargeError(ReviewError):
-    """Diff exceeds max_diff_tokens limit."""
-
-    exit_code = 2
-
-
 class TimeoutBudgetExhausted(ReviewError):
     """Pipeline timeout budget exhausted during review."""
 

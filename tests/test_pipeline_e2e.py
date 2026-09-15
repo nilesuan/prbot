@@ -453,3 +453,118 @@ class TestMetricsSink:
             await run_pipeline(_config())
 
         assert list(tmp_path.iterdir()) == []
+
+
+class TestChunkedReview:
+    """C6: an oversized diff is reviewed in pieces, not refused."""
+
+    @staticmethod
+    def _big_adapter(file_count: int = 6) -> FakeVCSAdapter:
+        from prbot.vcs.models import FileDiff, PRDiff
+
+        head = "abcdef1234567890abcdef1234567890abcdef12"
+        base = "1234567890abcdef1234567890abcdef12345678"
+        files = [
+            FileDiff(
+                path=f"src/mod{i}.py",
+                status="modified",
+                patch="@@ -1,1 +1,200 @@\n"
+                + "\n".join(f"+line {n} in mod{i}" for n in range(200))
+                + "\n",
+                additions=200,
+            )
+            for i in range(file_count)
+        ]
+        return FakeVCSAdapter(
+            diff=PRDiff(files=files, head_sha=head, base_sha=base),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_large_diff_is_reviewed_rather_than_refused(self) -> None:
+        adapter = self._big_adapter()
+        calls: list[str] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs["user_prompt"])
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(
+                _config(max_diff_tokens=3_000, budget_limit_usd=100.0),
+            )
+
+        assert exit_code == EXIT_PASS
+        # More calls than agents means it was split
+        assert len(calls) > 2
+        assert len(adapter.posted_comments) == 1
+
+    @pytest.mark.asyncio
+    async def test_every_file_reaches_the_model(self) -> None:
+        adapter = self._big_adapter()
+        seen: list[str] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            seen.append(kwargs["user_prompt"])
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(
+                _config(max_diff_tokens=3_000, budget_limit_usd=100.0),
+            )
+
+        combined = "\n".join(seen)
+        for i in range(6):
+            assert f"src/mod{i}.py" in combined
+
+    @pytest.mark.asyncio
+    async def test_a_small_diff_is_still_a_single_pass(self) -> None:
+        adapter = FakeVCSAdapter()
+        calls: list[str] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs["model_id"])
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config())
+
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_the_budget_still_bounds_a_chunked_review(self) -> None:
+        from prbot.exceptions import BudgetExceededError
+
+        adapter = self._big_adapter()
+        bedrock = lambda **_: _bedrock_response([])  # noqa: E731
+
+        with _pipeline(adapter, bedrock), pytest.raises(BudgetExceededError):
+            await run_pipeline(
+                _config(max_diff_tokens=3_000, budget_limit_usd=0.0001),
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_audit_record_counts_every_agent_run(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from prbot.observability.logging import configure_logging
+
+        configure_logging("INFO")
+        adapter = self._big_adapter()
+        bedrock = lambda **_: _bedrock_response([])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(
+                _config(max_diff_tokens=3_000, budget_limit_usd=100.0),
+            )
+
+        audit = None
+        for line in capsys.readouterr().out.splitlines():
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            if payload.get("event") == "review.audit":
+                audit = payload
+        assert audit is not None
+        assert len(audit["agents"]) > 2
+        assert all(a["status"] == "success" for a in audit["agents"])
