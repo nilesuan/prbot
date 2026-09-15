@@ -33,9 +33,13 @@ def _resolve_api_base_url(config: PrBotConfig) -> str:
     Priority: config.api_base_url > CI env var > platform default.
     SSRF validation applied to CI env var URLs.
     """
-    # Highest priority: explicit config
+    # Highest priority: explicit config. Revalidated here rather than
+    # trusted from construction time (SEC-DATA-02): the check and the
+    # connection are separate resolutions, so doing it immediately before
+    # the client is built is the narrowest window this design allows.
     if config.api_base_url:
-        return config.api_base_url  # Already SSRF-validated by config validator
+        _validate_url_not_internal(config.api_base_url)
+        return config.api_base_url
 
     # CI environment variable
     env_var = _CI_API_VARS.get(config.platform)

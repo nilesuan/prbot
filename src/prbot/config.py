@@ -36,6 +36,15 @@ def _validate_url_not_internal(url: str) -> str:
 
     Raises ConfigError if the URL targets an internal address.
     Allows http only if PRBOT_ALLOW_HTTP is set.
+
+    Not absolute (SEC-DATA-02). This resolves the name, and httpx resolves
+    it again when it opens the socket, so a record with a short TTL that
+    answers publicly here and privately there is not caught. Callers narrow
+    that window by validating immediately before building a client, and
+    GitHub pagination is additionally pinned to the validated origin, but
+    closing it entirely would mean pinning the connection to the resolved
+    address. Reaching it requires already controlling the base URL, so it is
+    a defence-in-depth gap rather than an independently reachable hole.
     """
     parsed = urlparse(url)
 

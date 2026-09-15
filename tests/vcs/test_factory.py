@@ -128,3 +128,39 @@ class TestBaseUrlResolution:
         assert _resolve_api_base_url(_config()) == (
             "https://ghe.example.com/api/v3"
         )
+
+
+class TestBaseUrlIsRevalidatedAtAdapterTime:
+    """SEC-DATA-02: the config path skipped revalidation.
+
+    _resolve_api_base_url revalidated the CI-supplied URL but returned
+    config.api_base_url untouched, trusting the pydantic validator that ran
+    at config construction. Resolving again immediately before the client is
+    built narrows the rebinding window to as small as this design allows.
+    """
+
+    def test_a_config_url_is_revalidated(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import socket
+
+        config = _config(api_base_url="https://ghe.example.com/api/v3")
+
+        def rebind(host, *a, **kw):
+            return [(socket.AF_INET, None, None, "", ("169.254.169.254", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", rebind)
+        with pytest.raises(ConfigError, match="SSRF"):
+            _resolve_api_base_url(config)
+
+    def test_a_still_public_config_url_is_accepted(self) -> None:
+        config = _config(api_base_url="https://ghe.example.com/api/v3")
+        assert _resolve_api_base_url(config) == "https://ghe.example.com/api/v3"
+
+    def test_the_residual_window_is_documented(self) -> None:
+        """The control must not read as absolute."""
+        from prbot.config import _validate_url_not_internal
+
+        doc = " ".join((_validate_url_not_internal.__doc__ or "").split())
+        assert "resolves it again" in doc.lower()
+        assert "defence-in-depth" in doc.lower()
