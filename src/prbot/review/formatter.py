@@ -13,6 +13,7 @@ from typing import Literal
 from prbot.review.models import AgentError, AgentOutcome, AgentResult
 from prbot.review.scorer import ReviewScore, ScoredFinding
 from prbot.review.verdict import ReviewVerdict
+from prbot.vcs.models import InlineComment, PRDiff
 
 logger = logging.getLogger(__name__)
 
@@ -362,3 +363,61 @@ def truncate_comment(
             )
 
     return comment[:limit]
+
+
+def build_inline_comments(
+    reported: list[ScoredFinding],
+    diff: PRDiff,
+) -> list[InlineComment]:
+    """Turn findings into comments anchored to the lines they are about (C1).
+
+    Only findings that land on a line the diff actually covers become inline.
+    Anything else stays in the summary, where it can still be read, rather
+    than being anchored to a line the platform would reject or, worse,
+    silently move.
+
+    diff_parser has computed these coordinates since the beginning and
+    nothing used them.
+    """
+    from prbot.security.validation import _build_line_index
+
+    index = _build_line_index(diff)
+    comments: list[InlineComment] = []
+
+    for scored in reported:
+        f = scored.finding
+        covered = index.get(f.file_path)
+        if not covered:
+            continue
+        if f.line_end not in covered:
+            continue
+
+        parts = [
+            f"**`{_cell(f.check_id, 64)}`** "
+            f"({_cell(f.severity, 16)}, {f.confidence}% confidence)",
+            "",
+            _sanitise(f.description, _MAX_DESCRIPTION),
+        ]
+        if f.failure_scenario:
+            parts += [
+                "",
+                "**How it breaks:** "
+                + _sanitise(f.failure_scenario, _MAX_DESCRIPTION),
+            ]
+        if f.suggestion:
+            parts += [
+                "",
+                "**Suggestion:** " + _sanitise(f.suggestion, _MAX_SUGGESTION),
+            ]
+
+        start = f.line_start if f.line_start in covered else None
+        comments.append(
+            InlineComment(
+                path=f.file_path,
+                line=f.line_end,
+                body="\n".join(parts),
+                start_line=start if start != f.line_end else None,
+            ),
+        )
+
+    return comments

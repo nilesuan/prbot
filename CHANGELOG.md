@@ -13,6 +13,9 @@ now in CI.
 
 ### Added
 
+- `PRBOT_REVIEW_MODE=review` submits a platform review: findings land on
+  their lines as inline comments, and the verdict reaches the pull
+  request rather than only the exit code. Default is unchanged.
 - A commit that has already been reviewed is skipped rather than
   reviewed again, carrying the previous verdict through to the exit
   code. `PRBOT_FORCE_REVIEW` or `--force-review` overrides it.

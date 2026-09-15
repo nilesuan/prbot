@@ -87,6 +87,7 @@ class FakeVCSAdapter:
         self.calls: list[str] = []
         self.posted_comments: list[str] = []
         self.updated_comments: list[tuple[int, str]] = []
+        self.submitted_reviews: list[tuple[str, str, list[object]]] = []
         self._next_comment_id = 100
 
     async def get_pr_metadata(self) -> PRMetadata:
@@ -123,6 +124,19 @@ class FakeVCSAdapter:
             self.updated_comments.append((comment_id, body))
             return comment_id
         return await self.post_comment(body)
+
+    async def submit_review(
+        self,
+        body: str,
+        event: str,
+        comments: list[object],
+        *,
+        head_sha: str,
+        base_sha: str,
+    ) -> int:
+        self.calls.append("submit_review")
+        self.submitted_reviews.append((body, event, list(comments)))
+        return 900
 
     async def close(self) -> None:
         self.calls.append("close")

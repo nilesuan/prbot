@@ -83,6 +83,21 @@ prbot doesn't just review code quality -- it checks that PRs are complete:
 - Missing changelog entries for non-trivial changes
 - Outdated examples when public APIs change
 
+### Inline Comments and Real Reviews
+
+By default prbot posts one summary comment. Set `PRBOT_REVIEW_MODE=review` and
+it submits a platform review instead: each finding that lands on a line the
+diff covers becomes a comment on that line, and the verdict reaches the pull
+request rather than only the exit code. On GitHub that is one review with
+`event: APPROVE`, `COMMENT` or `REQUEST_CHANGES`, pinned to the commit
+reviewed. On GitLab it is a summary note, one positioned discussion per
+finding, and approve or unapprove.
+
+A finding whose lines fall outside the diff stays in the summary rather than
+being anchored to a line the platform would reject. An inline position the
+platform refuses, usually a line that has moved, is dropped with a warning:
+losing one anchor is acceptable, losing the review is not.
+
 ### Smart Pre-flight Skipping
 
 Reviews are skipped automatically when they'd be wasted:
@@ -314,6 +329,8 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Max estimated cost per review |
 | `PRBOT_TIMEOUT_SECONDS` | `300` | Review timeout |
 | `PRBOT_DRAFT_BEHAVIOR` | `skip` | `skip` or `review` for draft PRs |
+| `PRBOT_REVIEW_MODE` | `comment` | `comment` for one summary comment, `review` for a platform review with inline comments |
+| `PRBOT_FORCE_REVIEW` | `false` | Review again even if this commit was already reviewed |
 | `PRBOT_EXCLUDED_PATTERNS` | *(none)* | Comma-separated gitignore-style patterns to exclude |
 | `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |
 | `PRBOT_LOG_LEVEL` | `INFO` | Log level for prbot's own output |

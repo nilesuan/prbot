@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from prbot.vcs.models import PRDiff, PRMetadata
+from prbot.vcs.models import InlineComment, PRDiff, PRMetadata
 
 
 @runtime_checkable
@@ -66,6 +66,30 @@ class VCSAdapter(Protocol):
         """Idempotent comment: find existing bot comment and update, or create new.
 
         Returns the comment ID (new or existing).
+        """
+        ...
+
+    async def submit_review(
+        self,
+        body: str,
+        event: str,
+        comments: list[InlineComment],
+        *,
+        head_sha: str,
+        base_sha: str,
+    ) -> int:
+        """Submit a platform review with inline comments (C1, C2).
+
+        `event` is one of APPROVE, REQUEST_CHANGES or COMMENT. GitHub has a
+        review object that carries all three plus the comments; GitLab has
+        discussions for the comments and approve/unapprove for the verdict,
+        so the adapters differ in how they satisfy this, not in what it means.
+
+        An inline comment whose position the platform rejects is dropped with
+        a warning rather than failing the submission: a stale line must not
+        take the whole review down with it.
+
+        Returns an identifier for the submitted review or summary note.
         """
         ...
 

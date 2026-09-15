@@ -22,7 +22,13 @@ from prbot.exceptions import (
     VCSResponseError,
     VCSServerError,
 )
-from prbot.vcs.models import FileDiff, PRDiff, PRMetadata, validate_response
+from prbot.vcs.models import (
+    FileDiff,
+    InlineComment,
+    PRDiff,
+    PRMetadata,
+    validate_response,
+)
 from prbot.vcs.retry import send_with_retry
 
 logger = logging.getLogger(__name__)
@@ -188,6 +194,66 @@ class GitLabAdapter:
             await self.update_comment(comment_id, body)
             return comment_id
         return await self.post_comment(body)
+
+    async def submit_review(
+        self,
+        body: str,
+        event: str,
+        comments: list[InlineComment],
+        *,
+        head_sha: str,
+        base_sha: str,
+    ) -> int:
+        """Post a summary note, positioned discussions, and the verdict.
+
+        GitLab has no single review object, so the three pieces of a GitHub
+        review are three calls here. The summary goes first: if a position is
+        stale and a discussion is rejected, the review is still delivered.
+        """
+        note_id = await self.post_comment(body)
+
+        for comment in comments:
+            try:
+                await self._request(
+                    "POST",
+                    f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+                    f"/merge_requests/{self._pr_number}/discussions",
+                    json={
+                        "body": comment.body,
+                        "position": {
+                            "position_type": "text",
+                            "base_sha": base_sha,
+                            "start_sha": base_sha,
+                            "head_sha": head_sha,
+                            "new_path": comment.path,
+                            "old_path": comment.path,
+                            "new_line": comment.line,
+                        },
+                    },
+                )
+            except VCSError as e:
+                # Almost always a line that has moved since the diff was
+                # taken. Losing one anchor is acceptable; losing the review
+                # is not.
+                logger.warning(
+                    "GitLab rejected an inline position for %s:%d: %s",
+                    comment.path, comment.line, e,
+                )
+
+        if event in ("APPROVE", "REQUEST_CHANGES"):
+            action = "approve" if event == "APPROVE" else "unapprove"
+            try:
+                await self._request(
+                    "POST",
+                    f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+                    f"/merge_requests/{self._pr_number}/{action}",
+                )
+            except VCSError as e:
+                # Approval rules can forbid this, and that is the project's
+                # decision, not a review failure.
+                logger.warning("GitLab %s was refused: %s", action, e)
+
+        return note_id
 
     async def close(self) -> None:
         """Close the HTTP client."""

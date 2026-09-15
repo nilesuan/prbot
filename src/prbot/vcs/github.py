@@ -21,7 +21,13 @@ from prbot.exceptions import (
     VCSResponseError,
     VCSServerError,
 )
-from prbot.vcs.models import FileDiff, PRDiff, PRMetadata, validate_response
+from prbot.vcs.models import (
+    FileDiff,
+    InlineComment,
+    PRDiff,
+    PRMetadata,
+    validate_response,
+)
 from prbot.vcs.retry import send_with_retry
 
 logger = logging.getLogger(__name__)
@@ -192,6 +198,49 @@ class GitHubAdapter:
             return comment_id
         return await self.post_comment(body)
 
+    async def submit_review(
+        self,
+        body: str,
+        event: str,
+        comments: list[InlineComment],
+        *,
+        head_sha: str,
+        base_sha: str,
+    ) -> int:
+        """Submit a pull request review with inline comments (C1, C2).
+
+        commit_id pins the review to the revision it was produced from, so a
+        push that lands mid-review does not silently move the comments onto
+        code nobody looked at.
+        """
+        url = (
+            f"{self._base_url}/repos/{self._repo}"
+            f"/pulls/{self._pr_number}/reviews"
+        )
+        payload: dict[str, Any] = {
+            "body": body,
+            "event": event,
+            "commit_id": head_sha,
+            "comments": [
+                _github_comment(comment) for comment in comments
+            ],
+        }
+        try:
+            data = await self._request("POST", url, json=payload)
+        except VCSResponseError:
+            if not comments:
+                raise
+            # A position the API rejects, typically a line that has moved,
+            # must not cost the whole review. Retry with the summary alone.
+            logger.warning(
+                "GitHub rejected %d inline comment position(s); submitting "
+                "the summary without them",
+                len(comments),
+            )
+            payload["comments"] = []
+            data = await self._request("POST", url, json=payload)
+        return data["id"]
+
     async def close(self) -> None:
         """Close the HTTP client."""
         await self._client.aclose()
@@ -338,6 +387,20 @@ def _classify_response(
         f"GitHub API unexpected status ({status}): {method} {url}. "
         f"{body_text}"
     )
+
+
+def _github_comment(comment: InlineComment) -> dict[str, Any]:
+    """Render an inline comment in the review-comments shape."""
+    payload: dict[str, Any] = {
+        "path": comment.path,
+        "line": comment.line,
+        "side": "RIGHT",
+        "body": comment.body,
+    }
+    if comment.start_line is not None and comment.start_line < comment.line:
+        payload["start_line"] = comment.start_line
+        payload["start_side"] = "RIGHT"
+    return payload
 
 
 def _parse_next_link(link_header: str) -> str | None:

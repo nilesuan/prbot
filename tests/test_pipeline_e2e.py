@@ -360,3 +360,66 @@ class TestAuditRecord:
         assert audit["reported_count"] == 1
         assert len(audit["agents"]) == 2
         assert all(a["status"] == "success" for a in audit["agents"])
+
+
+class TestReviewMode:
+    """C1/C2: findings land on their lines and the verdict reaches the PR."""
+
+    @pytest.mark.asyncio
+    async def test_comment_mode_is_the_default(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config())
+
+        assert adapter.submitted_reviews == []
+        assert len(adapter.posted_comments) == 1
+
+    @pytest.mark.asyncio
+    async def test_review_mode_submits_a_review(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        assert len(adapter.submitted_reviews) == 1
+        body, event, inline = adapter.submitted_reviews[0]
+        assert event == "COMMENT"
+        assert "Q-ERR-01" in body
+        assert len(inline) == 1
+        assert inline[0].path == "src/example.py"
+        assert inline[0].line == 2
+
+    @pytest.mark.asyncio
+    async def test_a_blocker_requests_changes_on_the_pull_request(self) -> None:
+        adapter = FakeVCSAdapter()
+        blocker = _finding(severity="critical", confidence=95)
+        bedrock = lambda **_: _bedrock_response([blocker])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(_config(review_mode="review"))
+
+        assert exit_code == EXIT_BLOCKERS
+        assert adapter.submitted_reviews[0][1] == "REQUEST_CHANGES"
+
+    @pytest.mark.asyncio
+    async def test_a_clean_review_approves_the_pull_request(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response([])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        assert adapter.submitted_reviews[0][1] == "APPROVE"
+
+    @pytest.mark.asyncio
+    async def test_dry_run_submits_nothing(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review", dry_run=True))
+
+        assert adapter.submitted_reviews == []

@@ -143,7 +143,10 @@ async def run_pipeline(config: PrBotConfig) -> int:
         estimate_cost,
         validate_diff_size,
     )
-    from prbot.review.formatter import format_review_comment
+    from prbot.review.formatter import (
+        build_inline_comments,
+        format_review_comment,
+    )
     from prbot.review.models import AgentResult
     from prbot.review.prompts import build_user_prompt
     from prbot.review.runner import run_review
@@ -437,17 +440,41 @@ async def run_pipeline(config: PrBotConfig) -> int:
             )
 
         # Post or update comment
+        inline: list = []
+        if config.review_mode == "review":
+            inline = build_inline_comments(reported, filtered_diff)
+            logger.info(
+                "review.inline anchored=%d of=%d",
+                len(inline), len(reported),
+            )
+
         comment_posted = False
         if not config.dry_run:
-            if existing:
+            if config.review_mode == "review":
+                cid = await adapter.submit_review(
+                    comment,
+                    verdict.value,
+                    inline,
+                    head_sha=metadata.head_sha,
+                    base_sha=metadata.base_sha,
+                )
+                logger.info(
+                    "review.submitted id=%d event=%s inline=%d",
+                    cid, verdict.value, len(inline),
+                )
+            elif existing:
                 cid = existing[0]
                 await adapter.update_comment(cid, comment)
+                logger.info("comment.posted id=%d", cid)
             else:
                 cid = await adapter.post_comment(comment)
-            logger.info("comment.posted id=%d", cid)
+                logger.info("comment.posted id=%d", cid)
             comment_posted = True
         else:
-            logger.info("dry-run: comment not posted")
+            logger.info(
+                "dry-run: nothing posted (%d inline comment(s) withheld)",
+                len(inline),
+            )
             print(comment)
 
         # Exit code mapping (G-28)

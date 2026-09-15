@@ -148,6 +148,11 @@ class PrBotConfig(BaseModel, frozen=True):
     api_base_url: str | None = None
     secret_name: str | None = None
     draft_behavior: Literal["skip", "review"] = "skip"
+    # C1/C2: "comment" posts a single summary comment, which is the
+    # long-standing behaviour. "review" submits a platform review, so
+    # findings land on their lines and the verdict reaches the pull
+    # request rather than only the exit code.
+    review_mode: Literal["comment", "review"] = "comment"
     # B2: whether the patch content is datamarked. Metadata is always
     # datamarked, since the title, body and author are author-written
     # prose and the obvious injection vector. Whether marking the patch
