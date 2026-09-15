@@ -168,7 +168,8 @@ def build_user_prompt(
             )
             if excerpt:
                 block += (
-                    f"\n\nSurrounding code at {safe_path} "
+                    f"\n\nSurrounding code at "
+                    f"{apply_datamarking(safe_path)} "
                     f"(head revision, numbered):\n"
                     f"```\n{excerpt}\n```"
                 )
@@ -186,7 +187,9 @@ def build_user_prompt(
     return (
         f"## PR #{metadata.number}: {dm_title}\n\n"
         f"**Author:** {dm_author}\n"
-        f"**Branch:** {metadata.head_ref} → {metadata.base_ref}\n"
+        # Branch names are chosen by the contributor too (SEC-INPUT-01).
+        f"**Branch:** {apply_datamarking(metadata.head_ref)} → "
+        f"{apply_datamarking(metadata.base_ref)}\n"
         f"**State:** {metadata.state}\n"
         f"**Draft:** {metadata.is_draft}\n"
         f"**Fork:** {metadata.is_fork}\n\n"

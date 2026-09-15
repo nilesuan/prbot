@@ -121,6 +121,9 @@ _STRUCTURAL_PREFIXES = (
     "Binary files ",
 )
 
+# Coordinates, then whatever git copied out of the file after them.
+_HUNK_HEADER = re.compile(r"^(@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)(.*)$")
+
 _NO_NEWLINE_MARKER = "\\ No newline at end of file"
 
 
@@ -160,10 +163,20 @@ def apply_diff_datamarking(patch: str) -> str:
             continue
 
         if line.startswith("@@"):
-            # Written by git, and the boundary after which everything is
-            # content rather than header.
+            # The coordinates are git's and stay readable, because the
+            # validation layer parses them. Everything after the closing @@
+            # is the enclosing source line, copied verbatim out of the file,
+            # so it is the contributor's text and is marked (SEC-INPUT-01).
             in_hunk = True
-            marked_lines.append(line)
+            match = _HUNK_HEADER.match(line)
+            if match and match.group(2).strip():
+                marked_lines.append(
+                    match.group(1) + " " + apply_datamarking(
+                        match.group(2).strip(),
+                    ),
+                )
+            else:
+                marked_lines.append(line)
             continue
 
         if not in_hunk:

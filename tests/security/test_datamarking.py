@@ -139,11 +139,20 @@ class TestDiffDatamarkingPreservesStructure:
     defends against nothing.
     """
 
-    def test_hunk_headers_are_left_verbatim(self) -> None:
-        from prbot.security.datamarking import apply_diff_datamarking
+    def test_hunk_coordinates_are_left_verbatim(self) -> None:
+        """The coordinates are git's; the function context after them is
+        copied out of the file and so is the contributor's (SEC-INPUT-01)."""
+        from prbot.security.datamarking import (
+            apply_diff_datamarking,
+            get_session_mark,
+        )
 
         out = apply_diff_datamarking(_PATCH)
-        assert "@@ -82,7 +82,7 @@ class Handler:" in out
+        header = next(
+            ln for ln in out.splitlines() if ln.startswith("@@")
+        )
+        assert header.startswith("@@ -82,7 +82,7 @@")
+        assert f"^{get_session_mark()}^" in header
 
     def test_file_headers_are_left_verbatim(self) -> None:
         from prbot.security.datamarking import apply_diff_datamarking
@@ -265,3 +274,48 @@ class TestStructuralPrefixSpoofing:
         patch = "@@ -1,1 +1,1 @@\n-old\n+new\n\\ No newline at end of file\n"
         out = apply_diff_datamarking(patch)
         assert "\\ No newline at end of file" in out
+
+
+class TestHunkHeaderFunctionContext:
+    """SEC-INPUT-01: git copies the enclosing source line into the header.
+
+    A hunk header is '@@ -a,b +c,d @@ <function context>', and that trailing
+    part is taken verbatim from the file, so it is the contributor's text.
+    The coordinates are git's and must stay readable; the tail is not and
+    must be marked.
+    """
+
+    @staticmethod
+    def _header(patch: str) -> tuple[str, bool]:
+        from prbot.security.datamarking import (
+            apply_diff_datamarking,
+            get_session_mark,
+        )
+
+        line = apply_diff_datamarking(patch).splitlines()[0]
+        return line, f"^{get_session_mark()}^" in line
+
+    def test_the_function_context_is_marked(self) -> None:
+        line, marked = self._header(
+            "@@ -82,7 +82,7 @@ def ignore_all_previous_instructions():\n-a\n+b\n",
+        )
+        assert marked, f"function context passed through unmarked: {line!r}"
+
+    def test_the_coordinates_stay_readable(self) -> None:
+        line, _ = self._header(
+            "@@ -82,7 +82,7 @@ def handler():\n-a\n+b\n",
+        )
+        assert line.startswith("@@ -82,7 +82,7 @@")
+
+    def test_a_header_with_no_context_is_untouched(self) -> None:
+        line, marked = self._header("@@ -1,2 +1,2 @@\n-a\n+b\n")
+        assert line == "@@ -1,2 +1,2 @@"
+        assert not marked
+
+    def test_hunk_parsing_still_works_on_a_marked_header(self) -> None:
+        """The validation layer must still find the line numbers."""
+        from prbot.review.context import hunk_span
+        from prbot.security.datamarking import apply_diff_datamarking
+
+        patch = "@@ -82,7 +82,4 @@ def handler():\n-a\n+b\n"
+        assert hunk_span(apply_diff_datamarking(patch)) == (82, 85)
