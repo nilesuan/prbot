@@ -14,9 +14,9 @@ The container image is published to `ghcr.io/nilesuan/prbot:latest` and signed w
 - **Package manager:** uv (with `--frozen` for reproducible installs)
 - **Config:** Pydantic v2 frozen models, TOML config files via tomllib
 - **HTTP client:** httpx (async) -- no CLI tools (gh/glab) at runtime
-- **AWS:** boto3 for Bedrock Converse API (structured JSON output via native schema enforcement)
+- **AWS:** boto3 for Bedrock Converse API (structured output enforced with a forced tool carrying `FINDING_JSON_SCHEMA`)
 - **Logging:** structlog with JSON renderer to stdout
-- **Retry:** tenacity with exponential backoff + jitter
+- **Retry:** hand-rolled exponential backoff with jitter (`review/runner.py` for Bedrock, `vcs/retry.py` for VCS APIs)
 - **Linter:** ruff
 - **Tests:** pytest with pytest-asyncio, pytest-cov
 - **Container:** Multi-stage Dockerfile, python:3.12-slim base (digest-pinned), non-root user

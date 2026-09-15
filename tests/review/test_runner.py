@@ -682,3 +682,53 @@ class TestParseFindingsReadsToolUse:
             },
         }
         assert _parse_findings(response, "general") == []
+
+
+class TestRetryBackoffHasJitter:
+    """D9: CLAUDE.md claimed jitter; the retry had none."""
+
+    def test_backoff_varies_between_calls(self) -> None:
+        from prbot.review.runner import _backoff_seconds
+
+        values = {_backoff_seconds(1) for _ in range(40)}
+        assert len(values) > 1, (
+            "identical delays mean every throttled job retries on the same "
+            "beat, which is what jitter exists to prevent"
+        )
+
+    def test_backoff_grows_with_the_attempt(self) -> None:
+        from prbot.review.runner import _backoff_seconds
+
+        early = min(_backoff_seconds(0) for _ in range(40))
+        late = min(_backoff_seconds(3) for _ in range(40))
+        assert late > early
+
+    def test_backoff_is_never_negative(self) -> None:
+        from prbot.review.runner import _backoff_seconds
+
+        assert all(_backoff_seconds(a) >= 0 for a in range(5))
+
+
+class TestDeclaredDependenciesAreUsed:
+    """D9: tenacity was pinned in pyproject.toml and imported nowhere."""
+
+    def test_no_unused_runtime_dependency(self) -> None:
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent.parent
+        with (root / "pyproject.toml").open("rb") as handle:
+            deps = tomllib.load(handle)["project"]["dependencies"]
+        names = {
+            d.split(">")[0].split("<")[0].split("=")[0].split("[")[0].strip()
+            for d in deps
+        }
+        sources = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (root / "src").rglob("*.py")
+        )
+        for name in names:
+            assert name in sources, (
+                f"{name} is a declared runtime dependency that no module "
+                "imports"
+            )

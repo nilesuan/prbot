@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 import time
 from typing import Any
@@ -35,6 +36,18 @@ _DEFAULT_MAX_OUTPUT_TOKENS = 8192
 # Retry config for throttled requests
 _MAX_RETRIES = 3
 _RETRY_BASE_SECONDS = 1.0
+
+
+def _backoff_seconds(attempt: int) -> float:
+    """Exponential backoff with jitter (D9).
+
+    Without jitter every agent throttled by the same Bedrock quota retries
+    on the same beat and throttles again together. The jitter is half the
+    interval, which is enough to spread a small fan-out without making the
+    worst case materially longer.
+    """
+    base = _RETRY_BASE_SECONDS * (2**attempt)
+    return base + random.uniform(0.0, base / 2)
 
 # Retryable Bedrock error types
 _RETRYABLE_ERRORS = frozenset({
@@ -161,7 +174,7 @@ async def _run_single_agent(
         except BedrockError as e:
             error_type = _classify_error(e)
             if _is_retryable(error_type) and attempt < _MAX_RETRIES:
-                wait = _RETRY_BASE_SECONDS * (2 ** attempt)
+                wait = _backoff_seconds(attempt)
                 logger.warning(
                     "Agent %s got %s (attempt %d/%d), retrying in %.1fs",
                     agent_name, error_type, attempt + 1,
