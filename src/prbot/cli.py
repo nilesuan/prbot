@@ -489,5 +489,14 @@ def main(argv: list[str] | None = None) -> None:
     except PrBotError as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(e.exit_code)
+    except KeyboardInterrupt:
+        print("error: interrupted", file=sys.stderr)
+        sys.exit(EXIT_INFRA_ERROR)
+    except Exception:
+        # D4: an uncaught exception exits 1, which every workflow reads as
+        # REQUEST_CHANGES. A crash is an infrastructure failure, not a
+        # review outcome, so it must be distinguishable from one.
+        logger.exception("pipeline.crashed")
+        sys.exit(EXIT_INFRA_ERROR)
 
     sys.exit(exit_code)

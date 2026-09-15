@@ -319,3 +319,60 @@ class TestGitHubComments:
             assert cid == 50
         finally:
             await adapter.close()
+
+
+class TestMalformedResponsesAreClassified:
+    """D4: an unexpected body must raise VCSError, not escape as a crash.
+
+    An exception that is not a PrBotError escapes main() and Python exits 1,
+    which every workflow reads as "review found blockers".
+    """
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_non_json_body_raises_vcs_error(self) -> None:
+        from prbot.exceptions import VCSResponseError
+
+        respx.get("https://api.github.com/repos/owner/repo/pulls/42").mock(
+            return_value=httpx.Response(
+                200, text="<html>502 Bad Gateway</html>",
+            ),
+        )
+        adapter = _make_adapter()
+        try:
+            with pytest.raises(VCSResponseError, match="not valid JSON"):
+                await adapter.get_pr_metadata()
+        finally:
+            await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_non_list_page_raises_vcs_error(self) -> None:
+        from prbot.exceptions import VCSResponseError
+
+        respx.get(
+            "https://api.github.com/repos/owner/repo/pulls/42/files",
+        ).mock(
+            return_value=httpx.Response(200, json={"message": "Not Found"}),
+        )
+        adapter = _make_adapter()
+        try:
+            with pytest.raises(VCSResponseError, match="list"):
+                await adapter.get_diff()
+        finally:
+            await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_non_json_page_raises_vcs_error(self) -> None:
+        from prbot.exceptions import VCSResponseError
+
+        respx.get(
+            "https://api.github.com/repos/owner/repo/pulls/42/files",
+        ).mock(return_value=httpx.Response(200, text="not json"))
+        adapter = _make_adapter()
+        try:
+            with pytest.raises(VCSResponseError, match="not valid JSON"):
+                await adapter.get_diff()
+        finally:
+            await adapter.close()

@@ -212,7 +212,7 @@ class GitLabAdapter:
         # Some GitLab endpoints return 204 No Content
         if response.status_code == 204:
             return {}
-        return response.json()
+        return _decode_json(response, method, url)
 
     async def _paginate(
         self,
@@ -242,7 +242,9 @@ class GitLabAdapter:
                 ) from e
 
             _classify_response(response, "GET", url)
-            items = response.json()
+            items = _expect_list(
+                _decode_json(response, "GET", url), "GET", url,
+            )
 
             if not items:
                 return
@@ -254,7 +256,43 @@ class GitLabAdapter:
             next_page = response.headers.get("x-next-page", "")
             if not next_page:
                 return
-            page = int(next_page)
+            try:
+                page = int(next_page)
+            except ValueError as e:
+                raise VCSResponseError(
+                    f"GitLab API returned a non-numeric x-next-page header: "
+                    f"{next_page!r} for {url}"
+                ) from e
+
+
+def _decode_json(
+    response: httpx.Response, method: str, url: str,
+) -> Any:
+    """Decode a response body, classifying a non-JSON body (D4).
+
+    A json.JSONDecodeError is not a PrBotError, so letting it escape exits
+    the process with code 1 and reports an upstream HTML error page to CI
+    as a blocking review.
+    """
+    try:
+        return response.json()
+    except ValueError as e:
+        raise VCSResponseError(
+            f"GitLab API returned a body that is not valid JSON: "
+            f"{method} {url}. {response.text[:200]}"
+        ) from e
+
+
+def _expect_list(
+    payload: Any, method: str, url: str,
+) -> list[dict[str, Any]]:
+    """Require a JSON array where the API contract promises one (D4)."""
+    if not isinstance(payload, list):
+        raise VCSResponseError(
+            f"GitLab API returned {type(payload).__name__} where a list "
+            f"was expected: {method} {url}"
+        )
+    return payload
 
 
 def _classify_response(

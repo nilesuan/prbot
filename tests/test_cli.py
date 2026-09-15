@@ -76,3 +76,27 @@ class TestMain:
         assert EXIT_PASS == 0
         assert EXIT_BLOCKERS == 1
         assert EXIT_CONFIG_ERROR == 2
+
+
+class TestUnexpectedErrorsExitThree:
+    """D4: a crash must not be reported to CI as REQUEST_CHANGES."""
+
+    def test_unexpected_exception_exits_infra_not_blockers(self) -> None:
+        from prbot.cli import EXIT_INFRA_ERROR, main
+
+        boom = AsyncMock(side_effect=RuntimeError("something unforeseen"))
+        with patch("prbot.cli.run_pipeline", boom), pytest.raises(
+            SystemExit,
+        ) as exc:
+            main(["--platform", "github", "--repo", "o/r", "--pr", "1"])
+        assert exc.value.code == EXIT_INFRA_ERROR
+
+    def test_keyboard_interrupt_is_not_a_blocking_review(self) -> None:
+        from prbot.cli import EXIT_INFRA_ERROR, main
+
+        stop = AsyncMock(side_effect=KeyboardInterrupt())
+        with patch("prbot.cli.run_pipeline", stop), pytest.raises(
+            SystemExit,
+        ) as exc:
+            main(["--platform", "github", "--repo", "o/r", "--pr", "1"])
+        assert exc.value.code == EXIT_INFRA_ERROR

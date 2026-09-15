@@ -208,7 +208,7 @@ class GitHubAdapter:
             ) from e
 
         _classify_response(response, method, url)
-        return response.json()
+        return _decode_json(response, method, url)
 
     async def _paginate(
         self,
@@ -239,7 +239,11 @@ class GitHubAdapter:
                 ) from e
 
             _classify_response(response, "GET", current_url)
-            items = response.json()
+            items = _expect_list(
+                _decode_json(response, "GET", current_url),
+                "GET",
+                current_url,
+            )
 
             if callback(items):
                 return  # Early exit requested
@@ -251,6 +255,36 @@ class GitHubAdapter:
             current_url = _parse_next_link(
                 response.headers.get("link", ""),
             )
+
+
+def _decode_json(
+    response: httpx.Response, method: str, url: str,
+) -> Any:
+    """Decode a response body, classifying a non-JSON body (D4).
+
+    A json.JSONDecodeError is not a PrBotError, so letting it escape exits
+    the process with code 1 and reports an upstream HTML error page to CI
+    as a blocking review.
+    """
+    try:
+        return response.json()
+    except ValueError as e:
+        raise VCSResponseError(
+            f"GitHub API returned a body that is not valid JSON: "
+            f"{method} {url}. {response.text[:200]}"
+        ) from e
+
+
+def _expect_list(
+    payload: Any, method: str, url: str,
+) -> list[dict[str, Any]]:
+    """Require a JSON array where the API contract promises one (D4)."""
+    if not isinstance(payload, list):
+        raise VCSResponseError(
+            f"GitHub API returned {type(payload).__name__} where a list "
+            f"was expected: {method} {url}"
+        )
+    return payload
 
 
 def _classify_response(
