@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The GitLab CI template has never worked. The image declares
+  `ENTRYPOINT ["prbot"]`, and GitLab appends its shell-detection command
+  rather than replacing the entrypoint, so the container ran
+  `prbot sh -c '...'` and argparse refused it:
+  `prbot: error: unrecognized arguments: sh -c if [ -x /bin/bash ]`. The job
+  exited 2 before a review started. The template, the README example and
+  both `gitlab-setup.md` examples now clear the entrypoint. GitHub Actions
+  was never affected: it calls `docker run` directly and never asks for a
+  shell.
+- A test now asserts every image in the GitLab template clears its
+  entrypoint. The previous tests read the `image` key only as a string, so
+  none of them could see the difference.
+
 ## [0.4.0] - 2026-09-16
 
 The container now runs Python 3.14, and the dependencies it ships crossed two

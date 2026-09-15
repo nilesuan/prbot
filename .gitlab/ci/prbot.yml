@@ -22,7 +22,17 @@
   # harder, replace with a digest: ghcr.io/nilesuan/prbot@sha256:...
   # No "v" prefix: the git tag is v0.2.0, but the published image tag is
   # 0.2.0, because build.yml strips it via type=semver,pattern={{version}}.
-  image: ghcr.io/nilesuan/prbot:0.4.0
+  image:
+    name: ghcr.io/nilesuan/prbot:0.4.0
+    # The image declares ENTRYPOINT ["prbot"]. GitLab appends its shell
+    # detection command rather than replacing the entrypoint, so without
+    # this the container runs `prbot sh -c '...'` and argparse refuses it:
+    #   prbot: error: unrecognized arguments: sh -c if [ -x /bin/bash ] ...
+    # The job then exits 2 before a review starts. Clearing the entrypoint
+    # lets GitLab start a shell; prbot stays on PATH in the virtual
+    # environment. GitHub Actions needs no equivalent because it invokes
+    # `docker run` directly and never asks for a shell.
+    entrypoint: [""]
   variables:
     # SEC-CRED-03: do not clone the branch under review. prbot fetches the
     # diff over the API and needs no working copy, and a checkout would put
