@@ -770,3 +770,154 @@ class TestDeclaredDependenciesAreUsed:
                 f"{name} is a declared runtime dependency that no module "
                 "imports"
             )
+
+
+class TestModelsThatRejectSamplingParameters:
+    """Claude Sonnet 5 refuses temperature and top_p outright.
+
+        ValidationException: The model returned the following errors:
+        `temperature` is deprecated for this model.
+
+    Sending them is a hard failure, not a warning, so both agents died with
+    zero tokens and zero latency the moment the default model moved.
+    """
+
+    @staticmethod
+    def _client_rejecting(param: str) -> Any:
+        """A converse() that rejects `param` once, then succeeds."""
+        from botocore.exceptions import ClientError
+
+        calls: list[dict[str, Any]] = []
+
+        def converse(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            cfg = kwargs.get("inferenceConfig", {})
+            if param in cfg:
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "ValidationException",
+                            "Message": (
+                                "The model returned the following errors: "
+                                f"`{param}` is deprecated for this model."
+                            ),
+                        },
+                    },
+                    "Converse",
+                )
+            return {
+                "output": {"message": {"content": [
+                    {"toolUse": {"input": {"findings": []}}},
+                ]}},
+                "usage": {"inputTokens": 1, "outputTokens": 1},
+            }
+
+        client = MagicMock()
+        client.converse.side_effect = converse
+        return client, calls
+
+    def _invoke(self, param: str) -> list[dict[str, Any]]:
+        from prbot.review.runner import _invoke_bedrock
+
+        client, calls = self._client_rejecting(param)
+        boto3 = MagicMock()
+        boto3.client.return_value = client
+        with patch.dict("sys.modules", {"boto3": boto3}):
+            _invoke_bedrock(
+                model_id="au.anthropic.claude-sonnet-5",
+                system_prompt="sys",
+                user_prompt="usr",
+                aws_region="ap-southeast-2",
+                max_output_tokens=4096,
+            )
+        return calls
+
+    def test_temperature_rejection_is_retried_without_it(self) -> None:
+        calls = self._invoke("temperature")
+        assert len(calls) == 2, "should retry once, not give up"
+        assert "temperature" in calls[0]["inferenceConfig"]
+        assert "temperature" not in calls[1]["inferenceConfig"]
+
+    def test_the_retry_keeps_max_tokens(self) -> None:
+        """maxTokens bounds the spend and must survive the retry."""
+        calls = self._invoke("temperature")
+        assert calls[1]["inferenceConfig"]["maxTokens"] == 4096
+
+    def test_the_retry_keeps_the_forced_tool(self) -> None:
+        """Dropping toolConfig would let the model answer in prose."""
+        calls = self._invoke("temperature")
+        assert "tool" in calls[1]["toolConfig"]["toolChoice"]
+
+    def test_an_unrelated_validation_error_is_not_retried(self) -> None:
+        """Only the sampling-parameter case earns a second call."""
+        from botocore.exceptions import ClientError
+
+        from prbot.exceptions import BedrockError
+        from prbot.review.runner import _invoke_bedrock
+
+        calls: list[dict[str, Any]] = []
+
+        def converse(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            raise ClientError(
+                {"Error": {"Code": "ValidationException",
+                           "Message": "messages: at least one required"}},
+                "Converse",
+            )
+
+        client = MagicMock()
+        client.converse.side_effect = converse
+        boto3 = MagicMock()
+        boto3.client.return_value = client
+        with patch.dict("sys.modules", {"boto3": boto3}), \
+                pytest.raises(BedrockError):
+            _invoke_bedrock(
+                model_id="au.anthropic.claude-sonnet-5",
+                system_prompt="sys",
+                user_prompt="usr",
+                aws_region="ap-southeast-2",
+                max_output_tokens=4096,
+            )
+        assert len(calls) == 1
+
+
+class TestAgentFailuresSayWhy:
+    """An agent that gives up must log the reason.
+
+    The audit record stores only status="error:AgentError", and the verdict
+    logs "Both agents failed" with no cause, so a production failure gave no
+    way to tell a permission problem from a rejected parameter without
+    reproducing it by hand.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bedrock_failure_reason_is_logged(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging as _logging
+
+        from prbot.exceptions import BedrockError
+        from prbot.review.runner import _run_single_agent
+
+        with patch(
+            "prbot.review.runner._invoke_bedrock",
+            side_effect=BedrockError(
+                "Bedrock API error (ValidationException): "
+                "`temperature` is deprecated for this model."
+            ),
+        ), caplog.at_level(_logging.ERROR):
+            result = await _run_single_agent(
+                agent_name="general",
+                model_id="au.anthropic.claude-sonnet-5",
+                check_prefix="Q",
+                user_prompt="usr",
+                budget=TimeoutBudget(total_seconds=300.0),
+                aws_region="ap-southeast-2",
+            )
+
+        assert isinstance(result, AgentError)
+        assert "temperature" in caplog.text, (
+            "the cause never reached the log, so a failing run says only "
+            "that it failed"
+        )
+        assert "general" in caplog.text

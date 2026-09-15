@@ -125,7 +125,7 @@ jobs:
         id: image
         env:
           PRBOT_IMAGE: ghcr.io/nilesuan/prbot
-          PRBOT_IMAGE_TAG: 0.3.0
+          PRBOT_IMAGE_TAG: 0.3.1
         run: |
           digest=$(docker buildx imagetools inspect \
             "${PRBOT_IMAGE}:${PRBOT_IMAGE_TAG}" \
@@ -200,7 +200,7 @@ jobs:
         id: image
         env:
           PRBOT_IMAGE: ghcr.io/nilesuan/prbot
-          PRBOT_IMAGE_TAG: 0.3.0
+          PRBOT_IMAGE_TAG: 0.3.1
         run: |
           digest=$(docker buildx imagetools inspect \
             "${PRBOT_IMAGE}:${PRBOT_IMAGE_TAG}" \
@@ -306,7 +306,7 @@ To make blocker findings non-blocking (advisory mode), wrap the run step:
         id: image
         env:
           PRBOT_IMAGE: ghcr.io/nilesuan/prbot
-          PRBOT_IMAGE_TAG: 0.3.0
+          PRBOT_IMAGE_TAG: 0.3.1
         run: |
           digest=$(docker buildx imagetools inspect \
             "${PRBOT_IMAGE}:${PRBOT_IMAGE_TAG}" \
@@ -348,7 +348,7 @@ The prbot container image is signed with [Sigstore Cosign](https://docs.sigstore
 
       - name: Verify prbot image
         env:
-          PRBOT_IMAGE: ghcr.io/nilesuan/prbot:0.3.0
+          PRBOT_IMAGE: ghcr.io/nilesuan/prbot:0.3.1
         run: |
           cosign verify "$PRBOT_IMAGE" \
             --certificate-identity-regexp=".*" \
