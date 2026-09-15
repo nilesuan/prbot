@@ -103,7 +103,7 @@ src/prbot/
 
 ## Review Checks
 
-Check specs are in `prompts/general.md` (Q-* checks) and `prompts/security.md` (S-* checks). The general agent covers: architecture (Q-ARCH), maintainability (Q-MAINT), testing (Q-TEST), error handling (Q-ERR), API contracts (Q-API), and completeness (Q-COMP -- docs, version bump, changelog, examples). The security agent covers: credentials (S-CRED), input validation (S-INPUT), auth (S-AUTH), cryptography (S-CRYPTO), and data safety (S-DATA).
+Check specs are in `src/prbot/prompts/general.md` (Q-* checks) and `src/prbot/prompts/security.md` (S-* checks), bundled as package data and loaded via `importlib.resources`. `PRBOT_PROMPTS_DIR` overrides the directory at runtime. The general agent covers: architecture (Q-ARCH), maintainability (Q-MAINT), testing (Q-TEST), error handling (Q-ERR), API contracts (Q-API), and completeness (Q-COMP -- docs, version bump, changelog, examples). The security agent covers: credentials (S-CRED), input validation (S-INPUT), auth (S-AUTH), cryptography (S-CRYPTO), and data safety (S-DATA).
 
 ## CI/CD
 

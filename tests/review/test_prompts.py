@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from prbot.exceptions import ConfigError
@@ -132,3 +134,33 @@ class TestEstimatePromptTokens:
         short = estimate_prompt_tokens("a" * 100)
         long = estimate_prompt_tokens("a" * 1000)
         assert long > short
+
+
+class TestCheckSpecsExistOnce:
+    """D8: prompts/ and src/prbot/prompts/ were byte-identical copies.
+
+    Only the package copy is loaded at runtime. Two identical files with
+    nothing keeping them identical will drift, and the drift is silent
+    because the unused copy is the one a reader is most likely to edit.
+    """
+
+    @staticmethod
+    def _root() -> Path:
+        return Path(__file__).resolve().parent.parent.parent
+
+    def test_no_duplicate_prompts_directory(self) -> None:
+        stray = self._root() / "prompts"
+        assert not stray.exists(), (
+            f"{stray} duplicates src/prbot/prompts/, which is the copy "
+            "load_check_spec actually reads"
+        )
+
+    def test_package_copies_are_present(self) -> None:
+        package = self._root() / "src" / "prbot" / "prompts"
+        assert (package / "general.md").is_file()
+        assert (package / "security.md").is_file()
+
+    def test_specs_load_from_the_package(self) -> None:
+        for agent in ("general", "security"):
+            spec = load_check_spec(agent)
+            assert "## Check Categories" in spec
