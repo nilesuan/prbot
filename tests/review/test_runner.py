@@ -103,8 +103,16 @@ class TestRunReview:
     @pytest.mark.asyncio
     async def test_both_agents_succeed(self, mock_bedrock: MagicMock) -> None:
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
-            {"name": "security", "model_id": "us.anthropic.claude-opus-4-0-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
+            {
+                "name": "security",
+                "model_id": "us.anthropic.claude-opus-4-0-20250514",
+                "check_prefix": "S-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -132,10 +140,12 @@ class TestRunReview:
                 {
                     "name": "general",
                     "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                    "check_prefix": "Q-",
                 },
                 {
                     "name": "security",
                     "model_id": "us.anthropic.claude-opus-4-0-20250514",
+                    "check_prefix": "S-",
                 },
             ]
             budget = TimeoutBudget(300.0)
@@ -153,8 +163,16 @@ class TestRunReview:
     ) -> None:
         """Both agents produce AgentResult outcomes."""
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
-            {"name": "security", "model_id": "us.anthropic.claude-opus-4-0-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
+            {
+                "name": "security",
+                "model_id": "us.anthropic.claude-opus-4-0-20250514",
+                "check_prefix": "S-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -175,6 +193,7 @@ class TestRunReview:
                 {
                     "name": "general",
                     "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                    "check_prefix": "Q-",
                 },
             ]
             budget = TimeoutBudget(300.0)
@@ -194,7 +213,11 @@ class TestRunSingleAgent:
         self, mock_bedrock: MagicMock,
     ) -> None:
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -226,6 +249,7 @@ class TestRunSingleAgent:
                 {
                     "name": "general",
                     "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                    "check_prefix": "Q-",
                 },
             ]
             budget = TimeoutBudget(300.0)
@@ -253,6 +277,7 @@ class TestRunSingleAgent:
                 {
                     "name": "general",
                     "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                    "check_prefix": "Q-",
                 },
             ]
             budget = TimeoutBudget(300.0)
@@ -280,6 +305,7 @@ class TestRunSingleAgent:
                 {
                     "name": "general",
                     "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                    "check_prefix": "Q-",
                 },
             ]
             # Very short budget to trigger timeout
@@ -295,7 +321,11 @@ class TestRunSingleAgent:
         self, mock_bedrock: MagicMock,
     ) -> None:
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -311,7 +341,11 @@ class TestRunSingleAgent:
         response = _make_bedrock_response([_make_finding_dict()])
         mock_bedrock.return_value = response
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -325,7 +359,11 @@ class TestRunSingleAgent:
     @pytest.mark.asyncio
     async def test_model_id_recorded(self, mock_bedrock: MagicMock) -> None:
         agents = [
-            {"name": "general", "model_id": "us.anthropic.claude-sonnet-4-20250514"},
+            {
+                "name": "general",
+                "model_id": "us.anthropic.claude-sonnet-4-20250514",
+                "check_prefix": "Q-",
+            },
         ]
         budget = TimeoutBudget(300.0)
         outcomes = await run_review(
@@ -367,7 +405,7 @@ class TestParseFindings:
     def test_accepts_security_prefix_for_security_agent(self) -> None:
         finding = _make_finding_dict(check_id="S-INPUT-01")
         response = _make_bedrock_response([finding])
-        findings = _parse_findings(response, "security")
+        findings = _parse_findings(response, "security", "S-")
         assert len(findings) == 1
         assert findings[0].category == "security"
 
@@ -408,6 +446,9 @@ class TestParseFindings:
             _parse_findings(response, "general")
 
 
+_MODEL = "au.anthropic.claude-sonnet-4-6"
+
+
 class TestExtractTokenUsage:
     """Tests for _extract_token_usage."""
 
@@ -415,12 +456,12 @@ class TestExtractTokenUsage:
         response = {
             "usage": {"inputTokens": 1000, "outputTokens": 500},
         }
-        usage = _extract_token_usage(response)
+        usage = _extract_token_usage(response, _MODEL)
         assert usage.input_tokens == 1000
         assert usage.output_tokens == 500
 
     def test_missing_usage(self) -> None:
-        usage = _extract_token_usage({})
+        usage = _extract_token_usage({}, _MODEL)
         assert usage.input_tokens == 0
         assert usage.output_tokens == 0
 
@@ -428,7 +469,7 @@ class TestExtractTokenUsage:
         response = {
             "usage": {"inputTokens": "not_int", "outputTokens": None},
         }
-        usage = _extract_token_usage(response)
+        usage = _extract_token_usage(response, _MODEL)
         assert usage.input_tokens == 0
         assert usage.output_tokens == 0
 
@@ -466,3 +507,266 @@ class TestClassifyError:
         assert _is_retryable("internal_error") is True
         assert _is_retryable("validation_error") is False
         assert _is_retryable("unknown") is False
+
+
+class TestTokenUsageCarriesRealCost:
+    """A8: estimated_cost_usd was hardcoded to 0.0 and never recomputed."""
+
+    @staticmethod
+    def _response(input_tokens: int, output_tokens: int) -> dict[str, object]:
+        return {
+            "usage": {
+                "inputTokens": input_tokens,
+                "outputTokens": output_tokens,
+            },
+            "output": {"message": {"content": [{"text": "{}"}]}},
+        }
+
+    def test_cost_is_computed_from_model_pricing(self) -> None:
+        from prbot.review.runner import _extract_token_usage
+
+        usage = _extract_token_usage(
+            self._response(1_000_000, 1_000_000),
+            model_id="au.anthropic.claude-sonnet-4-6",
+        )
+        # 3.00 per million in, 15.00 per million out
+        assert usage.estimated_cost_usd == pytest.approx(18.00)
+
+    def test_cost_scales_with_token_counts(self) -> None:
+        from prbot.review.runner import _extract_token_usage
+
+        usage = _extract_token_usage(
+            self._response(500_000, 100_000),
+            model_id="au.anthropic.claude-sonnet-4-6",
+        )
+        assert usage.estimated_cost_usd == pytest.approx(1.5 + 1.5)
+
+    def test_unknown_model_uses_the_upper_bound(self) -> None:
+        from prbot.review.runner import _extract_token_usage
+
+        usage = _extract_token_usage(
+            self._response(1_000_000, 0), model_id="who.knows.what",
+        )
+        assert usage.estimated_cost_usd == pytest.approx(15.00)
+
+    def test_missing_usage_block_costs_nothing(self) -> None:
+        from prbot.review.runner import _extract_token_usage
+
+        usage = _extract_token_usage({}, model_id="au.anthropic.claude-sonnet-4-6")
+        assert usage.input_tokens == 0
+        assert usage.estimated_cost_usd == 0.0
+
+
+class TestStructuredOutputIsEnforced:
+    """B5: FINDING_JSON_SCHEMA existed and was never sent to Bedrock.
+
+    converse() was called with no toolConfig and no inferenceConfig, so the
+    output shape was a prompt request, max output tokens and temperature were
+    whatever Bedrock defaults to, and _try_parse_json had to guess through
+    three fallbacks with a hard failure if all three missed.
+    """
+
+    @staticmethod
+    def _capture_converse() -> tuple[MagicMock, dict[str, Any]]:
+        captured: dict[str, Any] = {}
+
+        def converse(**kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "usage": {"inputTokens": 1, "outputTokens": 1},
+                "output": {
+                    "message": {
+                        "content": [
+                            {
+                                "toolUse": {
+                                    "name": "report_findings",
+                                    "input": {"findings": []},
+                                },
+                            },
+                        ],
+                    },
+                },
+            }
+
+        client = MagicMock()
+        client.converse.side_effect = converse
+        return client, captured
+
+    def _invoke(self, **overrides: Any) -> dict[str, Any]:
+        from prbot.review.runner import _invoke_bedrock
+
+        client, captured = self._capture_converse()
+        boto3 = MagicMock()
+        boto3.client.return_value = client
+        kwargs: dict[str, Any] = {
+            "model_id": "au.anthropic.claude-sonnet-4-6",
+            "system_prompt": "sys",
+            "user_prompt": "usr",
+            "aws_region": "ap-southeast-2",
+            "max_output_tokens": 4096,
+        }
+        kwargs.update(overrides)
+        with patch.dict("sys.modules", {"boto3": boto3}):
+            _invoke_bedrock(**kwargs)
+        return captured
+
+    def test_schema_is_sent_as_a_tool(self) -> None:
+        from prbot.review.models import FINDING_JSON_SCHEMA
+
+        captured = self._invoke()
+        tools = captured["toolConfig"]["tools"]
+        assert len(tools) == 1
+        assert tools[0]["toolSpec"]["inputSchema"]["json"] == FINDING_JSON_SCHEMA
+
+    def test_the_tool_is_forced(self) -> None:
+        captured = self._invoke()
+        choice = captured["toolConfig"]["toolChoice"]
+        assert "tool" in choice, "the model may still answer in prose"
+
+    def test_max_output_tokens_is_explicit(self) -> None:
+        captured = self._invoke(max_output_tokens=1234)
+        assert captured["inferenceConfig"]["maxTokens"] == 1234
+
+    def test_temperature_is_zero(self) -> None:
+        captured = self._invoke()
+        assert captured["inferenceConfig"]["temperature"] == 0.0
+
+
+class TestParseFindingsReadsToolUse:
+    """B5: structured output arrives in a toolUse block, not a text block."""
+
+    @staticmethod
+    def _finding(**overrides: Any) -> dict[str, Any]:
+        base = {
+            "check_id": "Q-ERR-01",
+            "title": "Bare except",
+            "description": "d",
+            "file_path": "src/app.py",
+            "line_start": 10,
+            "line_end": 12,
+            "severity": "medium",
+            "confidence": 80,
+            "suggestion": "s",
+        }
+        base.update(overrides)
+        return base
+
+    def test_reads_findings_from_tool_use(self) -> None:
+        response = {
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "toolUse": {
+                                "name": "report_findings",
+                                "input": {"findings": [self._finding()]},
+                            },
+                        },
+                    ],
+                },
+            },
+        }
+        findings = _parse_findings(response, "general")
+        assert len(findings) == 1
+        assert findings[0].check_id == "Q-ERR-01"
+
+    def test_prefers_tool_use_over_stray_prose(self) -> None:
+        response = {
+            "output": {
+                "message": {
+                    "content": [
+                        {"text": "Let me look at this diff."},
+                        {
+                            "toolUse": {
+                                "name": "report_findings",
+                                "input": {"findings": [self._finding()]},
+                            },
+                        },
+                    ],
+                },
+            },
+        }
+        assert len(_parse_findings(response, "general")) == 1
+
+    def test_text_block_still_parses_as_a_fallback(self) -> None:
+        response = {
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "text": json.dumps(
+                                {"findings": [self._finding()]},
+                            ),
+                        },
+                    ],
+                },
+            },
+        }
+        assert len(_parse_findings(response, "general")) == 1
+
+    def test_empty_tool_use_is_no_findings_not_an_error(self) -> None:
+        response = {
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "toolUse": {
+                                "name": "report_findings",
+                                "input": {"findings": []},
+                            },
+                        },
+                    ],
+                },
+            },
+        }
+        assert _parse_findings(response, "general") == []
+
+
+class TestRetryBackoffHasJitter:
+    """D9: CLAUDE.md claimed jitter; the retry had none."""
+
+    def test_backoff_varies_between_calls(self) -> None:
+        from prbot.review.runner import _backoff_seconds
+
+        values = {_backoff_seconds(1) for _ in range(40)}
+        assert len(values) > 1, (
+            "identical delays mean every throttled job retries on the same "
+            "beat, which is what jitter exists to prevent"
+        )
+
+    def test_backoff_grows_with_the_attempt(self) -> None:
+        from prbot.review.runner import _backoff_seconds
+
+        early = min(_backoff_seconds(0) for _ in range(40))
+        late = min(_backoff_seconds(3) for _ in range(40))
+        assert late > early
+
+    def test_backoff_is_never_negative(self) -> None:
+        from prbot.review.runner import _backoff_seconds
+
+        assert all(_backoff_seconds(a) >= 0 for a in range(5))
+
+
+class TestDeclaredDependenciesAreUsed:
+    """D9: tenacity was pinned in pyproject.toml and imported nowhere."""
+
+    def test_no_unused_runtime_dependency(self) -> None:
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent.parent
+        with (root / "pyproject.toml").open("rb") as handle:
+            deps = tomllib.load(handle)["project"]["dependencies"]
+        names = {
+            d.split(">")[0].split("<")[0].split("=")[0].split("[")[0].strip()
+            for d in deps
+        }
+        sources = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (root / "src").rglob("*.py")
+        )
+        for name in names:
+            assert name in sources, (
+                f"{name} is a declared runtime dependency that no module "
+                "imports"
+            )

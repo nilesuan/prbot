@@ -87,10 +87,7 @@ class TestExceptionHierarchy:
 
         assert BudgetExceededError("test").exit_code == 2
 
-    def test_diff_too_large_overrides_to_2(self) -> None:
-        from prbot.exceptions import DiffTooLargeError
 
-        assert DiffTooLargeError("test").exit_code == 2
 
     def test_timeout_budget_exhausted_exit_code_3(self) -> None:
         from prbot.exceptions import TimeoutBudgetExhausted
@@ -134,7 +131,11 @@ class TestVersion:
         import prbot
 
         assert hasattr(prbot, "__version__")
-        assert prbot.__version__ == "0.1.0"
+        # The value itself is checked in tests/test_release_metadata.py,
+        # which compares it with pyproject.toml. Pinning a literal here
+        # only makes every version bump fail two unrelated tests.
+        assert isinstance(prbot.__version__, str)
+        assert prbot.__version__.count(".") == 2
 
 
 class TestMainModule:

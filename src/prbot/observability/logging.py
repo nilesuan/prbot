@@ -1,76 +1,142 @@
 """Structured logging with structlog (story-8-1).
 
-JSON output to stdout. Token patterns redacted. Context
-variables for repo/PR/commit/review_id correlation.
+JSON output to stdout. Credential patterns redacted. Context variables for
+repo/PR/commit/review_id correlation.
+
+A3: stdlib records take the same path as structlog records. Sixteen modules
+in this package use logging.getLogger and two use structlog.get_logger. When
+the redaction processor was wired into structlog alone and stdlib logging was
+left on basicConfig, the great majority of prbot's own log lines went to
+stderr as unredacted plain text.
 """
 
 from __future__ import annotations
 
 import logging
-import re
+import sys
+from typing import Any
 
 import structlog
 
-# Patterns to redact from log values
-_TOKEN_PATTERNS = re.compile(
-    r"(?:"
-    r"ghp_[A-Za-z0-9_]{36,}"          # GitHub PAT
-    r"|glpat-[A-Za-z0-9_-]{20,}"      # GitLab PAT
-    r"|(?:AKIA|ASIA)[A-Z0-9]{16}"     # AWS access key
-    r"|Bearer\s+[A-Za-z0-9_.=-]+"     # Bearer tokens
-    r")",
-)
+from prbot.security.redaction import redact_secrets
 
 _REDACTED = "<REDACTED>"
+
+# Third-party loggers that print request signing material at DEBUG. These are
+# capped regardless of the configured level: PRBOT_LOG_LEVEL=DEBUG is meant to
+# show more of prbot, not to dump credential derivation from botocore.
+_CAPPED_LOGGERS = ("boto3", "botocore", "urllib3", "httpx", "httpcore", "s3transfer")
+_CAP_LEVEL = logging.INFO
+
+
+def redact_secrets_in_text(text: str) -> str:
+    """Replace every known credential shape in a string.
+
+    Shares SECRET_PATTERNS with the comment redactor so a shape can never be
+    known to one and unknown to the other, which is how ghs_, gho_ and
+    github_pat_ came to be redacted from review comments but not from logs.
+    """
+    return redact_secrets(text)[0]
 
 
 def _redact_processor(
     _logger: object,
     _method_name: str,
-    event_dict: dict[str, object],
-) -> dict[str, object]:
-    """Scan string values and redact token patterns."""
+    event_dict: dict[str, Any],
+) -> dict[str, Any]:
+    """Scan string values and redact credential patterns."""
     for key, value in event_dict.items():
         if isinstance(value, str):
-            event_dict[key] = _TOKEN_PATTERNS.sub(_REDACTED, value)
+            event_dict[key] = redact_secrets_in_text(value)
     return event_dict
 
 
-def configure_logging(log_level: str = "INFO") -> None:
-    """Configure structlog for JSON output to stdout.
+class _StdoutHandler(logging.StreamHandler):
+    """Write to whatever sys.stdout is at emit time.
 
-    Processor chain:
-    1. contextvars (for review context)
-    2. add_log_level
-    3. TimeStamper (ISO)
-    4. StackInfoRenderer
-    5. format_exc_info
-    6. UnicodeDecoder
-    7. _redact_processor (token scrubbing)
-    8. JSONRenderer
+    logging.StreamHandler binds its stream at construction. Resolving it
+    lazily keeps output going to the real stdout if the stream is replaced
+    after configure_logging has run, which is what an embedding process or a
+    test harness does.
     """
+
+    _prbot_handler = True
+
+    def __init__(self) -> None:
+        super().__init__(stream=sys.stdout)
+
+    @property
+    def stream(self) -> Any:
+        return sys.stdout
+
+    @stream.setter
+    def stream(self, _value: Any) -> None:
+        """Ignore assignment; StreamHandler.__init__ and setStream use it."""
+
+
+def _shared_processors() -> list[Any]:
+    """Processor chain applied to structlog and stdlib records alike."""
+    return [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        _redact_processor,
+    ]
+
+
+def configure_logging(log_level: str = "INFO") -> None:
+    """Configure structlog and stdlib logging for JSON output to stdout.
+
+    Both paths run the same processor chain, so a record emitted through
+    logging.getLogger is redacted, timestamped and correlated exactly like
+    one emitted through structlog.get_logger.
+
+    Safe to call more than once: the root handler is replaced, not appended.
+    """
+    shared = _shared_processors()
+
     structlog.configure(
         processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.stdlib.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
-            _redact_processor,
-            structlog.processors.JSONRenderer(),
+            *shared,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=False,
     )
 
-    # Configure stdlib logging for boto3/httpx
-    logging.basicConfig(
-        format="%(message)s",
-        level=getattr(logging, log_level.upper(), logging.INFO),
+    formatter = structlog.stdlib.ProcessorFormatter(
+        # Records that did not come from structlog are pushed through the
+        # same chain before rendering.
+        foreign_pre_chain=shared,
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.processors.JSONRenderer(),
+        ],
     )
+
+    handler = _StdoutHandler()
+    handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    # Replace only handlers this module installed. Handlers belonging to a
+    # test harness or an embedding application are left alone, so calling
+    # configure_logging twice cannot double up our own output and cannot
+    # tear down someone else's capture.
+    for existing in list(root.handlers):
+        if getattr(existing, "_prbot_handler", False):
+            root.removeHandler(existing)
+    root.addHandler(handler)
+    root.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+
+    for name in _CAPPED_LOGGERS:
+        logging.getLogger(name).setLevel(
+            max(_CAP_LEVEL, root.level),
+        )
 
 
 def bind_review_context(

@@ -1,5 +1,10 @@
 """Token resolution with validate-then-fallback pattern (story-2-1).
 
+Log redaction lives in prbot.observability.logging, which scrubs every
+record through prbot.security.redaction.SECRET_PATTERNS. This module
+previously carried a second, never-wired structlog processor whose
+pattern list had drifted from the one actually in use (A3).
+
 Resolution priority:
     1. Environment variable (GH_TOKEN / GITLAB_TOKEN)
     2. AWS Secrets Manager fallback (if secret_name configured)
@@ -14,7 +19,7 @@ import logging
 import os
 import re
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from prbot.exceptions import AuthError
 
@@ -41,9 +46,9 @@ _PLATFORM_TOKEN_VARS: dict[str, list[str]] = {
 
 
 def redact_tokens_from_string(text: str) -> str:
-    """Replace all recognized token patterns in text with <REDACTED>."""
+    """Replace all recognized token patterns in text with [REDACTED]."""
     for pattern in TOKEN_PATTERNS:
-        text = pattern.sub("<REDACTED>", text)
+        text = pattern.sub("[REDACTED]", text)
     return text
 
 
@@ -212,17 +217,3 @@ async def _fetch_from_secrets_manager(
             ) from e
 
     return await asyncio.to_thread(_sync_fetch)
-
-
-def redact_tokens_processor(
-    _logger: Any, _method: str, event_dict: dict[str, Any]
-) -> dict[str, Any]:
-    """Structlog processor that redacts token patterns from all string values (NG-20).
-
-    Scans every string value in the event dict and replaces recognized
-    token patterns with <REDACTED>.
-    """
-    for key, value in event_dict.items():
-        if isinstance(value, str):
-            event_dict[key] = redact_tokens_from_string(value)
-    return event_dict

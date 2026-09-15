@@ -25,6 +25,9 @@ class AgentAuditInfo:
     input_tokens: int
     output_tokens: int
     latency_ms: int
+    # A8: what this agent actually cost, from the token counts Bedrock
+    # returned and the model's pricing. Zero for an agent that errored.
+    cost_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,13 @@ class AuditRecord:
     reported_count: int
     borderline_count: int
     hidden_count: int
+    # C4: how many findings configuration removed. Recorded so a growing
+    # suppression list is visible in the audit trail, not only in a comment
+    # nobody re-reads.
+    suppressed_count: int
+
+    # Cost — what the run actually spent, not the pre-flight estimate
+    cost_usd: float
 
     # Safety
     hallucinations_removed: int
@@ -72,6 +82,13 @@ class AuditRecord:
     comment_posted: bool
     exit_code: int
     dry_run: bool
+
+    # C8: what happened to each finding since the last review. Zero in
+    # comment mode, where there are no threads to reconcile against.
+    findings_new: int = 0
+    findings_persisting: int = 0
+    findings_fixed: int = 0
+    findings_human_resolved: int = 0
 
     # Agents (default last — frozen dataclass ordering)
     agents: list[AgentAuditInfo] = field(default_factory=list)
@@ -110,14 +127,24 @@ def build_audit_record(
     borderline_count: int,
     hidden_count: int,
     hallucinations_removed: int,
+    suppressed_count: int = 0,
     pii_redacted: int,
     secrets_redacted: int,
     comment_posted: bool,
     exit_code: int,
     dry_run: bool,
+    cost_usd: float = 0.0,
+    outcome_counts: dict[str, int] | None = None,
 ) -> AuditRecord:
     """Build a complete audit record from pipeline state."""
+    outcomes = outcome_counts or {}
     return AuditRecord(
+        findings_new=outcomes.get("findings_new", 0),
+        findings_persisting=outcomes.get("findings_persisting", 0),
+        findings_fixed=outcomes.get("findings_fixed", 0),
+        findings_human_resolved=outcomes.get(
+            "findings_human_resolved", 0,
+        ),
         review_id=review_id,
         repo=repo,
         pr_number=pr_number,
@@ -138,11 +165,13 @@ def build_audit_record(
         budget_limit_usd=budget_limit_usd,
         draft_behavior=draft_behavior,
         agents=agents,
+        cost_usd=cost_usd,
         verdict=verdict,
         score=score,
         reported_count=reported_count,
         borderline_count=borderline_count,
         hidden_count=hidden_count,
+        suppressed_count=suppressed_count,
         hallucinations_removed=hallucinations_removed,
         pii_redacted=pii_redacted,
         secrets_redacted=secrets_redacted,

@@ -9,11 +9,7 @@ import logging
 import time
 from dataclasses import dataclass
 
-from prbot.exceptions import (
-    BudgetExceededError,
-    DiffTooLargeError,
-    TimeoutBudgetExhausted,
-)
+from prbot.exceptions import BudgetExceededError, TimeoutBudgetExhausted
 from prbot.review.prompts import estimate_prompt_tokens
 
 logger = logging.getLogger(__name__)
@@ -43,10 +39,6 @@ DEFAULT_PRICING: dict[str, float] = {
     "input": 15.00,
     "output": 75.00,
 }
-
-# Single-file dominance threshold — warn if one file is > 80% of diff
-_DOMINANCE_THRESHOLD = 0.8
-
 
 def get_model_pricing(model_id: str) -> dict[str, float]:
     """Look up per-million-token pricing for a model.
@@ -122,46 +114,6 @@ def estimate_cost(
         )
 
     return estimate
-
-
-def validate_diff_size(
-    diff_text: str,
-    max_diff_tokens: int,
-    file_sizes: list[tuple[str, int]] | None = None,
-) -> int:
-    """Validate diff size before review (S4).
-
-    Args:
-        diff_text: Full diff text.
-        max_diff_tokens: Maximum allowed tokens.
-        file_sizes: Optional list of (path, token_count) for dominance check.
-
-    Returns:
-        Estimated token count.
-
-    Raises:
-        DiffTooLargeError: If diff exceeds max_diff_tokens.
-    """
-    tokens = estimate_prompt_tokens(diff_text)
-
-    if tokens > max_diff_tokens:
-        raise DiffTooLargeError(
-            f"Diff size ({tokens} estimated tokens) exceeds "
-            f"max_diff_tokens ({max_diff_tokens})"
-        )
-
-    # Check single-file dominance
-    if file_sizes and tokens > 0:
-        for path, file_tokens in file_sizes:
-            ratio = file_tokens / tokens
-            if ratio > _DOMINANCE_THRESHOLD:
-                logger.warning(
-                    "Single file %s dominates diff (%.0f%% of tokens)",
-                    path,
-                    ratio * 100,
-                )
-
-    return tokens
 
 
 class TimeoutBudget:

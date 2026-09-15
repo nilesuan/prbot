@@ -24,7 +24,9 @@ class TestParseArgs:
             parse_args(["--version"])
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
-        assert "0.1.0" in captured.out
+        from prbot import __version__
+
+        assert __version__ in captured.out
 
     def test_all_flags(self) -> None:
         args = parse_args([
@@ -45,7 +47,9 @@ class TestParseArgs:
         assert args.platform is None
         assert args.pr_number is None
         assert args.repo is None
-        assert args.dry_run is False
+        # None, not False: an absent flag must not overwrite the env var or
+        # TOML layers in build_config (A1).
+        assert args.dry_run is None
 
 
 class TestMain:
@@ -74,3 +78,64 @@ class TestMain:
         assert EXIT_PASS == 0
         assert EXIT_BLOCKERS == 1
         assert EXIT_CONFIG_ERROR == 2
+
+
+class TestUnexpectedErrorsExitThree:
+    """D4: a crash must not be reported to CI as REQUEST_CHANGES."""
+
+    def test_unexpected_exception_exits_infra_not_blockers(self) -> None:
+        from prbot.cli import EXIT_INFRA_ERROR, main
+
+        boom = AsyncMock(side_effect=RuntimeError("something unforeseen"))
+        with patch("prbot.cli.run_pipeline", boom), pytest.raises(
+            SystemExit,
+        ) as exc:
+            main(["--platform", "github", "--repo", "o/r", "--pr", "1"])
+        assert exc.value.code == EXIT_INFRA_ERROR
+
+    def test_keyboard_interrupt_is_not_a_blocking_review(self) -> None:
+        from prbot.cli import EXIT_INFRA_ERROR, main
+
+        stop = AsyncMock(side_effect=KeyboardInterrupt())
+        with patch("prbot.cli.run_pipeline", stop), pytest.raises(
+            SystemExit,
+        ) as exc:
+            main(["--platform", "github", "--repo", "o/r", "--pr", "1"])
+        assert exc.value.code == EXIT_INFRA_ERROR
+
+
+class TestExitCodesComeFromTheExceptions:
+    """GEN-MAINT-02: main() kept a second copy of the exit-code mapping."""
+
+    def test_insufficient_scopes_exits_config_error(self) -> None:
+        from prbot.cli import EXIT_CONFIG_ERROR, main
+        from prbot.exceptions import InsufficientScopesError
+
+        boom = AsyncMock(side_effect=InsufficientScopesError("missing repo"))
+        with patch("prbot.cli.run_pipeline", boom), pytest.raises(
+            SystemExit,
+        ) as exc:
+            main(["--platform", "github", "--repo", "o/r", "--pr", "1"])
+        assert exc.value.code == EXIT_CONFIG_ERROR
+
+    def test_auth_error_exits_infra_error(self) -> None:
+        from prbot.cli import EXIT_INFRA_ERROR, main
+        from prbot.exceptions import AuthError
+
+        boom = AsyncMock(side_effect=AuthError("no token"))
+        with patch("prbot.cli.run_pipeline", boom), pytest.raises(
+            SystemExit,
+        ) as exc:
+            main(["--platform", "github", "--repo", "o/r", "--pr", "1"])
+        assert exc.value.code == EXIT_INFRA_ERROR
+
+    def test_the_mapping_lives_only_in_exceptions(self) -> None:
+        """One source of truth: exceptions.py declares exit_code per class."""
+        import inspect
+
+        from prbot import cli
+
+        source = inspect.getsource(cli.main)
+        assert "InsufficientScopesError" not in source
+        assert "except AuthError" not in source
+        assert "e.exit_code" in source

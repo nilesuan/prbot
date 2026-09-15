@@ -18,7 +18,6 @@ from prbot.auth.credentials import validate_aws_session_credentials
 from prbot.auth.token import (
     TokenResult,
     redact_tokens_from_string,
-    redact_tokens_processor,
     resolve_token,
 )
 from prbot.config import PrBotConfig
@@ -269,22 +268,22 @@ class TestRedactTokensFromString:
     def test_ghp_classic_pat(self) -> None:
         token = "ghp_" + "A" * 36
         result = redact_tokens_from_string(f"token: {token}")
-        assert "<REDACTED>" in result
+        assert "[REDACTED]" in result
         assert token not in result
 
     def test_github_fine_grained_pat(self) -> None:
         token = "github_pat_" + "a" * 82
         result = redact_tokens_from_string(f"Bearer {token}")
-        assert "<REDACTED>" in result
+        assert "[REDACTED]" in result
         assert token not in result
 
     def test_ghs_app_token(self) -> None:
         token = "ghs_" + "A" * 36
-        assert "<REDACTED>" in redact_tokens_from_string(token)
+        assert "[REDACTED]" in redact_tokens_from_string(token)
 
     def test_glpat_gitlab(self) -> None:
         token = "glpat-" + "a" * 20
-        assert "<REDACTED>" in redact_tokens_from_string(token)
+        assert "[REDACTED]" in redact_tokens_from_string(token)
 
     def test_no_tokens_unchanged(self) -> None:
         text = "This has no tokens at all"
@@ -295,40 +294,44 @@ class TestRedactTokensFromString:
         glpat = "glpat-" + "b" * 20
         text = f"first={ghp} second={glpat}"
         result = redact_tokens_from_string(text)
-        assert result.count("<REDACTED>") == 2
+        assert result.count("[REDACTED]") == 2
 
     def test_token_in_url(self) -> None:
         token = "ghp_" + "x" * 36
         text = f"https://api.github.com?token={token}"
         result = redact_tokens_from_string(text)
         assert token not in result
-        assert "<REDACTED>" in result
+        assert "[REDACTED]" in result
 
 
-class TestRedactTokensProcessor:
-    """Test structlog processor."""
+class TestLogRedactionProcessor:
+    """A3: the processor that is actually installed by configure_logging."""
 
     def test_redacts_event_string(self) -> None:
+        from prbot.observability.logging import _redact_processor
+
         token = "ghp_" + "a" * 36
-        event_dict: dict[str, object] = {
-            "event": f"Using token {token}",
-        }
-        result = redact_tokens_processor(None, "info", event_dict)
+        event_dict: dict[str, object] = {"event": f"Using token {token}"}
+        result = _redact_processor(None, "info", event_dict)
         assert token not in str(result["event"])
-        assert "<REDACTED>" in str(result["event"])
+        assert "[REDACTED]" in str(result["event"])
 
     def test_redacts_arbitrary_string_values(self) -> None:
+        from prbot.observability.logging import _redact_processor
+
         token = "glpat-" + "b" * 20
         event_dict: dict[str, object] = {
             "event": "auth",
             "header": f"PRIVATE-TOKEN: {token}",
         }
-        result = redact_tokens_processor(None, "info", event_dict)
+        result = _redact_processor(None, "info", event_dict)
         assert token not in str(result["header"])
 
     def test_ignores_non_string_values(self) -> None:
+        from prbot.observability.logging import _redact_processor
+
         event_dict: dict[str, object] = {"event": "test", "count": 42}
-        result = redact_tokens_processor(None, "info", event_dict)
+        result = _redact_processor(None, "info", event_dict)
         assert result["count"] == 42
 
 
@@ -362,3 +365,86 @@ class TestOidcValidation:
     def test_no_credentials(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             assert validate_aws_session_credentials() is False
+
+
+class TestScopeValidationDegradesHonestly:
+    """A9: scope validation must run, and must not break token types that
+    cannot report scopes.
+
+    A GitHub Actions GITHUB_TOKEN is an installation token and a
+    fine-grained PAT is not an OAuth token; neither returns an
+    X-OAuth-Scopes header. Treating an absent header as "no scopes granted"
+    would fail every GitHub Actions run, which is the primary path.
+    """
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_github_absent_scope_header_is_not_a_failure(self) -> None:
+        from prbot.auth.scope import validate_token_scopes
+
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(200, json={"login": "prbot[bot]"}),
+        )
+        token = TokenResult(value="ghs_installation", source="test")
+        await validate_token_scopes(token, "github")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_github_empty_scope_header_is_not_a_failure(self) -> None:
+        """A fine-grained PAT returns the header with an empty value."""
+        from prbot.auth.scope import validate_token_scopes
+
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(200, headers={"x-oauth-scopes": ""}),
+        )
+        token = TokenResult(value="github_pat_x", source="test")
+        await validate_token_scopes(token, "github")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_github_populated_header_is_still_enforced(self) -> None:
+        from prbot.auth.scope import validate_token_scopes
+
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(
+                200, headers={"x-oauth-scopes": "gist, read:org"},
+            ),
+        )
+        token = TokenResult(value="ghp_classic", source="test")
+        with pytest.raises(InsufficientScopesError, match="repo"):
+            await validate_token_scopes(token, "github")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_gitlab_job_token_cannot_introspect(self) -> None:
+        """CI_JOB_TOKEN gets 401 from the PAT endpoint; that is not a fault."""
+        from prbot.auth.scope import validate_token_scopes
+
+        url = "https://gitlab.com/api/v4/personal_access_tokens/self"
+        respx.get(url).mock(return_value=httpx.Response(401))
+        token = TokenResult(value="job-token", source="test")
+        await validate_token_scopes(token, "gitlab")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_gitlab_missing_endpoint_is_not_a_failure(self) -> None:
+        """Older self-hosted GitLab has no /personal_access_tokens/self."""
+        from prbot.auth.scope import validate_token_scopes
+
+        url = "https://gitlab.com/api/v4/personal_access_tokens/self"
+        respx.get(url).mock(return_value=httpx.Response(404))
+        token = TokenResult(value="glpat-test", source="test")
+        await validate_token_scopes(token, "gitlab")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_gitlab_reported_scopes_are_still_enforced(self) -> None:
+        from prbot.auth.scope import validate_token_scopes
+
+        url = "https://gitlab.com/api/v4/personal_access_tokens/self"
+        respx.get(url).mock(
+            return_value=httpx.Response(200, json={"scopes": ["read_user"]}),
+        )
+        token = TokenResult(value="glpat-test", source="test")
+        with pytest.raises(InsufficientScopesError, match="api"):
+            await validate_token_scopes(token, "gitlab")

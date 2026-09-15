@@ -8,10 +8,48 @@ Security-hardened, AI-powered PR/MR review bot. Runs as a container in GitHub Ac
 
 Every PR gets reviewed by two independent AI agents running concurrently:
 
-- **General agent** (Claude Sonnet) -- architecture, maintainability, testing, error handling, API contracts, and completeness
-- **Security agent** (Claude Opus) -- credentials, injection, auth, cryptography, and data safety
+- **General agent** -- architecture, maintainability, testing, error handling, API contracts, and completeness
+- **Security agent** -- credentials, injection, auth, cryptography, and data safety
+
+Both default to Claude Sonnet. Either can be pointed at a different model with `PRBOT_GENERAL_MODEL_ID` and `PRBOT_SECURITY_MODEL_ID`.
 
 Two models catch what one misses. If one agent fails, the other still produces findings -- partial failure never blocks the review.
+
+### Adversarial Agent (optional)
+
+A third agent that asks a different question. The two default agents work from
+category checklists, so they find what resembles a listed pattern and miss what
+fits no category. The adversarial agent is asked to construct a concrete
+failure instead, and every one of its findings must carry a `failure_scenario`:
+the trigger, then the wrong outcome. A finding without one is dropped, so a
+model that hedges produces nothing rather than noise.
+
+Its categories are about behaviour rather than shape: silent no-ops (a guard
+that does not guard, a glob that matches nothing, a config value overwritten
+before it is read), boundaries and degenerate input, failure and partial
+failure, ordering and concurrency, and contract drift.
+
+It is off by default, because a third agent is roughly 50% more spend per
+review. Enable it by declaring the roster:
+
+```toml
+[[prbot.agents]]
+name = "general"
+check_prefix = "Q-"
+
+[[prbot.agents]]
+name = "security"
+check_prefix = "S-"
+
+[[prbot.agents]]
+name = "adversarial"
+check_prefix = "X-"
+```
+
+The roster is also how you add your own agent: drop `myagent.md` into a
+directory, point `PRBOT_PROMPTS_DIR` at it, and give the agent a name and a
+check prefix. Each entry may set its own `model_id`, and `enabled = false`
+turns one off without deleting it.
 
 ### Confidence-Based Scoring
 
@@ -25,15 +63,16 @@ Each finding has a severity weight and confidence score. The combination produce
 
 ### Security by Default
 
-- **4-layer prompt injection defense** -- system/user message separation, Microsoft Spotlighting datamarking, hallucination validation against actual diff content, output redaction
-- **Token safety** -- tokens never appear in `repr()`/`str()`, structlog processor redacts patterns at runtime, CI masking via `::add-mask::`
+- **5-layer prompt injection defense** -- system/user message separation, Microsoft Spotlighting datamarking (structure-preserving, so hunk headers and line prefixes survive), hallucination validation against actual diff content, output redaction, and sanitisation of everything the model writes into the posted comment
+- **Token safety** -- tokens never appear in `repr()`/`str()`, every log record goes through one redaction processor regardless of whether it came from structlog or stdlib logging, CI masking via `::add-mask::`
 - **SSRF protection** -- all URLs validated against private/loopback/metadata addresses
 - **Signed container image** -- Cosign keyless signing with Sigstore for supply chain verification
 - **Vulnerability scanning** -- Trivy scans every build for CRITICAL/HIGH CVEs
 - **OIDC authentication** -- short-lived AWS credentials via GitHub/GitLab OIDC federation (no static keys)
 - **Path traversal rejection** -- findings with `..` or absolute paths in `file_path` are dropped
 - **PII redaction** -- personal data patterns removed from review comments before posting
-- **Secret redaction** -- GitHub PATs, GitLab PATs, AWS keys, Bearer tokens caught and replaced
+- **Secret redaction** -- GitHub PATs, GitLab PATs, AWS long-lived and temporary keys, Bearer tokens caught and replaced, with the label kept so the reader can see what was found
+- **Structured output** -- findings come back through a forced tool carrying a JSON schema, at temperature 0, with an explicit output token cap
 
 ### Completeness Checks
 
@@ -44,6 +83,98 @@ prbot doesn't just review code quality -- it checks that PRs are complete:
 - Missing changelog entries for non-trivial changes
 - Outdated examples when public APIs change
 
+### Inline Comments and Real Reviews
+
+By default prbot posts one summary comment. Set `PRBOT_REVIEW_MODE=review` and
+it submits a platform review instead: each finding that lands on a line the
+diff covers becomes a comment on that line, and the verdict reaches the pull
+request rather than only the exit code. On GitHub that is one review with
+`event: APPROVE`, `COMMENT` or `REQUEST_CHANGES`, pinned to the commit
+reviewed. On GitLab it is a summary note, one positioned discussion per
+finding, and approve or unapprove.
+
+A finding whose lines fall outside the diff stays in the summary rather than
+being anchored to a line the platform would reject. An inline position the
+platform refuses, usually a line that has moved, is dropped with a warning:
+losing one anchor is acceptable, losing the review is not.
+
+### Surrounding Code
+
+A hunk carries three lines of context, which is rarely the enclosing function,
+so a judgement about architecture or test coverage is being made without the
+thing being judged. `PRBOT_CONTEXT_LINES=30` includes that many numbered lines
+of the head revision around each hunk.
+
+It defaults to 0. The extra tokens are real and whether they buy enough
+precision to be worth it is a question for measurement on your own pull
+requests, not one to settle by argument. The excerpt is datamarked like the
+patch, since it is file content from the same pull request.
+
+### Large Diffs
+
+A diff larger than `PRBOT_MAX_DIFF_TOKENS` used to be refused outright, so the
+pull requests most worth reviewing got no review. It is now reviewed in
+several passes, packed by file in their original order, and the findings are
+merged and deduplicated as though they came from one pass.
+
+The cost of the whole run is estimated before any call is made and checked
+against `PRBOT_BUDGET_LIMIT_USD`, so splitting cannot quietly multiply the
+bill. Lowering `PRBOT_MAX_DIFF_TOKENS` is now a way to trade money for
+attention: smaller passes mean the model reads less at once.
+
+### One Comment Per Finding, and Closing Them Out
+
+In `review` mode each finding is posted as its own comment thread, stamped
+with an invisible fingerprint of the file, the check and what the finding
+says. Deliberately not the line numbers: a defect on line 12 that becomes
+line 400 because something was inserted above it is the same defect.
+
+On the next review prbot reads back the threads it wrote and sorts them:
+
+| | What prbot does | What it means |
+|---|---|---|
+| Still reported | Leaves the thread alone | Not acted on yet |
+| No longer reported | Replies "No longer reported as of `abc1234`" and resolves the thread | The author fixed it |
+| Resolved by a human | Leaves it alone, never re-raises it | Someone decided it is settled |
+
+That makes the pull request itself the store. Nothing else has to hold state,
+and the record of what happened sits where the people who did it are looking.
+
+It also gives the numbers the thresholds need. Every run records how many
+findings were new, persisting, fixed and human-resolved, which is what turns
+`PRBOT_BLOCKER_THRESHOLD` into a calibration rather than a guess. Send those
+somewhere with `PRBOT_METRICS_FILE` or `PRBOT_METRICS_NAMESPACE`.
+
+Threads without prbot's fingerprint are ignored entirely. Human review threads
+are none of the bot's business.
+
+On GitHub, resolution state and resolving both need GraphQL. If the token
+cannot reach it, prbot falls back to REST: findings are still deduplicated and
+replied to, but a thread a human resolved may be re-reported. It says so in
+the log when that happens.
+
+### Suppressing a Finding
+
+A nit that comes back on every push is the most common reason a team turns a
+review bot off. Suppress one in `.prbot.toml`:
+
+```toml
+[[prbot.suppress]]
+check_id = "Q-MAINT"          # a whole family, or "Q-MAINT-03" for one check
+path = "src/legacy/**"        # optional, gitignore syntax
+max_severity = "medium"       # optional: never silence a critical
+reason = "Rewrite tracked in PROJ-123"
+```
+
+`reason` is required, because an undocumented suppression is indistinguishable
+from a bug six months later. Every comment states how many findings the
+configuration removed, and the audit record carries the count, so the list
+cannot quietly grow into a gag.
+
+`max_severity` is worth setting. Without it, a rule written to silence long
+functions also silences a critical finding that happens to share the check
+family.
+
 ### Smart Pre-flight Skipping
 
 Reviews are skipped automatically when they'd be wasted:
@@ -53,9 +184,21 @@ Reviews are skipped automatically when they'd be wasted:
 - Bot authors (Dependabot, Renovate, GitHub Actions, self-review loop prevention)
 - Empty diffs after exclusion patterns are applied
 
-### Idempotent Comments
+### Idempotent Comments and Incremental Review
 
-prbot finds and updates its previous comment instead of posting duplicates. State is tracked via an embedded `<!-- prbot:state:... -->` HTML comment with HMAC-SHA256 integrity.
+prbot finds and updates its previous comment instead of posting
+duplicates, using a state record embedded in an HTML comment.
+
+That record also carries the commit the review was for. A re-run against
+a commit that has already been reviewed skips the review entirely and
+carries the previous verdict through to the exit code, which matters on
+a pipeline that reruns, or a PR that is closed and reopened. Set
+`PRBOT_FORCE_REVIEW=true` to review anyway.
+
+The record is advisory, not authenticated: its digest is salted with an
+identifier published beside it. It is only ever read from a comment
+authored by prbot's own token, and anything that matters is verified
+against the API instead.
 
 ### Full Observability
 
@@ -137,9 +280,9 @@ Deductions are weighted by confidence: `weight * (confidence / 100)`. A critical
 | Scenario | Verdict | Exit Code |
 |----------|---------|-----------|
 | No findings, all agents OK | APPROVE | 0 |
-| Findings present, score above threshold | COMMENT | 0 |
-| Critical finding at high confidence | REQUEST_CHANGES | 1 |
-| Score below blocker threshold | REQUEST_CHANGES | 1 |
+| Findings present, no blocker, score passes | COMMENT | 0 |
+| Critical or high finding at or above `PRBOT_BLOCKER_THRESHOLD` | REQUEST_CHANGES | 1 |
+| Score below `PRBOT_MIN_PASSING_SCORE` | REQUEST_CHANGES | 1 |
 | Any agent failed | COMMENT (never approve/reject with incomplete data) | 0 |
 | Both agents failed | COMMENT with error details | 3 |
 
@@ -161,22 +304,53 @@ permissions:
   pull-requests: write
   id-token: write
 
+env:
+  PRBOT_IMAGE: ghcr.io/nilesuan/prbot
+  PRBOT_IMAGE_TAG: v0.2.0
+
 jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+      - uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a  # v3.8.1
+
+      # Resolve the tag once, verify that digest, run that digest.
+      - name: Resolve image digest
+        id: image
+        run: |
+          digest=$(docker buildx imagetools inspect \
+            "${PRBOT_IMAGE}:${PRBOT_IMAGE_TAG}" \
+            --format '{{.Manifest.Digest}}')
+          echo "ref=${PRBOT_IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify prbot image
+        run: |
+          cosign verify "${{ steps.image.outputs.ref }}" \
+            --certificate-identity-regexp='^https://github\.com/nilesuan/prbot/\.github/workflows/' \
+            --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
+
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
         with:
           role-to-assume: ${{ vars.PRBOT_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.PRBOT_AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ vars.PRBOT_AWS_REGION || 'ap-southeast-2' }}
 
-      - uses: docker://ghcr.io/nilesuan/prbot:latest
+      - name: Run prbot
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PRBOT_PLATFORM: github
-          PRBOT_REPO: ${{ github.repository }}
-          PRBOT_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          docker run --rm \
+            -e GITHUB_TOKEN -e GITHUB_ACTIONS=true -e GITHUB_API_URL \
+            -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+            -e AWS_REGION -e AWS_DEFAULT_REGION \
+            -e PRBOT_PLATFORM=github \
+            -e PRBOT_REPO="${{ github.repository }}" \
+            -e PRBOT_PR_NUMBER="${{ github.event.pull_request.number }}" \
+            "${{ steps.image.outputs.ref }}"
 ```
+
+`uses: docker://` cannot interpolate an expression, which is why the container
+is launched with an explicit `docker run`: it is the only way to guarantee the
+image that runs is the image that was verified.
 
 ### GitLab
 
@@ -185,14 +359,26 @@ Add to `.gitlab-ci.yml`:
 ```yaml
 prbot-review:
   stage: test
-  image: ghcr.io/nilesuan/prbot:latest
+  image: ghcr.io/nilesuan/prbot:v0.2.0
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com  # must match the role's trust policy
   variables:
     PRBOT_PLATFORM: gitlab
     PRBOT_REPO: $CI_PROJECT_PATH
     PRBOT_PR_NUMBER: $CI_MERGE_REQUEST_IID
+    PRBOT_AWS_REGION: $PRBOT_AWS_REGION
+    AWS_REGION: $PRBOT_AWS_REGION
+    AWS_ROLE_ARN: $PRBOT_AWS_ROLE_ARN
+    AWS_WEB_IDENTITY_TOKEN_FILE: /tmp/prbot-oidc-token
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   allow_failure: true
+  before_script:
+    # boto3 performs the web identity exchange itself. The image contains a
+    # Python virtual environment only, so there is no `aws` CLI in it.
+    - umask 077
+    - printf '%s' "$GITLAB_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
   script:
     - prbot --platform gitlab --repo "$CI_PROJECT_PATH" --pr "$CI_MERGE_REQUEST_IID"
 ```
@@ -200,6 +386,13 @@ prbot-review:
 See [docs/github-setup.md](docs/github-setup.md) and [docs/gitlab-setup.md](docs/gitlab-setup.md) for full guides including AWS OIDC setup, fork PR handling, self-hosted GitLab, and all configuration options.
 
 ## Configuration
+
+prbot does not read `.prbot.toml` from the working directory unless you
+ask it to. A CI runner clones the branch under review into that
+directory, so a configuration file found there is one the reviewed code
+controls, and it can set the API base URL the token is sent to. Name a
+file with `--config`, or set `PRBOT_ALLOW_IMPLICIT_CONFIG=1` for local
+use. The opt-in never applies inside CI.
 
 All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.toml`, or CLI flags. Merge priority: CLI > env > TOML > defaults.
 
@@ -209,16 +402,38 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_REPO` | auto-detected | Repository in `owner/repo` format |
 | `PRBOT_PR_NUMBER` | auto-detected | PR/MR number |
 | `PRBOT_AWS_REGION` | `ap-southeast-2` | AWS region for Bedrock |
+| `PRBOT_ALLOWED_REGIONS` | `ap-southeast-2` | Comma-separated regions the review may run in |
 | `PRBOT_CONFIDENCE_THRESHOLD` | `70` | Minimum confidence to report a finding |
-| `PRBOT_BLOCKER_THRESHOLD` | `70` | Minimum confidence for blocker findings |
-| `PRBOT_GENERAL_MODEL_ID` | `us.anthropic.claude-sonnet-4-20250514` | General review model |
-| `PRBOT_SECURITY_MODEL_ID` | `us.anthropic.claude-opus-4-0-20250514` | Security review model |
-| `PRBOT_MAX_DIFF_TOKENS` | `100000` | Max diff size before rejection |
+| `PRBOT_BLOCKER_THRESHOLD` | `70` | Minimum **confidence** at which a critical or high finding blocks |
+| `PRBOT_MIN_PASSING_SCORE` | `70` | Minimum **score** (0-100) a review must reach to pass |
+| `PRBOT_GENERAL_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | General review model |
+| `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | Security review model |
+| `PRBOT_MAX_DIFF_TOKENS` | `100000` | Tokens per review call; a larger diff is reviewed in several passes |
+| `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
+| `PRBOT_CONTEXT_LINES` | `0` | Lines of surrounding code to include around each hunk |
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Max estimated cost per review |
 | `PRBOT_TIMEOUT_SECONDS` | `300` | Review timeout |
 | `PRBOT_DRAFT_BEHAVIOR` | `skip` | `skip` or `review` for draft PRs |
-| `PRBOT_EXCLUDED_PATTERNS` | *(none)* | Glob patterns to exclude from review |
+| `PRBOT_REVIEW_MODE` | `comment` | `comment` for one summary comment, `review` for a platform review with inline comments |
+| `PRBOT_FORCE_REVIEW` | `false` | Review again even if this commit was already reviewed |
+| `PRBOT_EXCLUDED_PATTERNS` | *(none)* | Comma-separated gitignore-style patterns to exclude |
+| `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |
+| `PRBOT_LOG_LEVEL` | `INFO` | Log level for prbot's own output |
+| `PRBOT_ALLOW_IMPLICIT_CONFIG` | *(unset)* | Allow searching the working directory for `.prbot.toml`; never applies in CI |
+| `PRBOT_METRICS_FILE` | *(none)* | Append run metrics as JSON lines, for a CI artifact |
+| `PRBOT_METRICS_NAMESPACE` | *(none)* | Publish run metrics to CloudWatch under this namespace |
 | `PRBOT_DRY_RUN` | `false` | Print review without posting |
+| `PRBOT_SECRET_NAME` | *(none)* | Secrets Manager secret holding the VCS token |
+| `PRBOT_API_BASE_URL` | platform default | API base URL for GitHub Enterprise or self-hosted GitLab |
+
+`PRBOT_BLOCKER_THRESHOLD` and `PRBOT_MIN_PASSING_SCORE` are different
+quantities that share a range. The first asks how sure the model is about one
+finding; the second asks how the review scored overall.
+
+Exclusion patterns use gitignore syntax. A pattern with no separator matches
+at any depth (`*.lock`), a leading `**/` matches the root as well as any
+subdirectory (`**/node_modules/**`), and a pattern with a separator is
+anchored to the repository root (`vendor/**`).
 
 ## Exit Codes
 
@@ -245,4 +460,5 @@ src/prbot/
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+Not yet chosen. Until a licence is added, no permission to use,
+copy, modify or distribute this code is granted.

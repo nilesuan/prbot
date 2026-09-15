@@ -25,13 +25,17 @@ _EU_REGIONS = frozenset({
 
 _AP_REGIONS = frozenset({
     "ap-southeast-1", "ap-southeast-2", "ap-southeast-3",
+    "ap-southeast-4", "ap-southeast-5", "ap-southeast-7",
     "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
     "ap-south-1", "ap-south-2", "ap-east-1",
 })
 
-# AU cross-region inference profiles route within Australia (ap-southeast-2)
+# AU cross-region inference profiles route within Australia. Both
+# Australian regions belong here; listing Sydney alone rejected a Melbourne
+# deployment using the profile built for exactly that purpose (D5).
 _AU_REGIONS = frozenset({
-    "ap-southeast-2",
+    "ap-southeast-2",  # Sydney
+    "ap-southeast-4",  # Melbourne
 })
 
 
@@ -42,14 +46,21 @@ def _get_profile_region_group(model_id: str) -> str | None:
     """
     if "." in model_id:
         prefix = model_id.split(".")[0]
-        if prefix in ("us", "eu", "ap", "au"):
+        if prefix in ("us", "eu", "ap", "apac", "au"):
             return prefix
     return None
 
 
 def _region_in_group(region: str, group: str) -> bool:
     """Check if a region belongs to a geographic group."""
-    groups = {"us": _US_REGIONS, "eu": _EU_REGIONS, "ap": _AP_REGIONS, "au": _AU_REGIONS}
+    groups = {
+        "us": _US_REGIONS,
+        "eu": _EU_REGIONS,
+        # AWS uses both "ap" and "apac" as the Asia Pacific prefix.
+        "ap": _AP_REGIONS,
+        "apac": _AP_REGIONS,
+        "au": _AU_REGIONS,
+    }
     return region in groups.get(group, set())
 
 

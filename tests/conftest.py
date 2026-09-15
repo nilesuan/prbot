@@ -15,6 +15,38 @@ _HEAD_SHA = "abcdef1234567890abcdef1234567890abcdef12"
 _BASE_SHA = "1234567890abcdef1234567890abcdef12345678"
 
 
+@pytest.fixture(autouse=True)
+def _no_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve every hostname to a public address.
+
+    The SSRF guard resolves a hostname before trusting it (SEC-DATA-02), so
+    without this the suite would depend on real DNS and on example.com-style
+    names that do not resolve. Tests that care about what a name resolves to
+    override this with their own stub.
+    """
+    import socket
+
+    def _fake(host, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("140.82.121.6", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake)
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove retry sleeps from the suite.
+
+    The VCS adapters retry rate limits and server errors with exponential
+    backoff (D3). Several tests deliberately return a 429 or a 500, so
+    without this the suite spends most of its wall clock asleep. Tests that
+    assert on the backoff itself set the constants they need.
+    """
+    import prbot.vcs.retry as retry_module
+
+    monkeypatch.setattr(retry_module, "RETRY_BASE_SECONDS", 0.0)
+    monkeypatch.setattr(retry_module, "MAX_RETRY_AFTER_SECONDS", 0.0)
+
+
 @pytest.fixture
 def mock_boto3() -> Generator[boto3.client, None, None]:
     """Provide a moto-backed Secrets Manager with a pre-seeded token."""
@@ -39,6 +71,8 @@ class FakeVCSAdapter:
         metadata: PRMetadata | None = None,
         diff: PRDiff | None = None,
         bot_comment: tuple[int, str] | None = None,
+        file_contents: dict[str, str] | None = None,
+        review_threads: list[object] | None = None,
         authenticated_user: str = "prbot[bot]",
     ) -> None:
         self.metadata = metadata or PRMetadata(
@@ -66,12 +100,17 @@ class FakeVCSAdapter:
             base_sha=_BASE_SHA,
         )
         self.bot_comment = bot_comment
+        self.file_contents: dict[str, str] = file_contents or {}
+        self.review_threads: list[object] = list(review_threads or [])
         self._authenticated_user = authenticated_user
 
         # Call recording
         self.calls: list[str] = []
         self.posted_comments: list[str] = []
         self.updated_comments: list[tuple[int, str]] = []
+        self.submitted_reviews: list[tuple[str, str, list[object]]] = []
+        self.replies: list[tuple[str, str]] = []
+        self.resolved: list[str] = []
         self._next_comment_id = 100
 
     async def get_pr_metadata(self) -> PRMetadata:
@@ -81,6 +120,10 @@ class FakeVCSAdapter:
     async def get_diff(self) -> PRDiff:
         self.calls.append("get_diff")
         return self.diff
+
+    async def get_file_content(self, path: str, ref: str) -> str | None:
+        self.calls.append("get_file_content")
+        return self.file_contents.get(path)
 
     async def get_authenticated_user(self) -> str:
         self.calls.append("get_authenticated_user")
@@ -108,6 +151,32 @@ class FakeVCSAdapter:
             self.updated_comments.append((comment_id, body))
             return comment_id
         return await self.post_comment(body)
+
+    async def list_review_threads(self) -> list[object]:
+        self.calls.append("list_review_threads")
+        return list(self.review_threads)
+
+    async def reply_to_thread(self, thread: object, body: str) -> None:
+        self.calls.append("reply_to_thread")
+        self.replies.append((getattr(thread, "id", ""), body))
+
+    async def resolve_thread(self, thread: object) -> bool:
+        self.calls.append("resolve_thread")
+        self.resolved.append(getattr(thread, "id", ""))
+        return True
+
+    async def submit_review(
+        self,
+        body: str,
+        event: str,
+        comments: list[object],
+        *,
+        head_sha: str,
+        base_sha: str,
+    ) -> int:
+        self.calls.append("submit_review")
+        self.submitted_reviews.append((body, event, list(comments)))
+        return 900
 
     async def close(self) -> None:
         self.calls.append("close")

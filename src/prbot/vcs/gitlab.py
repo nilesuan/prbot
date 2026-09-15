@@ -22,11 +22,31 @@ from prbot.exceptions import (
     VCSResponseError,
     VCSServerError,
 )
-from prbot.vcs.models import FileDiff, PRDiff, PRMetadata, validate_response
+from prbot.vcs.models import (
+    FileDiff,
+    InlineComment,
+    PRDiff,
+    PRMetadata,
+    ReviewThread,
+    validate_response,
+)
+from prbot.vcs.retry import send_with_retry
 
 logger = logging.getLogger(__name__)
 
 _STATE_MARKER = "<!-- prbot:state:"
+
+# SEC-INPUT-04: an upper bound on a file fetched for context. The sizes are
+# chosen by the contributor whose branch is under review, every non-removed
+# file in the diff is fetched, and build_context_excerpt only ever uses a
+# window around the hunks, so anything past this is retained for nothing.
+# 2 MiB is far above any file a human reads in review and far below what
+# would hurt a runner.
+MAX_CONTEXT_BYTES = 2 * 1024 * 1024
+
+
+# Hard cap on pages followed (D3). See the note in github.py.
+_MAX_PAGES = 100
 
 
 class GitLabAdapter:
@@ -127,6 +147,41 @@ class GitLabAdapter:
             truncated=overflow,
         )
 
+    async def get_file_content(self, path: str, ref: str) -> str | None:
+        """Fetch a file's text at a revision (B8)."""
+        url = (
+            f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+            f"/repository/files/{quote(path, safe='')}/raw"
+        )
+        try:
+            response = await send_with_retry(
+                self._client, "GET", url,
+                classify=_classify_response, label="GitLab",
+                params={"ref": ref},
+                # SEC-INPUT-04: bound the body at the request
+                # rather than after it has been buffered.
+                headers={
+                    "Range": f"bytes=0-{MAX_CONTEXT_BYTES - 1}",
+                },
+            )
+        except VCSError as e:
+            logger.info("context.unavailable path=%s: %s", path, e)
+            return None
+
+        # 206 means the server honoured the Range and had more to give, so
+        # the file is over the bound. 200 with an oversized body means it
+        # ignored the Range; the length check still catches that.
+        if response.status_code == 206 or (
+            len(response.content) > MAX_CONTEXT_BYTES
+        ):
+            logger.info(
+                "context.too_large path=%s bytes=%d limit=%d status=%d",
+                path, len(response.content), MAX_CONTEXT_BYTES,
+                response.status_code,
+            )
+            return None
+        return response.text
+
     async def get_authenticated_user(self) -> str:
         """Get authenticated user username, cached after first call."""
         if self._authenticated_user is None:
@@ -185,6 +240,125 @@ class GitLabAdapter:
             return comment_id
         return await self.post_comment(body)
 
+    async def submit_review(
+        self,
+        body: str,
+        event: str,
+        comments: list[InlineComment],
+        *,
+        head_sha: str,
+        base_sha: str,
+    ) -> int:
+        """Post a summary note, positioned discussions, and the verdict.
+
+        GitLab has no single review object, so the three pieces of a GitHub
+        review are three calls here. The summary goes first: if a position is
+        stale and a discussion is rejected, the review is still delivered.
+        """
+        note_id = await self.post_comment(body)
+
+        for comment in comments:
+            try:
+                await self._request(
+                    "POST",
+                    f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+                    f"/merge_requests/{self._pr_number}/discussions",
+                    json={
+                        "body": comment.body,
+                        "position": {
+                            "position_type": "text",
+                            "base_sha": base_sha,
+                            "start_sha": base_sha,
+                            "head_sha": head_sha,
+                            "new_path": comment.path,
+                            "old_path": comment.path,
+                            "new_line": comment.line,
+                        },
+                    },
+                )
+            except VCSError as e:
+                # Almost always a line that has moved since the diff was
+                # taken. Losing one anchor is acceptable; losing the review
+                # is not.
+                logger.warning(
+                    "GitLab rejected an inline position for %s:%d: %s",
+                    comment.path, comment.line, e,
+                )
+
+        if event in ("APPROVE", "REQUEST_CHANGES"):
+            action = "approve" if event == "APPROVE" else "unapprove"
+            try:
+                await self._request(
+                    "POST",
+                    f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+                    f"/merge_requests/{self._pr_number}/{action}",
+                )
+            except VCSError as e:
+                # Approval rules can forbid this, and that is the project's
+                # decision, not a review failure.
+                logger.warning("GitLab %s was refused: %s", action, e)
+
+        return note_id
+
+    async def list_review_threads(self) -> list[ReviewThread]:
+        """List positioned discussions as review threads (C8).
+
+        GitLab reports resolution state over REST, so unlike GitHub no second
+        API is needed. Discussions without a position are plain notes rather
+        than review threads and are skipped.
+        """
+        url = (
+            f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+            f"/merge_requests/{self._pr_number}/discussions"
+        )
+        collected: list[dict[str, Any]] = []
+        await self._paginate(url, collected.extend)
+
+        threads: list[ReviewThread] = []
+        for discussion in collected:
+            notes = discussion.get("notes") or []
+            if not notes:
+                continue
+            first = notes[0]
+            position = first.get("position") or {}
+            if not position:
+                continue
+            threads.append(ReviewThread(
+                id=str(discussion.get("id", "")),
+                comment_id=first.get("id", 0),
+                body=first.get("body", ""),
+                resolved=bool(first.get("resolved")),
+                path=position.get("new_path"),
+                line=position.get("new_line"),
+                author=(first.get("author") or {}).get("username", ""),
+            ))
+        return threads
+
+    async def reply_to_thread(
+        self, thread: ReviewThread, body: str,
+    ) -> None:
+        """Reply into an existing discussion."""
+        url = (
+            f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+            f"/merge_requests/{self._pr_number}/discussions/{thread.id}/notes"
+        )
+        await self._request("POST", url, json={"body": body})
+
+    async def resolve_thread(self, thread: ReviewThread) -> bool:
+        """Mark a discussion resolved."""
+        url = (
+            f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
+            f"/merge_requests/{self._pr_number}/discussions/{thread.id}"
+        )
+        try:
+            await self._request("PUT", url, json={"resolved": True})
+        except VCSError as e:
+            logger.warning(
+                "Could not resolve discussion %s: %s", thread.id, e,
+            )
+            return False
+        return True
+
     async def close(self) -> None:
         """Close the HTTP client."""
         await self._client.aclose()
@@ -195,24 +369,16 @@ class GitLabAdapter:
         url: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Make an HTTP request with error classification (G4-15)."""
-        try:
-            response = await self._client.request(method, url, **kwargs)
-        except httpx.TimeoutException as e:
-            raise VCSError(
-                f"GitLab API timed out: {method} {url}"
-            ) from e
-        except httpx.ConnectError as e:
-            raise VCSError(
-                f"GitLab API unreachable: {method} {url}"
-            ) from e
-
-        _classify_response(response, method, url)
+        """Make an HTTP request with retry and error classification (G4-15)."""
+        response = await send_with_retry(
+            self._client, method, url,
+            classify=_classify_response, label="GitLab", **kwargs,
+        )
 
         # Some GitLab endpoints return 204 No Content
         if response.status_code == 204:
             return {}
-        return response.json()
+        return _decode_json(response, method, url)
 
     async def _paginate(
         self,
@@ -227,22 +393,24 @@ class GitLabAdapter:
         """
         params: dict[str, Any] = {"per_page": 100}
         page = 1
+        pages = 0
 
         while True:
-            params["page"] = page
-            try:
-                response = await self._client.get(url, params=params)
-            except httpx.TimeoutException as e:
+            pages += 1
+            if pages > _MAX_PAGES:
                 raise VCSError(
-                    f"GitLab API timed out during pagination: {url}"
-                ) from e
-            except httpx.ConnectError as e:
-                raise VCSError(
-                    f"GitLab API unreachable during pagination: {url}"
-                ) from e
+                    f"GitLab API pagination exceeded {_MAX_PAGES} pages "
+                    f"for {url}; refusing to follow further"
+                )
 
-            _classify_response(response, "GET", url)
-            items = response.json()
+            params["page"] = page
+            response = await send_with_retry(
+                self._client, "GET", url,
+                classify=_classify_response, label="GitLab", params=params,
+            )
+            items = _expect_list(
+                _decode_json(response, "GET", url), "GET", url,
+            )
 
             if not items:
                 return
@@ -254,7 +422,43 @@ class GitLabAdapter:
             next_page = response.headers.get("x-next-page", "")
             if not next_page:
                 return
-            page = int(next_page)
+            try:
+                page = int(next_page)
+            except ValueError as e:
+                raise VCSResponseError(
+                    f"GitLab API returned a non-numeric x-next-page header: "
+                    f"{next_page!r} for {url}"
+                ) from e
+
+
+def _decode_json(
+    response: httpx.Response, method: str, url: str,
+) -> Any:
+    """Decode a response body, classifying a non-JSON body (D4).
+
+    A json.JSONDecodeError is not a PrBotError, so letting it escape exits
+    the process with code 1 and reports an upstream HTML error page to CI
+    as a blocking review.
+    """
+    try:
+        return response.json()
+    except ValueError as e:
+        raise VCSResponseError(
+            f"GitLab API returned a body that is not valid JSON: "
+            f"{method} {url}. {response.text[:200]}"
+        ) from e
+
+
+def _expect_list(
+    payload: Any, method: str, url: str,
+) -> list[dict[str, Any]]:
+    """Require a JSON array where the API contract promises one (D4)."""
+    if not isinstance(payload, list):
+        raise VCSResponseError(
+            f"GitLab API returned {type(payload).__name__} where a list "
+            f"was expected: {method} {url}"
+        )
+    return payload
 
 
 def _classify_response(

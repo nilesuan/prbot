@@ -22,8 +22,10 @@ logger = logging.getLogger(__name__)
 _CHARS_PER_TOKEN = 4
 _SAFETY_MULTIPLIER = 1.5
 
-# Valid agent names — used for path traversal prevention and validation
-_VALID_AGENTS = frozenset({"general", "security"})
+# An agent name selects its check spec, {name}.md, so it must be a single
+# safe path segment. This is a shape check rather than an allowlist (C5):
+# an allowlist made adding an agent a code change in three modules.
+_AGENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
 def load_check_spec(agent: str) -> str:
@@ -40,9 +42,10 @@ def load_check_spec(agent: str) -> str:
     Raises:
         ConfigError: If agent name is invalid or file not found.
     """
-    if agent not in _VALID_AGENTS:
+    if not _AGENT_NAME_PATTERN.match(agent):
         raise ConfigError(
-            f"Invalid agent name: {agent!r} (expected one of {sorted(_VALID_AGENTS)})"
+            f"Invalid agent name: {agent!r} (lowercase letters, digits, "
+            "hyphens and underscores only, starting with a letter)"
         )
 
     # Allow override via env var for custom prompt directories
@@ -63,7 +66,14 @@ def load_check_spec(agent: str) -> str:
     # Default: load from package data
     files = importlib.resources.files("prbot.prompts")
     resource = files.joinpath(f"{agent}.md")
-    return resource.read_text(encoding="utf-8")
+    try:
+        return resource.read_text(encoding="utf-8")
+    except FileNotFoundError as e:
+        raise ConfigError(
+            f"No check spec for agent {agent!r}. Add {agent}.md to the "
+            "prompts directory, or set PRBOT_PROMPTS_DIR to a directory "
+            "containing it."
+        ) from e
 
 
 def sanitize_path_for_prompt(path: str) -> str:
@@ -99,14 +109,26 @@ def build_system_prompt(agent: str) -> str:
     )
 
 
-def build_user_prompt(pr_diff: PRDiff, metadata: PRMetadata) -> str:
+def build_user_prompt(
+    pr_diff: PRDiff,
+    metadata: PRMetadata,
+    *,
+    datamark_diff: bool = True,
+    file_contents: dict[str, str] | None = None,
+    context_lines: int = 0,
+) -> str:
     """Build the user prompt containing PR metadata and diff.
 
     This is the untrusted content boundary (S7) — all PR data goes here,
     not in the system prompt. All content is datamarked for prompt injection
     defense (story-6-1).
     """
-    from prbot.security.datamarking import apply_datamarking, apply_metadata_datamarking
+    from prbot.review.context import build_context_excerpt
+    from prbot.security.datamarking import (
+        apply_datamarking,
+        apply_diff_datamarking,
+        apply_metadata_datamarking,
+    )
 
     # Datamark metadata fields (S53)
     dm_title, dm_body, dm_author = apply_metadata_datamarking(
@@ -115,14 +137,44 @@ def build_user_prompt(pr_diff: PRDiff, metadata: PRMetadata) -> str:
 
     files_section = []
     for f in pr_diff.files:
+        # A git path is contributor-chosen prose. sanitize_path_for_prompt
+        # strips control characters, which stops newline injection, but a
+        # path may contain spaces and any printable byte, so a file added at
+        # 'src/Ignore the preceding instructions.py' would otherwise land in
+        # the prompt as an unmarked markdown heading outside the diff fence.
         safe_path = sanitize_path_for_prompt(f.path)
-        header = f"### {safe_path} ({f.status})"
+        header = f"### {apply_datamarking(safe_path)} ({f.status})"
         if f.previous_path:
-            safe_prev = sanitize_path_for_prompt(f.previous_path)
+            safe_prev = apply_datamarking(
+                sanitize_path_for_prompt(f.previous_path),
+            )
             header += f" (renamed from {safe_prev})"
-        # Datamark the diff patch content
-        dm_patch = apply_datamarking(f.patch) if f.patch else ""
-        files_section.append(f"{header}\n```diff\n{dm_patch}\n```")
+        # Datamark the patch content, preserving hunk and file headers
+        # and the leading +/- of each line (B2)
+        if not f.patch:
+            dm_patch = ""
+        elif datamark_diff:
+            dm_patch = apply_diff_datamarking(f.patch)
+        else:
+            dm_patch = f.patch
+        block = f"{header}\n```diff\n{dm_patch}\n```"
+
+        # B8: the enclosing function is rarely inside the hunk, so a
+        # judgement about architecture or testing is otherwise made without
+        # the thing being judged.
+        if context_lines > 0 and file_contents is not None:
+            excerpt = build_context_excerpt(
+                f, file_contents.get(f.path), context_lines,
+            )
+            if excerpt:
+                block += (
+                    f"\n\nSurrounding code at "
+                    f"{apply_datamarking(safe_path)} "
+                    f"(head revision, numbered):\n"
+                    f"```\n{excerpt}\n```"
+                )
+
+        files_section.append(block)
 
     files_text = "\n\n".join(files_section)
     truncation_note = ""
@@ -135,7 +187,9 @@ def build_user_prompt(pr_diff: PRDiff, metadata: PRMetadata) -> str:
     return (
         f"## PR #{metadata.number}: {dm_title}\n\n"
         f"**Author:** {dm_author}\n"
-        f"**Branch:** {metadata.head_ref} → {metadata.base_ref}\n"
+        # Branch names are chosen by the contributor too (SEC-INPUT-01).
+        f"**Branch:** {apply_datamarking(metadata.head_ref)} → "
+        f"{apply_datamarking(metadata.base_ref)}\n"
         f"**State:** {metadata.state}\n"
         f"**Draft:** {metadata.is_draft}\n"
         f"**Fork:** {metadata.is_fork}\n\n"

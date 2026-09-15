@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -396,3 +397,337 @@ class TestAsyncSmoke:
     @pytest.mark.asyncio
     async def test_async_test_runs(self) -> None:
         assert 1 + 1 == 2
+
+
+class TestDryRunPrecedence:
+    """A1: dry_run must be settable from env and TOML, not only the flag."""
+
+    @staticmethod
+    def _args(*extra: str) -> dict[str, object]:
+        from prbot.cli import parse_args
+
+        base = ["--platform", "github", "--repo", "o/r", "--pr", "1"]
+        return vars(parse_args(base + list(extra)))
+
+    def test_absent_flag_is_none_not_false(self) -> None:
+        """A store_true default of False overwrites every lower layer."""
+        assert self._args()["dry_run"] is None
+
+    def test_env_var_survives_cli_overlay(self) -> None:
+        config = build_config(
+            cli_args=self._args(),
+            env_vars={"PRBOT_DRY_RUN": "true"},
+            toml_config={},
+        )
+        assert config.dry_run is True
+
+    def test_toml_survives_cli_overlay(self) -> None:
+        config = build_config(
+            cli_args=self._args(),
+            env_vars={},
+            toml_config={"dry_run": True},
+        )
+        assert config.dry_run is True
+
+    def test_flag_still_wins_over_env(self) -> None:
+        config = build_config(
+            cli_args=self._args("--dry-run"),
+            env_vars={"PRBOT_DRY_RUN": "false"},
+            toml_config={},
+        )
+        assert config.dry_run is True
+
+    def test_defaults_to_false(self) -> None:
+        config = build_config(
+            cli_args=self._args(), env_vars={}, toml_config={},
+        )
+        assert config.dry_run is False
+
+    def test_env_var_rejects_unparseable_boolean(self) -> None:
+        """A typo previously fell through to False in silence."""
+        with pytest.raises(ConfigError, match="boolean"):
+            build_config(
+                cli_args=self._args(),
+                env_vars={"PRBOT_DRY_RUN": "yep"},
+                toml_config={},
+            )
+
+
+class TestRegionValidationMatchesAws:
+    """D5: the pattern rejected GovCloud and ISO regions outright."""
+
+    ACCEPTED: ClassVar[list[str]] = [
+        "ap-southeast-2", "ap-southeast-4", "us-east-1", "eu-central-1",
+        "il-central-1", "mx-central-1", "us-gov-west-1", "us-gov-east-1",
+        "us-iso-east-1", "us-isob-east-1", "ca-central-1", "sa-east-1",
+    ]
+    REJECTED: ClassVar[list[str]] = [
+        "", "US-EAST-1", "us east 1", "useast1", "u-east-1", "us-east",
+    ]
+
+    @pytest.mark.parametrize("region", ACCEPTED)
+    def test_real_regions_are_accepted(self, region: str) -> None:
+        config = PrBotConfig(
+            platform="github", repo="o/r", pr_number=1,
+            aws_region=region, allowed_regions=[],
+            general_model_id="anthropic.claude-sonnet-4-6",
+            security_model_id="anthropic.claude-sonnet-4-6",
+        )
+        assert config.aws_region == region
+
+    @pytest.mark.parametrize("region", REJECTED)
+    def test_malformed_regions_are_rejected(self, region: str) -> None:
+        with pytest.raises(ValidationError):
+            PrBotConfig(
+                platform="github", repo="o/r", pr_number=1,
+                aws_region=region, allowed_regions=[],
+            )
+
+
+class TestListValuedConfigFromEnvironment:
+    """D6: README documented PRBOT_EXCLUDED_PATTERNS; it raised ConfigError.
+
+    Pydantic will not coerce a string to list[str], so the only way to set a
+    list was a TOML file. The container workflows pass configuration purely
+    through env:, which made the documented setting unreachable exactly where
+    it is most needed.
+    """
+
+    @staticmethod
+    def _build(**env: str) -> PrBotConfig:
+        base = {
+            "PRBOT_PLATFORM": "github",
+            "PRBOT_REPO": "o/r",
+            "PRBOT_PR_NUMBER": "1",
+        }
+        base.update(env)
+        return build_config(cli_args=None, env_vars=base, toml_config={})
+
+    def test_excluded_patterns_from_env(self) -> None:
+        config = self._build(
+            PRBOT_EXCLUDED_PATTERNS="*.lock,**/vendor/**,*.min.js",
+        )
+        assert config.excluded_patterns == [
+            "*.lock", "**/vendor/**", "*.min.js",
+        ]
+
+    def test_surrounding_whitespace_is_trimmed(self) -> None:
+        config = self._build(PRBOT_EXCLUDED_PATTERNS=" *.lock , **/dist/** ")
+        assert config.excluded_patterns == ["*.lock", "**/dist/**"]
+
+    def test_empty_entries_are_dropped(self) -> None:
+        config = self._build(PRBOT_EXCLUDED_PATTERNS="*.lock,,,*.map")
+        assert config.excluded_patterns == ["*.lock", "*.map"]
+
+    def test_a_single_value_needs_no_comma(self) -> None:
+        config = self._build(PRBOT_EXCLUDED_PATTERNS="*.lock")
+        assert config.excluded_patterns == ["*.lock"]
+
+    def test_an_empty_value_is_an_empty_list(self) -> None:
+        config = self._build(PRBOT_EXCLUDED_PATTERNS="")
+        assert config.excluded_patterns == []
+
+    def test_allowed_regions_from_env(self) -> None:
+        config = self._build(
+            PRBOT_ALLOWED_REGIONS="ap-southeast-2,ap-southeast-4",
+            PRBOT_AWS_REGION="ap-southeast-4",
+            PRBOT_GENERAL_MODEL_ID="anthropic.claude-sonnet-4-6",
+            PRBOT_SECURITY_MODEL_ID="anthropic.claude-sonnet-4-6",
+        )
+        assert config.allowed_regions == ["ap-southeast-2", "ap-southeast-4"]
+
+    def test_toml_lists_still_work(self) -> None:
+        config = build_config(
+            cli_args=None,
+            env_vars={
+                "PRBOT_PLATFORM": "github",
+                "PRBOT_REPO": "o/r",
+                "PRBOT_PR_NUMBER": "1",
+            },
+            toml_config={"excluded_patterns": ["a", "b"]},
+        )
+        assert config.excluded_patterns == ["a", "b"]
+
+
+class TestConfigIsNotReadFromTheReviewedTree:
+    """SEC-CRED-03: an implicit CWD search reads the branch under review.
+
+    GitLab Runner clones the merge request source into the job's working
+    directory, so load_toml_config's search for ./.prbot.toml found a file
+    committed on the untrusted branch. That file can set api_base_url,
+    secret_name, excluded_patterns and suppression rules, so the code being
+    reviewed chose where its reviewer sent credentials and which of its own
+    files were looked at.
+    """
+
+    def test_implicit_search_is_refused_in_ci(self) -> None:
+        env = {"GITHUB_ACTIONS": "true"}
+        assert load_toml_config(None, env_vars=env) == {}
+
+    def test_implicit_search_is_refused_on_gitlab_ci(self) -> None:
+        env = {"GITLAB_CI": "true"}
+        assert load_toml_config(None, env_vars=env) == {}
+
+    def test_an_explicit_path_still_works_in_ci(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "trusted.toml"
+        cfg.write_text('[prbot]\nconfidence_threshold = 55\n')
+        env = {"GITHUB_ACTIONS": "true"}
+        assert load_toml_config(str(cfg), env_vars=env) == {
+            "confidence_threshold": 55,
+        }
+
+    def test_implicit_search_works_outside_ci_when_opted_in(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Opt-in rather than on-by-default, so the guard cannot fail open.
+
+        See TestImplicitConfigSearchIsOptIn for the default.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".prbot.toml").write_text(
+            '[prbot]\nconfidence_threshold = 61\n',
+        )
+        assert load_toml_config(
+            None, env_vars={"PRBOT_ALLOW_IMPLICIT_CONFIG": "1"},
+        ) == {"confidence_threshold": 61}
+
+    def test_build_config_does_not_read_the_tree_in_ci(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".prbot.toml").write_text(
+            '[prbot]\napi_base_url = "https://attacker.example.com"\n',
+        )
+        config = build_config(
+            cli_args=None,
+            env_vars={
+                "GITHUB_ACTIONS": "true",
+                "PRBOT_PLATFORM": "github",
+                "PRBOT_REPO": "o/r",
+                "PRBOT_PR_NUMBER": "1",
+            },
+        )
+        assert config.api_base_url is None
+
+
+class TestSsrfGuardResolvesNames:
+    """SEC-DATA-02: anything that was not a literal IP was allowed.
+
+    _validate_url_not_internal tried ipaddress.ip_address on the hostname and
+    allowed whatever raised ValueError, so a DNS name pointing at the
+    metadata endpoint passed, as did non-dotted-quad literal forms.
+    """
+
+    def test_a_name_resolving_to_link_local_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import socket
+
+        def fake(host, *a, **kw):
+            return [(socket.AF_INET, None, None, "", ("169.254.169.254", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake)
+        with pytest.raises(ConfigError, match="SSRF"):
+            _validate_url_not_internal("https://metadata.example.com/")
+
+    def test_a_name_resolving_to_a_private_address_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import socket
+
+        def fake(host, *a, **kw):
+            return [(socket.AF_INET, None, None, "", ("10.0.0.5", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake)
+        with pytest.raises(ConfigError, match="SSRF"):
+            _validate_url_not_internal("https://internal.example.com/")
+
+    def test_a_decimal_literal_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ipaddress rejects the decimal form, so only the resolver sees it.
+
+        getaddrinfo accepts '2852039166' and returns 169.254.169.254, which
+        is why the guard has to resolve rather than only parse.
+        """
+        import socket
+
+        def fake(host, *a, **kw):
+            assert host == "2852039166"
+            return [(socket.AF_INET, None, None, "", ("169.254.169.254", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake)
+        with pytest.raises(ConfigError, match="SSRF"):
+            _validate_url_not_internal("https://2852039166/")
+
+    def test_a_public_name_is_allowed(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import socket
+
+        def fake(host, *a, **kw):
+            return [(socket.AF_INET, None, None, "", ("140.82.121.6", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake)
+        assert _validate_url_not_internal("https://api.github.com/")
+
+    def test_an_unresolvable_name_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import socket
+
+        def fake(host, *a, **kw):
+            raise socket.gaierror("nope")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake)
+        with pytest.raises(ConfigError, match="resolve"):
+            _validate_url_not_internal("https://nowhere.invalid/")
+
+    def test_a_literal_internal_ip_is_still_refused(self) -> None:
+        with pytest.raises(ConfigError, match="SSRF"):
+            _validate_url_not_internal("https://169.254.169.254/")
+
+
+class TestImplicitConfigSearchIsOptIn:
+    """SEC-CRED-03: CI detection was an allowlist that failed open.
+
+    _in_ci named three environment variables and the fallback was the unsafe
+    branch, so any runner that sets none of them got the implicit search back.
+    """
+
+    def test_the_search_is_refused_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".prbot.toml").write_text("[prbot]\nconfidence_threshold = 61\n")
+        assert load_toml_config(None, env_vars={}) == {}
+
+    def test_it_is_allowed_when_opted_in(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".prbot.toml").write_text("[prbot]\nconfidence_threshold = 61\n")
+        assert load_toml_config(
+            None, env_vars={"PRBOT_ALLOW_IMPLICIT_CONFIG": "1"},
+        ) == {"confidence_threshold": 61}
+
+    def test_opting_in_does_not_help_inside_ci(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The reviewed tree is on disk there; the opt-in is for local use."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".prbot.toml").write_text("[prbot]\nconfidence_threshold = 61\n")
+        assert load_toml_config(
+            None,
+            env_vars={
+                "PRBOT_ALLOW_IMPLICIT_CONFIG": "1",
+                "GITHUB_ACTIONS": "true",
+            },
+        ) == {}
+
+    def test_an_explicit_path_needs_no_opt_in(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "c.toml"
+        cfg.write_text("[prbot]\nconfidence_threshold = 55\n")
+        assert load_toml_config(str(cfg), env_vars={}) == {
+            "confidence_threshold": 55,
+        }

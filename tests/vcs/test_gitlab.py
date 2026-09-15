@@ -238,3 +238,48 @@ class TestProjectPathEncoding:
         result = _encode_project_path("group/sub-group/project")
         assert "%2F" in result
         assert "/" not in result
+
+
+class TestMalformedResponsesAreClassified:
+    """D4: unexpected headers and bodies must raise VCSError, not crash."""
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_non_numeric_next_page_header_is_rejected(self) -> None:
+        from prbot.exceptions import VCSResponseError
+
+        respx.get(
+            "https://gitlab.com/api/v4/user",
+        ).mock(return_value=httpx.Response(200, json={"username": "bot"}))
+        respx.get(
+            "https://gitlab.com/api/v4/projects/owner%2Frepo"
+            "/merge_requests/99/notes",
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json=[{"id": 1, "author": {"username": "someone"}, "body": ""}],
+                headers={"x-next-page": "not-a-number"},
+            ),
+        )
+        adapter = _make_adapter()
+        try:
+            with pytest.raises(VCSResponseError, match="x-next-page"):
+                await adapter.find_bot_comment()
+        finally:
+            await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_non_json_body_raises_vcs_error(self) -> None:
+        from prbot.exceptions import VCSResponseError
+
+        respx.get(
+            "https://gitlab.com/api/v4/projects/owner%2Frepo"
+            "/merge_requests/99",
+        ).mock(return_value=httpx.Response(200, text="<html>oops</html>"))
+        adapter = _make_adapter()
+        try:
+            with pytest.raises(VCSResponseError, match="not valid JSON"):
+                await adapter.get_pr_metadata()
+        finally:
+            await adapter.close()

@@ -9,13 +9,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 import time
 from typing import Any
 
 from prbot.exceptions import BedrockError
-from prbot.review.budget import TimeoutBudget
+from prbot.review.budget import TimeoutBudget, get_model_pricing
 from prbot.review.models import (
+    FINDING_JSON_SCHEMA,
     AgentError,
     AgentOutcome,
     AgentResult,
@@ -27,9 +29,25 @@ from prbot.vcs.models import PRDiff, PRMetadata
 
 logger = logging.getLogger(__name__)
 
+# Default cap on a single agent response. Explicit so that output length
+# is a decision rather than a Bedrock default the cost estimate cannot see.
+_DEFAULT_MAX_OUTPUT_TOKENS = 8192
+
 # Retry config for throttled requests
 _MAX_RETRIES = 3
 _RETRY_BASE_SECONDS = 1.0
+
+
+def _backoff_seconds(attempt: int) -> float:
+    """Exponential backoff with jitter (D9).
+
+    Without jitter every agent throttled by the same Bedrock quota retries
+    on the same beat and throttles again together. The jitter is half the
+    interval, which is enough to spread a small fan-out without making the
+    worst case materially longer.
+    """
+    base = _RETRY_BASE_SECONDS * (2**attempt)
+    return base + random.uniform(0.0, base / 2)
 
 # Retryable Bedrock error types
 _RETRYABLE_ERRORS = frozenset({
@@ -45,6 +63,10 @@ async def run_review(
     agents: list[dict[str, str]],
     budget: TimeoutBudget,
     aws_region: str,
+    max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
+    datamark_diff: bool = True,
+    file_contents: dict[str, str] | None = None,
+    context_lines: int = 0,
 ) -> list[AgentOutcome]:
     """Run review agents concurrently (S1, S88).
 
@@ -58,15 +80,22 @@ async def run_review(
     Returns:
         List of AgentOutcome (AgentResult or AgentError) for each agent.
     """
-    user_prompt = build_user_prompt(pr_diff, metadata)
+    user_prompt = build_user_prompt(
+        pr_diff, metadata,
+        datamark_diff=datamark_diff,
+        file_contents=file_contents,
+        context_lines=context_lines,
+    )
 
     tasks = [
         _run_single_agent(
             agent_name=agent["name"],
             model_id=agent["model_id"],
+            check_prefix=agent["check_prefix"],
             user_prompt=user_prompt,
             budget=budget,
             aws_region=aws_region,
+            max_output_tokens=max_output_tokens,
         )
         for agent in agents
     ]
@@ -91,9 +120,11 @@ async def run_review(
 async def _run_single_agent(
     agent_name: str,
     model_id: str,
+    check_prefix: str,
     user_prompt: str,
     budget: TimeoutBudget,
     aws_region: str,
+    max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
 ) -> AgentOutcome:
     """Run a single review agent with retry and timeout (S20, S48).
 
@@ -113,12 +144,13 @@ async def _run_single_agent(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     aws_region=aws_region,
+                    max_output_tokens=max_output_tokens,
                 ),
                 timeout=timeout,
             )
 
-            token_usage = _extract_token_usage(response)
-            findings = _parse_findings(response, agent_name)
+            token_usage = _extract_token_usage(response, model_id)
+            findings = _parse_findings(response, agent_name, check_prefix)
             latency_ms = int((time.monotonic() - start_time) * 1000)
 
             return AgentResult(
@@ -152,7 +184,7 @@ async def _run_single_agent(
         except BedrockError as e:
             error_type = _classify_error(e)
             if _is_retryable(error_type) and attempt < _MAX_RETRIES:
-                wait = _RETRY_BASE_SECONDS * (2 ** attempt)
+                wait = _backoff_seconds(attempt)
                 logger.warning(
                     "Agent %s got %s (attempt %d/%d), retrying in %.1fs",
                     agent_name, error_type, attempt + 1,
@@ -185,15 +217,48 @@ async def _run_single_agent(
     )
 
 
+FINDINGS_TOOL_NAME = "report_findings"
+
+
+def _findings_tool_config() -> dict[str, Any]:
+    """Force the model to answer through the findings schema (B5).
+
+    FINDING_JSON_SCHEMA was written and never sent. Without it the output
+    shape was only a request in the prompt, so the parser needed three
+    fallback strategies and a hard failure when all three missed.
+    """
+    return {
+        "tools": [
+            {
+                "toolSpec": {
+                    "name": FINDINGS_TOOL_NAME,
+                    "description": (
+                        "Report every review finding. Call this exactly "
+                        "once, with an empty array if there is nothing "
+                        "to report."
+                    ),
+                    "inputSchema": {"json": FINDING_JSON_SCHEMA},
+                },
+            },
+        ],
+        "toolChoice": {"tool": {"name": FINDINGS_TOOL_NAME}},
+    }
+
+
 def _invoke_bedrock(
     model_id: str,
     system_prompt: str,
     user_prompt: str,
     aws_region: str,
+    max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
 ) -> dict[str, Any]:
-    """Invoke Bedrock Converse API synchronously (S16).
+    """Invoke Bedrock Converse API synchronously (S16, B5).
 
     Called via asyncio.to_thread to avoid blocking the event loop.
+
+    maxTokens and temperature are explicit. Left unset they are whatever
+    Bedrock defaults to for the model, which is neither reproducible nor
+    something the cost estimate can rely on.
     """
     import boto3
     from botocore.exceptions import ClientError
@@ -210,6 +275,11 @@ def _invoke_bedrock(
                 },
             ],
             system=[{"text": system_prompt}],
+            toolConfig=_findings_tool_config(),
+            inferenceConfig={
+                "maxTokens": max_output_tokens,
+                "temperature": 0.0,
+            },
         )
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "")
@@ -222,10 +292,17 @@ def _invoke_bedrock(
 
 def _extract_token_usage(
     response: dict[str, Any],
+    model_id: str,
 ) -> TokenUsage:
-    """Extract token usage from Bedrock response (G4-13).
+    """Extract token usage and cost from a Bedrock response (G4-13, A8).
 
-    Returns TokenUsage(0, 0, 0.0) with warning if data is missing.
+    Returns TokenUsage(0, 0, 0.0) with a warning if data is missing.
+
+    The cost was previously left at 0.0 with a note saying it would be
+    calculated later, and nothing ever calculated it. The audit record
+    therefore reported real token counts against zero spend, and
+    budget_limit_usd was only ever compared with a pre-flight character
+    count heuristic, never with what the run actually cost.
     """
     usage = response.get("usage")
     if not isinstance(usage, dict):
@@ -240,16 +317,23 @@ def _extract_token_usage(
     if not isinstance(output_tokens, int):
         output_tokens = 0
 
+    pricing = get_model_pricing(model_id)
+    cost = (
+        (input_tokens / 1_000_000) * pricing["input"]
+        + (output_tokens / 1_000_000) * pricing["output"]
+    )
+
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        estimated_cost_usd=0.0,  # Calculated later with pricing
+        estimated_cost_usd=cost,
     )
 
 
 def _parse_findings(
     response: dict[str, Any],
     agent_name: str,
+    check_prefix: str = "Q-",
 ) -> list[Finding]:
     """Parse findings from Bedrock response with validation (G-08, G-18).
 
@@ -258,35 +342,48 @@ def _parse_findings(
     - Invalid line ranges
     - Unknown check_id prefixes (G-08)
     """
-    # Extract text content from Converse response
     output = response.get("output", {})
     message = output.get("message", {}) if isinstance(output, dict) else {}
     content_blocks = message.get("content", [])
 
-    text = ""
+    # B5: the forced tool returns the object already parsed and schema
+    # checked. Prose that the model emits alongside it is ignored.
+    data: dict[str, Any] | None = None
     for block in content_blocks:
-        if isinstance(block, dict) and "text" in block:
-            text = block["text"]
+        if not isinstance(block, dict):
+            continue
+        tool_use = block.get("toolUse")
+        if isinstance(tool_use, dict) and isinstance(
+            tool_use.get("input"), dict,
+        ):
+            data = tool_use["input"]
             break
 
-    if not text:
-        raise ValueError(
-            f"Agent {agent_name} returned no text content"
-        )
-
-    # Parse JSON — try raw first, then extract from markdown code blocks
-    data = _try_parse_json(text)
     if data is None:
-        raise ValueError(
-            f"Agent {agent_name} returned non-JSON response: {text[:500]}"
-        )
+        # Fallback for a response that arrived as text anyway, for instance
+        # from a model or endpoint that ignored toolChoice.
+        text = ""
+        for block in content_blocks:
+            if isinstance(block, dict) and "text" in block:
+                text = block["text"]
+                break
+
+        if not text:
+            raise ValueError(
+                f"Agent {agent_name} returned no findings and no text content"
+            )
+
+        data = _try_parse_json(text)
+        if data is None:
+            raise ValueError(
+                f"Agent {agent_name} returned non-JSON response: {text[:500]}"
+            )
 
     raw_findings = data.get("findings", [])
     if not isinstance(raw_findings, list):
         return []
 
-    category = "security" if agent_name == "security" else "general"
-    valid_prefixes = {"S-"} if category == "security" else {"Q-"}
+    category = agent_name
 
     findings: list[Finding] = []
     for i, f in enumerate(raw_findings):
@@ -320,7 +417,7 @@ def _parse_findings(
 
         # G-08: Validate check_id prefix
         check_id = f.get("check_id", "")
-        if not any(check_id.startswith(p) for p in valid_prefixes):
+        if not check_id.startswith(check_prefix):
             logger.warning(
                 "Dropping finding with unknown check_id: %s",
                 check_id,
@@ -338,6 +435,19 @@ def _parse_findings(
             confidence = 0
         confidence = max(0, min(100, confidence))
 
+        # A finding whose whole purpose is a reproducible trigger is not
+        # a finding without one. The adversarial spec says so; this enforces
+        # it, so a model that hedges produces nothing rather than noise.
+        failure_scenario = f.get("failure_scenario", "")
+        if not isinstance(failure_scenario, str):
+            failure_scenario = ""
+        if check_prefix == "X-" and not failure_scenario.strip():
+            logger.warning(
+                "Dropping %s finding with no failure_scenario: %s",
+                check_prefix, check_id,
+            )
+            continue
+
         findings.append(Finding(
             id=f"{agent_name}-{i + 1}",
             category=category,
@@ -350,6 +460,7 @@ def _parse_findings(
             severity=severity,
             confidence=confidence,
             suggestion=f.get("suggestion", ""),
+            failure_scenario=failure_scenario,
         ))
 
     return findings

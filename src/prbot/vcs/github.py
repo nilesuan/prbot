@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -21,7 +22,15 @@ from prbot.exceptions import (
     VCSResponseError,
     VCSServerError,
 )
-from prbot.vcs.models import FileDiff, PRDiff, PRMetadata, validate_response
+from prbot.vcs.models import (
+    FileDiff,
+    InlineComment,
+    PRDiff,
+    PRMetadata,
+    ReviewThread,
+    validate_response,
+)
+from prbot.vcs.retry import send_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +39,48 @@ _STATE_MARKER = "<!-- prbot:state:"
 
 # GitHub API file limit before truncation
 _GITHUB_FILE_LIMIT = 3000
+
+# SEC-INPUT-04: an upper bound on a file fetched for context. The sizes are
+# chosen by the contributor whose branch is under review, every non-removed
+# file in the diff is fetched, and build_context_excerpt only ever uses a
+# window around the hunks, so anything past this is retained for nothing.
+# 2 MiB is far above any file a human reads in review and far below what
+# would hurt a runner.
+MAX_CONTEXT_BYTES = 2 * 1024 * 1024
+
+
+# Hard cap on pages followed (D3). At per_page=100 this is 10,000 items,
+# past any pull request worth reviewing. Without it a server returning a
+# Link header that points back at itself holds the CI job open until the
+# job timeout, with no log line saying why.
+_MAX_PAGES = 100
+
+# Review thread resolution state lives only in GraphQL; REST does not expose
+# it. The query is kept here rather than inline so the shape is readable.
+_THREADS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          path
+          line
+          comments(first: 1) { nodes { databaseId body author { login } } }
+        }
+      }
+    }
+  }
+}
+"""
+
+_RESOLVE_MUTATION = """
+mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) { thread { id } }
+}
+"""
 
 
 class GitHubAdapter:
@@ -46,6 +97,10 @@ class GitHubAdapter:
         self._pr_number = pr_number
         self._base_url = base_url.rstrip("/")
         self._authenticated_user: str | None = None
+        # GEN-ARCH-03: get_pr_metadata and get_diff both need the PR
+        # payload and both used to fetch it, so every run paid for two
+        # identical GETs to the same endpoint.
+        self._pr_payload: dict[str, Any] | None = None
         self._client = httpx.AsyncClient(
             headers={
                 "Authorization": token.as_bearer_header(),
@@ -55,13 +110,19 @@ class GitHubAdapter:
             timeout=30.0,
         )
 
+    async def _fetch_pr(self) -> dict[str, Any]:
+        """The PR payload, fetched once and cached for the run."""
+        if self._pr_payload is None:
+            self._pr_payload = await self._request(
+                "GET",
+                f"{self._base_url}/repos/{self._repo}"
+                f"/pulls/{self._pr_number}",
+            )
+        return self._pr_payload
+
     async def get_pr_metadata(self) -> PRMetadata:
         """Fetch PR metadata with state normalization and null coercion."""
-        url = (
-            f"{self._base_url}/repos/{self._repo}"
-            f"/pulls/{self._pr_number}"
-        )
-        data = await self._request("GET", url)
+        data = await self._fetch_pr()
         validate_response(data, [
             "head.sha", "base.sha", "head.ref", "base.ref",
             "state", "user.login", "number",
@@ -112,12 +173,8 @@ class GitHubAdapter:
             for f in all_files
         ]
 
-        # Get SHAs from PR metadata for the diff
-        pr_url = (
-            f"{self._base_url}/repos/{self._repo}"
-            f"/pulls/{self._pr_number}"
-        )
-        pr_data = await self._request("GET", pr_url)
+        # Get SHAs from the PR payload, fetched once per run
+        pr_data = await self._fetch_pr()
         head_sha = pr_data.get("head", {}).get("sha", "")
         base_sha = pr_data.get("base", {}).get("sha", "")
 
@@ -127,6 +184,46 @@ class GitHubAdapter:
             base_sha=base_sha,
             truncated=len(files) >= _GITHUB_FILE_LIMIT,
         )
+
+    async def get_file_content(self, path: str, ref: str) -> str | None:
+        """Fetch a file's text at a revision (B8)."""
+        url = (
+            f"{self._base_url}/repos/{self._repo}"
+            f"/contents/{quote(path)}"
+        )
+        try:
+            response = await send_with_retry(
+                self._client, "GET", url,
+                classify=_classify_response, label="GitHub",
+                params={"ref": ref},
+                headers={
+                    "Accept": "application/vnd.github.raw+json",
+                    # SEC-INPUT-04: ask for at most the bound.
+                    # send_with_retry uses the non-streaming
+                    # API, so without this httpx buffers the
+                    # whole body before the length is checked
+                    # and the bound limits what is retained
+                    # rather than what is allocated.
+                    "Range": f"bytes=0-{MAX_CONTEXT_BYTES - 1}",
+                },
+            )
+        except VCSError as e:
+            logger.info("context.unavailable path=%s: %s", path, e)
+            return None
+
+        # 206 means the server honoured the Range and had more to give, so
+        # the file is over the bound. 200 with an oversized body means it
+        # ignored the Range; the length check still catches that.
+        if response.status_code == 206 or (
+            len(response.content) > MAX_CONTEXT_BYTES
+        ):
+            logger.info(
+                "context.too_large path=%s bytes=%d limit=%d status=%d",
+                path, len(response.content), MAX_CONTEXT_BYTES,
+                response.status_code,
+            )
+            return None
+        return response.text
 
     async def get_authenticated_user(self) -> str:
         """Get authenticated user login, cached after first call."""
@@ -185,6 +282,174 @@ class GitHubAdapter:
             return comment_id
         return await self.post_comment(body)
 
+    async def submit_review(
+        self,
+        body: str,
+        event: str,
+        comments: list[InlineComment],
+        *,
+        head_sha: str,
+        base_sha: str,
+    ) -> int:
+        """Submit a pull request review with inline comments (C1, C2).
+
+        commit_id pins the review to the revision it was produced from, so a
+        push that lands mid-review does not silently move the comments onto
+        code nobody looked at.
+        """
+        url = (
+            f"{self._base_url}/repos/{self._repo}"
+            f"/pulls/{self._pr_number}/reviews"
+        )
+        payload: dict[str, Any] = {
+            "body": body,
+            "event": event,
+            "commit_id": head_sha,
+            "comments": [
+                _github_comment(comment) for comment in comments
+            ],
+        }
+        try:
+            data = await self._request("POST", url, json=payload)
+        except VCSResponseError:
+            if not comments:
+                raise
+            # A position the API rejects, typically a line that has moved,
+            # must not cost the whole review. Retry with the summary alone.
+            logger.warning(
+                "GitHub rejected %d inline comment position(s); submitting "
+                "the summary without them",
+                len(comments),
+            )
+            payload["comments"] = []
+            data = await self._request("POST", url, json=payload)
+        return data["id"]
+
+    def _graphql_url(self) -> str:
+        """GraphQL lives beside the REST root, not under it.
+
+        github.com serves it at api.github.com/graphql; Enterprise serves
+        REST at /api/v3 and GraphQL at /api/graphql.
+        """
+        if self._base_url.endswith("/api/v3"):
+            return self._base_url[: -len("/api/v3")] + "/api/graphql"
+        return f"{self._base_url}/graphql"
+
+    async def _graphql(
+        self, query: str, variables: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await send_with_retry(
+            self._client, "POST", self._graphql_url(),
+            classify=_classify_response, label="GitHub",
+            json={"query": query, "variables": variables},
+        )
+        payload = _decode_json(response, "POST", self._graphql_url())
+        if payload.get("errors"):
+            raise VCSResponseError(
+                f"GitHub GraphQL returned errors: {payload['errors']}"
+            )
+        return payload.get("data") or {}
+
+    async def list_review_threads(self) -> list[ReviewThread]:
+        """List review threads, with resolution state where available (C8)."""
+        owner, _, name = self._repo.partition("/")
+        threads: list[ReviewThread] = []
+        cursor: str | None = None
+
+        try:
+            for _ in range(_MAX_PAGES):
+                data = await self._graphql(
+                    _THREADS_QUERY,
+                    {
+                        "owner": owner,
+                        "name": name,
+                        "number": self._pr_number,
+                        "after": cursor,
+                    },
+                )
+                node = (
+                    data.get("repository", {})
+                    .get("pullRequest", {})
+                    .get("reviewThreads", {})
+                )
+                for item in node.get("nodes") or []:
+                    comments = (item.get("comments") or {}).get("nodes") or []
+                    if not comments:
+                        continue
+                    author = (comments[0].get("author") or {}).get(
+                        "login", "",
+                    )
+                    threads.append(ReviewThread(
+                        id=item["id"],
+                        comment_id=comments[0].get("databaseId", 0),
+                        body=comments[0].get("body", ""),
+                        resolved=bool(item.get("isResolved")),
+                        path=item.get("path"),
+                        line=item.get("line"),
+                        author=author,
+                    ))
+                page = node.get("pageInfo") or {}
+                if not page.get("hasNextPage"):
+                    break
+                cursor = page.get("endCursor")
+            return threads
+        except VCSError as e:
+            # A fine-grained token without GraphQL access, or an Enterprise
+            # install with it disabled. Falling back to REST loses resolution
+            # state, which makes prbot re-report a thread a human closed; that
+            # is worse than ideal and much better than no review.
+            logger.warning(
+                "GitHub GraphQL unavailable (%s); falling back to REST "
+                "review comments without resolution state",
+                e,
+            )
+            return await self._rest_review_threads()
+
+    async def _rest_review_threads(self) -> list[ReviewThread]:
+        """Top-level review comments, resolution state unknown."""
+        url = (
+            f"{self._base_url}/repos/{self._repo}"
+            f"/pulls/{self._pr_number}/comments"
+        )
+        collected: list[dict[str, Any]] = []
+        await self._paginate(url, collected.extend)
+        return [
+            ReviewThread(
+                id=str(c.get("id", "")),
+                comment_id=c.get("id", 0),
+                body=c.get("body", ""),
+                resolved=False,
+                path=c.get("path"),
+                line=c.get("line"),
+                author=(c.get("user") or {}).get("login", ""),
+            )
+            for c in collected
+            if c.get("in_reply_to_id") is None
+        ]
+
+    async def reply_to_thread(
+        self, thread: ReviewThread, body: str,
+    ) -> None:
+        """Reply into an existing review thread."""
+        url = (
+            f"{self._base_url}/repos/{self._repo}"
+            f"/pulls/{self._pr_number}/comments/{thread.comment_id}/replies"
+        )
+        await self._request("POST", url, json={"body": body})
+
+    async def resolve_thread(self, thread: ReviewThread) -> bool:
+        """Resolve a review thread via GraphQL."""
+        if not thread.id.startswith("T_") and not thread.id.startswith("PRRT"):
+            # A REST fallback id is not a GraphQL node id.
+            logger.info("Cannot resolve thread %s: no node id", thread.id)
+            return False
+        try:
+            await self._graphql(_RESOLVE_MUTATION, {"threadId": thread.id})
+        except VCSError as e:
+            logger.warning("Could not resolve thread %s: %s", thread.id, e)
+            return False
+        return True
+
     async def close(self) -> None:
         """Close the HTTP client."""
         await self._client.aclose()
@@ -195,20 +460,12 @@ class GitHubAdapter:
         url: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Make an HTTP request with error classification (G4-15)."""
-        try:
-            response = await self._client.request(method, url, **kwargs)
-        except httpx.TimeoutException as e:
-            raise VCSError(
-                f"GitHub API timed out: {method} {url}"
-            ) from e
-        except httpx.ConnectError as e:
-            raise VCSError(
-                f"GitHub API unreachable: {method} {url}"
-            ) from e
-
-        _classify_response(response, method, url)
-        return response.json()
+        """Make an HTTP request with retry and error classification (G4-15)."""
+        response = await send_with_retry(
+            self._client, method, url,
+            classify=_classify_response, label="GitHub", **kwargs,
+        )
+        return _decode_json(response, method, url)
 
     async def _paginate(
         self,
@@ -223,23 +480,31 @@ class GitHubAdapter:
         """
         params: dict[str, Any] = {"per_page": 100}
         current_url: str | None = url
+        # The full origin, not just the host (SEC-CRED-02). Comparing the
+        # host alone let 'http://api.github.com/...' through, which sends the
+        # Authorization header in cleartext, and let a different port on the
+        # same host through to a different listener.
+        _initial = httpx.URL(url)
+        origin = (_initial.scheme, _initial.host, _initial.port)
+        pages = 0
 
         while current_url:
-            try:
-                response = await self._client.get(
-                    current_url, params=params,
+            pages += 1
+            if pages > _MAX_PAGES:
+                raise VCSError(
+                    f"GitHub API pagination exceeded {_MAX_PAGES} pages "
+                    f"for {url}; refusing to follow further"
                 )
-            except httpx.TimeoutException as e:
-                raise VCSError(
-                    f"GitHub API timed out during pagination: {current_url}"
-                ) from e
-            except httpx.ConnectError as e:
-                raise VCSError(
-                    f"GitHub API unreachable during pagination: {current_url}"
-                ) from e
 
-            _classify_response(response, "GET", current_url)
-            items = response.json()
+            response = await send_with_retry(
+                self._client, "GET", current_url,
+                classify=_classify_response, label="GitHub", params=params,
+            )
+            items = _expect_list(
+                _decode_json(response, "GET", current_url),
+                "GET",
+                current_url,
+            )
 
             if callback(items):
                 return  # Early exit requested
@@ -251,6 +516,48 @@ class GitHubAdapter:
             current_url = _parse_next_link(
                 response.headers.get("link", ""),
             )
+
+            # D3: the next URL comes from the server and is followed with the
+            # Authorization header attached. A compromised or misconfigured
+            # host must not be able to redirect the token somewhere else.
+            if current_url:
+                nxt = httpx.URL(current_url)
+                if (nxt.scheme, nxt.host, nxt.port) != origin:
+                    raise VCSError(
+                        f"GitHub API pagination pointed at a different "
+                        f"origin: {nxt.scheme}://{nxt.host}:{nxt.port} is "
+                        f"not {origin[0]}://{origin[1]}:{origin[2]}"
+                    )
+
+
+def _decode_json(
+    response: httpx.Response, method: str, url: str,
+) -> Any:
+    """Decode a response body, classifying a non-JSON body (D4).
+
+    A json.JSONDecodeError is not a PrBotError, so letting it escape exits
+    the process with code 1 and reports an upstream HTML error page to CI
+    as a blocking review.
+    """
+    try:
+        return response.json()
+    except ValueError as e:
+        raise VCSResponseError(
+            f"GitHub API returned a body that is not valid JSON: "
+            f"{method} {url}. {response.text[:200]}"
+        ) from e
+
+
+def _expect_list(
+    payload: Any, method: str, url: str,
+) -> list[dict[str, Any]]:
+    """Require a JSON array where the API contract promises one (D4)."""
+    if not isinstance(payload, list):
+        raise VCSResponseError(
+            f"GitHub API returned {type(payload).__name__} where a list "
+            f"was expected: {method} {url}"
+        )
+    return payload
 
 
 def _classify_response(
@@ -268,6 +575,16 @@ def _classify_response(
             f"GitHub API authentication failed (401): {method} {url}"
         )
     if status == 403:
+        # D3: GitHub signals its primary rate limit with 403 and an exhausted
+        # quota header, and a secondary limit with 403 plus Retry-After.
+        # Classifying either as an auth failure reported a transient
+        # throttle to CI as a permanent configuration error, and skipped the
+        # retry that would have cleared it.
+        remaining = response.headers.get("x-ratelimit-remaining")
+        if remaining == "0" or response.headers.get("retry-after"):
+            raise VCSRateLimitError(
+                f"GitHub API rate_limited (403): {method} {url}. {body_text}"
+            )
         raise VCSAuthError(
             f"GitHub API forbidden (403): {method} {url}. {body_text}"
         )
@@ -287,6 +604,20 @@ def _classify_response(
         f"GitHub API unexpected status ({status}): {method} {url}. "
         f"{body_text}"
     )
+
+
+def _github_comment(comment: InlineComment) -> dict[str, Any]:
+    """Render an inline comment in the review-comments shape."""
+    payload: dict[str, Any] = {
+        "path": comment.path,
+        "line": comment.line,
+        "side": "RIGHT",
+        "body": comment.body,
+    }
+    if comment.start_line is not None and comment.start_line < comment.line:
+        payload["start_line"] = comment.start_line
+        payload["start_side"] = "RIGHT"
+    return payload
 
 
 def _parse_next_link(link_header: str) -> str | None:

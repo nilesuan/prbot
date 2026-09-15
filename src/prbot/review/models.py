@@ -26,7 +26,9 @@ class Finding:
     """A single review finding from an agent."""
 
     id: str
-    category: Literal["general", "security"]
+    # The agent that reported it. Not an enum: the roster is configurable
+    # and a repository may add its own agents (C5).
+    category: str
     check_id: str
     title: str
     description: str
@@ -36,6 +38,14 @@ class Finding:
     severity: Literal["critical", "high", "medium", "low", "info"]
     confidence: int  # 0-100
     suggestion: str = ""
+    # The concrete trigger and the wrong outcome. Required of the
+    # adversarial agent, which exists to produce findings that can be
+    # checked rather than argued; empty for the checklist agents.
+    failure_scenario: str = ""
+    # Which agents reported this defect. Two agents arriving at the same
+    # finding independently is evidence, and it is the only way to tell a
+    # merged finding from a single-agent one after deduplication (B1).
+    reported_by: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,6 +108,13 @@ FINDING_JSON_SCHEMA: dict[str, Any] = {
                         "maximum": 100,
                     },
                     "suggestion": {"type": "string"},
+                    "failure_scenario": {
+                        "type": "string",
+                        "description": (
+                            "Concrete trigger then wrong outcome. Required "
+                            "for X-* checks; leave empty otherwise."
+                        ),
+                    },
                 },
             },
         },

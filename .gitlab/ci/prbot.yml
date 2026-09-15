@@ -10,41 +10,55 @@
 #   2 — Configuration error
 #   3 — Infrastructure error
 #
-# G-15: If AWS_ACCESS_KEY_ID is set without AWS_SESSION_TOKEN,
-# long-lived credentials are in use. Prefer OIDC (see .prbot-oidc below).
+# A7: authentication no longer shells out to the AWS CLI. The prbot image
+# contains a Python virtual environment and nothing else, so `aws sts
+# assume-role-with-web-identity` could never have run inside it. boto3
+# performs the web identity exchange itself when AWS_ROLE_ARN and
+# AWS_WEB_IDENTITY_TOKEN_FILE are set, so the job only has to write the
+# GitLab ID token to a file.
 
 .prbot-base:
-  image: ghcr.io/nilesuan/prbot:latest  # G-13: semver, not :latest
+  # A5: pinned to an immutable version tag rather than :latest. To pin
+  # harder, replace with a digest: ghcr.io/nilesuan/prbot@sha256:...
+  image: ghcr.io/nilesuan/prbot:v0.2.0
   variables:
+    # SEC-CRED-03: do not clone the branch under review. prbot fetches the
+    # diff over the API and needs no working copy, and a checkout would put
+    # a .prbot.toml the reviewed code controls into the job's working
+    # directory. prbot refuses the implicit config search in CI as well;
+    # this is the other half of the same boundary.
+    GIT_STRATEGY: none
     PRBOT_PLATFORM: gitlab
     PRBOT_REPO: $CI_PROJECT_PATH
     PRBOT_PR_NUMBER: $CI_MERGE_REQUEST_IID
+    PRBOT_AWS_REGION: $PRBOT_AWS_REGION
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  # Advisory by default: exit code 1 (REQUEST_CHANGES) does not fail the
+  # pipeline. Set allow_failure: false to make a blocking review blocking.
   allow_failure: true
 
 # Option 1: OIDC authentication (recommended) — G4-06
-# Uses GitLab id_tokens with AWS STS AssumeRoleWithWebIdentity
+#
+# The `aud` value must match the condition in the IAM role's trust policy.
+# Set PRBOT_AWS_ROLE_ARN and PRBOT_AWS_REGION as CI/CD variables.
 .prbot-oidc:
   extends: .prbot-base
   id_tokens:
     GITLAB_OIDC_TOKEN:
       aud: https://gitlab.com
   variables:
-    AWS_REGION: ${PRBOT_AWS_REGION}
-    AWS_ROLE_ARN: ${PRBOT_AWS_ROLE_ARN}
+    AWS_REGION: $PRBOT_AWS_REGION
+    AWS_DEFAULT_REGION: $PRBOT_AWS_REGION
+    AWS_ROLE_ARN: $PRBOT_AWS_ROLE_ARN
+    AWS_ROLE_SESSION_NAME: prbot-gitlab-$CI_PIPELINE_ID
+    AWS_WEB_IDENTITY_TOKEN_FILE: /tmp/prbot-oidc-token
   before_script:
-    - >
-      export $(
-        aws sts assume-role-with-web-identity
-        --role-arn "$AWS_ROLE_ARN"
-        --role-session-name "prbot-gitlab-${CI_PIPELINE_ID}"
-        --web-identity-token "$GITLAB_OIDC_TOKEN"
-        --duration-seconds 900
-        --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]'
-        --output text
-        | awk '{print "AWS_ACCESS_KEY_ID="$1" AWS_SECRET_ACCESS_KEY="$2" AWS_SESSION_TOKEN="$3}'
-      )
+    # boto3 reads the token from this path and calls
+    # AssumeRoleWithWebIdentity itself. No CLI, no credential export, and
+    # nothing that could print a credential into the job log.
+    - umask 077
+    - printf '%s' "$GITLAB_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
 
 prbot-review:
   extends: .prbot-oidc
@@ -54,7 +68,8 @@ prbot-review:
 
 # Option 2: Static credentials (NOT recommended)
 # G-15: Long-lived credentials lack session token rotation.
-# prbot will emit a warning if AWS_ACCESS_KEY_ID is set without AWS_SESSION_TOKEN.
+# prbot will emit a warning if AWS_ACCESS_KEY_ID is set without
+# AWS_SESSION_TOKEN.
 # .prbot-static:
 #   extends: .prbot-base
 #   variables:

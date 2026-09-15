@@ -69,6 +69,42 @@ class FileDiff:
 
 
 @dataclass(frozen=True)
+class InlineComment:
+    """A review comment anchored to a line of the head revision (C1).
+
+    Line numbers are new-side: the line as it appears after the change.
+    A deletion has no new-side line of its own, so a finding about one is
+    anchored to the surrounding context instead, which is what both
+    platforms expect.
+    """
+
+    path: str
+    line: int
+    body: str
+    start_line: int | None = None
+
+
+@dataclass(frozen=True)
+class ReviewThread:
+    """An existing review comment thread on the pull request (C8).
+
+    `id` is whatever the platform uses to address the thread: a GraphQL node
+    id on GitHub, a discussion id on GitLab. `comment_id` addresses the first
+    comment over REST, which is what a reply is posted against.
+    """
+
+    id: str
+    comment_id: int
+    body: str
+    resolved: bool = False
+    path: str | None = None
+    line: int | None = None
+    # Who wrote the first comment. The finding marker alone is not identity:
+    # anyone who can comment can paste it (SEC-AUTH-02).
+    author: str = ""
+
+
+@dataclass(frozen=True)
 class PRDiff:
     """Complete diff for a PR."""
 
@@ -89,7 +125,12 @@ class ReviewStateRecord:
     """State record embedded in PR comments for idempotent updates.
 
     Serializes to/from HTML comments that are invisible in rendered markdown.
-    Uses HMAC-SHA256 keyed with review_id for findings_hash integrity.
+
+    This record is advisory and is never a security boundary (D10). It lives
+    in a comment that anyone with write access can edit, and its digest is
+    keyed with review_id, which is published in plaintext beside it. Treat
+    every field as a hint that makes a repeated review cheaper, and verify
+    anything that matters, such as head_sha, against the API instead.
     """
 
     review_id: str  # UUID4
@@ -176,10 +217,13 @@ class ReviewStateRecord:
     def compute_findings_hash(
         findings: list[dict[str, Any]], review_id: str,
     ) -> str:
-        """Compute HMAC-SHA256 hash of findings keyed with review_id.
+        """Compute a SHA-256 digest of the findings, salted with review_id.
 
-        Different review_ids produce different hashes for the same findings,
-        preventing hash replay attacks.
+        This detects accidental change, such as a truncated or
+        partially-rewritten comment. It authenticates nothing: review_id is
+        published in the same HTML comment, so anyone who can edit the
+        comment can recompute a digest that matches whatever they wrote.
+        HMAC is used for its construction, not because a secret is involved.
         """
         payload = json.dumps(
             findings, sort_keys=True, separators=(",", ":"),

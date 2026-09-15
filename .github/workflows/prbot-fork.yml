@@ -2,8 +2,16 @@
 #
 # SECURITY: pull_request_target runs in base repo context.
 # NO checkout of fork code — prevents code execution attacks.
-# Author association gating (NG-22) via env var, not direct injection.
-# All actions SHA-pinned (NG-15). Image verified with Cosign (G-13).
+#
+# A4: every gate is a job-level condition. The previous version used
+# `exit 0` inside a run: step, which ends that step successfully and lets
+# the job continue, so an untrusted author still reached the credentialed,
+# paid review path. A job-level `if:` is the only construct that stops the
+# job before the OIDC role is assumed.
+#
+# A5: the image tag is resolved to an immutable digest once, that digest is
+# verified against a signer identity pinned to this repository, and that same
+# digest is what runs.
 name: prbot Review (Fork)
 
 on:
@@ -19,56 +27,69 @@ concurrency:
   group: prbot-fork-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+env:
+  PRBOT_IMAGE: ghcr.io/nilesuan/prbot
+  PRBOT_IMAGE_TAG: v0.2.0
+
 jobs:
   review:
     name: Fork PR Review
     runs-on: ubuntu-latest
-    # Only run for fork PRs
-    if: github.event.pull_request.head.repo.full_name != github.repository
     environment: fork-review
+    # G-14 and NG-22: fork-only, open-only, and known-author-only. Evaluated
+    # before any step runs, so a rejected PR never reaches OIDC or Bedrock.
+    #
+    # SEC-AUTH-02: an allowlist, not a blocklist. CommentAuthorAssociation
+    # has eight members, and denying only FIRST_TIME_CONTRIBUTOR and NONE let
+    # FIRST_TIMER (a brand-new account with no history anywhere) and
+    # MANNEQUIN through a gate whose whole purpose is to keep untrusted
+    # authors away from the OIDC role. Name the trusted associations instead,
+    # so a value added to the enum later is denied by default.
+    if: >-
+      github.event.pull_request.head.repo.full_name != github.repository
+      && github.event.pull_request.state != 'closed'
+      && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+                  github.event.pull_request.author_association)
     steps:
-      # G-14: Pre-check PR state before OIDC
-      - name: Check PR state
-        if: github.event.pull_request.state == 'closed'
-        run: |
-          echo "PR is closed — skipping review"
-          exit 0
-
-      # NG-22: Author association gating — uses env var, not direct injection
-      - name: Check author association
-        env:
-          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
-        run: |
-          if [ "$AUTHOR_ASSOCIATION" = "FIRST_TIME_CONTRIBUTOR" ] || [ "$AUTHOR_ASSOCIATION" = "NONE" ]; then
-            echo "::warning::Skipping review for $AUTHOR_ASSOCIATION"
-            exit 0
-          fi
-
-      # G-13: Verify container image signature before running
       - name: Install Cosign
         uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a  # v3.8.1
 
-      - name: Verify prbot image
-        continue-on-error: true  # Graceful on first push before image is signed
-        env:
-          PRBOT_IMAGE: ghcr.io/nilesuan/prbot:latest
+      - name: Resolve image digest
+        id: image
         run: |
-          cosign verify "$PRBOT_IMAGE" \
-            --certificate-identity-regexp=".*" \
-            --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+          digest=$(docker buildx imagetools inspect \
+            "${PRBOT_IMAGE}:${PRBOT_IMAGE_TAG}" \
+            --format '{{.Manifest.Digest}}')
+          echo "ref=${PRBOT_IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
 
-      # NO actions/checkout — fork code never checked out
+      - name: Verify prbot image
+        run: |
+          cosign verify "${{ steps.image.outputs.ref }}" \
+            --certificate-identity-regexp='^https://github\.com/nilesuan/prbot/\.github/workflows/' \
+            --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
+
+      # NO actions/checkout — fork code is never checked out
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
         with:
           role-to-assume: ${{ vars.PRBOT_FORK_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.PRBOT_AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ vars.PRBOT_AWS_REGION || 'ap-southeast-2' }}
 
-      # G-13: Image referenced by semver, not :latest
       - name: Run prbot
-        uses: docker://ghcr.io/nilesuan/prbot:latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PRBOT_PLATFORM: github
-          PRBOT_REPO: ${{ github.repository }}
-          PRBOT_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          docker run --rm \
+            -e GITHUB_TOKEN \
+            -e GITHUB_ACTIONS=true \
+            -e GITHUB_API_URL \
+            -e AWS_ACCESS_KEY_ID \
+            -e AWS_SECRET_ACCESS_KEY \
+            -e AWS_SESSION_TOKEN \
+            -e AWS_REGION \
+            -e AWS_DEFAULT_REGION \
+            -e PRBOT_PLATFORM=github \
+            -e PRBOT_REPO="${{ github.repository }}" \
+            -e PRBOT_PR_NUMBER="${{ github.event.pull_request.number }}" \
+            -e PRBOT_AWS_REGION="${{ vars.PRBOT_AWS_REGION || 'ap-southeast-2' }}" \
+            "${{ steps.image.outputs.ref }}"

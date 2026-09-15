@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from prbot.review.models import AgentError, AgentResult, Finding, TokenUsage
-from prbot.review.scorer import ScoredFinding, score_findings
+from prbot.review.scorer import ReviewScore, ScoredFinding, score_findings
 from prbot.review.verdict import (
     ReviewVerdict,
     determine_verdict,
@@ -140,9 +140,233 @@ class TestHasBlockerFindings:
     def test_critical_high_confidence(self) -> None:
         finding = _make_finding(severity="critical", confidence=90)
         sf = ScoredFinding.from_finding(finding, threshold=70)
-        assert has_blocker_findings([sf], blocker_threshold=80)
+        assert has_blocker_findings([sf], blocker_confidence=80)
 
     def test_medium_not_blocker(self) -> None:
         finding = _make_finding(severity="medium", confidence=90)
         sf = ScoredFinding.from_finding(finding, threshold=70)
-        assert not has_blocker_findings([sf], blocker_threshold=80)
+        assert not has_blocker_findings([sf], blocker_confidence=80)
+
+
+class TestVerdictScalesAreSeparate:
+    """B3: a 0-100 quality score was compared against a confidence threshold.
+
+    They share a range and mean different things, and has_blocker_findings
+    was written, tested and never called by determine_verdict.
+    """
+
+    @staticmethod
+    def _score(clamped: int, critical_override: bool = False) -> ReviewScore:
+        return ReviewScore(
+            raw_score=float(clamped),
+            clamped_score=clamped,
+            total_deductions=100.0 - clamped,
+            finding_count=1,
+            critical_override=critical_override,
+        )
+
+    @staticmethod
+    def _scored(severity: str, confidence: int) -> ScoredFinding:
+        return ScoredFinding(
+            finding=Finding(
+                id="general-1",
+                category="general",
+                check_id="Q-ERR-01",
+                title="t",
+                description="d",
+                file_path="src/app.py",
+                line_start=1,
+                line_end=1,
+                severity=severity,
+                confidence=confidence,
+            ),
+            band="reported",
+            deduction=1.0,
+        )
+
+    def test_a_high_confidence_blocker_requests_changes(self) -> None:
+        """Even when the score stays above the passing mark."""
+        reported = [self._scored("critical", 95)]
+        verdict = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported,
+            self._score(99),
+            blocker_confidence=80,
+            min_passing_score=70,
+        )
+        assert verdict == ReviewVerdict.REQUEST_CHANGES
+
+    def test_a_low_confidence_blocker_does_not(self) -> None:
+        reported = [self._scored("critical", 50)]
+        verdict = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported,
+            self._score(99),
+            blocker_confidence=80,
+            min_passing_score=70,
+        )
+        assert verdict == ReviewVerdict.COMMENT
+
+    def test_score_below_the_passing_mark_requests_changes(self) -> None:
+        reported = [self._scored("low", 50)]
+        verdict = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported,
+            self._score(40),
+            blocker_confidence=80,
+            min_passing_score=70,
+        )
+        assert verdict == ReviewVerdict.REQUEST_CHANGES
+
+    def test_passing_score_with_no_blocker_comments(self) -> None:
+        reported = [self._scored("medium", 75)]
+        verdict = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported,
+            self._score(88),
+            blocker_confidence=80,
+            min_passing_score=70,
+        )
+        assert verdict == ReviewVerdict.COMMENT
+
+    def test_the_two_thresholds_are_independent(self) -> None:
+        """Raising the blocker confidence must not move the passing mark."""
+        reported = [self._scored("high", 85)]
+        strict = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported, self._score(88),
+            blocker_confidence=80, min_passing_score=70,
+        )
+        lenient = determine_verdict(
+            [AgentResult(agent="general", findings=[])],
+            reported, self._score(88),
+            blocker_confidence=90, min_passing_score=70,
+        )
+        assert strict == ReviewVerdict.REQUEST_CHANGES
+        assert lenient == ReviewVerdict.COMMENT
+
+
+class TestConfigDefaultsAgreeWithFunctionDefaults:
+    """B3: config defaulted blocker_threshold to 70, the functions to 80."""
+
+    def test_blocker_confidence_defaults_match(self) -> None:
+        import inspect
+
+        from prbot.config import PrBotConfig
+
+        sig = inspect.signature(determine_verdict)
+        assert (
+            sig.parameters["blocker_confidence"].default
+            == PrBotConfig.model_fields["blocker_threshold"].default
+        )
+
+    def test_passing_score_defaults_match(self) -> None:
+        import inspect
+
+        from prbot.config import PrBotConfig
+
+        sig = inspect.signature(determine_verdict)
+        assert (
+            sig.parameters["min_passing_score"].default
+            == PrBotConfig.model_fields["min_passing_score"].default
+        )
+
+
+class TestChunkedOutcomesDoNotOverCap:
+    """GEN-ARCH-01: chunking changed the shape of the outcomes list.
+
+    Before chunking, outcomes held one entry per agent, so 'any agent
+    errored' meant half the review was missing. With N chunks the list holds
+    N*len(agents) entries, and a single transient failure in one chunk
+    silently capped the whole pull request at COMMENT, discarding
+    blocker-grade findings that the other chunks had already produced.
+
+    An agent's coverage is only lost when every chunk failed for that agent.
+    """
+
+    @staticmethod
+    def _blocker() -> list[ScoredFinding]:
+        return [
+            ScoredFinding(
+                finding=Finding(
+                    id="general-1", category="general", check_id="Q-ERR-01",
+                    title="t", description="d", file_path="a.py",
+                    line_start=1, line_end=1,
+                    severity="critical", confidence=95,
+                ),
+                band="reported", deduction=23.75,
+            ),
+        ]
+
+    @staticmethod
+    def _score(
+        clamped: int = 20, override: bool = True, findings: int = 1,
+    ) -> ReviewScore:
+        return ReviewScore(
+            raw_score=float(clamped), clamped_score=clamped,
+            total_deductions=100.0 - clamped, finding_count=findings,
+            critical_override=override,
+        )
+
+    def test_one_chunk_failing_does_not_cap_the_verdict(self) -> None:
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentResult(agent="security", findings=[]),
+            AgentError(agent="general", error_type="throttled", message="m"),
+            AgentResult(agent="security", findings=[]),
+        ]
+        assert determine_verdict(
+            outcomes, self._blocker(), self._score(),
+        ) == ReviewVerdict.REQUEST_CHANGES
+
+    def test_an_agent_failing_in_every_chunk_still_caps(self) -> None:
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentError(agent="security", error_type="throttled", message="m"),
+            AgentResult(agent="general", findings=[]),
+            AgentError(agent="security", error_type="throttled", message="m"),
+        ]
+        assert determine_verdict(
+            outcomes, self._blocker(), self._score(),
+        ) == ReviewVerdict.COMMENT
+
+    def test_the_unchunked_single_failure_still_caps(self) -> None:
+        """One agent, one chunk, failed: that agent has no coverage."""
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentError(agent="security", error_type="timeout", message="m"),
+        ]
+        assert determine_verdict(
+            outcomes, self._blocker(), self._score(),
+        ) == ReviewVerdict.COMMENT
+
+    def test_every_agent_failing_everywhere_is_still_comment(self) -> None:
+        outcomes = [
+            AgentError(agent="general", error_type="x", message="m"),
+            AgentError(agent="security", error_type="x", message="m"),
+        ]
+        assert determine_verdict(
+            outcomes, [], self._score(100, False),
+        ) == ReviewVerdict.COMMENT
+
+    def test_a_clean_chunked_review_can_still_approve(self) -> None:
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentResult(agent="security", findings=[]),
+            AgentResult(agent="general", findings=[]),
+            AgentResult(agent="security", findings=[]),
+        ]
+        assert determine_verdict(
+            outcomes, [], self._score(100, False, findings=0),
+        ) == ReviewVerdict.APPROVE
+
+    def test_partial_coverage_is_reported(self) -> None:
+        from prbot.review.verdict import agents_without_coverage
+
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentError(agent="security", error_type="x", message="m"),
+            AgentError(agent="general", error_type="x", message="m"),
+            AgentError(agent="security", error_type="x", message="m"),
+        ]
+        assert agents_without_coverage(outcomes) == {"security"}

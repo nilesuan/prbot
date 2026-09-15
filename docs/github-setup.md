@@ -4,7 +4,7 @@ Set up prbot to automatically review pull requests on GitHub repositories.
 
 ## Prerequisites
 
-- **AWS account** with [Amazon Bedrock](https://aws.amazon.com/bedrock/) model access enabled (Claude Sonnet + Claude Opus)
+- **AWS account** with [Amazon Bedrock](https://aws.amazon.com/bedrock/) model access enabled for whichever models you configure (Claude Sonnet by default for both agents)
 - **GitHub repository** (public or private)
 - An **AWS IAM OIDC identity provider** configured for GitHub Actions (recommended), or static IAM credentials
 
@@ -118,10 +118,32 @@ jobs:
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
         with:
           role-to-assume: ${{ vars.PRBOT_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.PRBOT_AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ vars.PRBOT_AWS_REGION || 'ap-southeast-2' }}
 
       - name: Run prbot
-        uses: docker://ghcr.io/nilesuan/prbot:latest
+      - name: Resolve image digest
+        id: image
+        env:
+          PRBOT_IMAGE: ghcr.io/nilesuan/prbot
+          PRBOT_IMAGE_TAG: v0.2.0
+        run: |
+          digest=$(docker buildx imagetools inspect \
+            "${PRBOT_IMAGE}:${PRBOT_IMAGE_TAG}" \
+            --format '{{.Manifest.Digest}}')
+          echo "ref=${PRBOT_IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Run prbot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm \
+            -e GITHUB_TOKEN -e GITHUB_ACTIONS=true -e GITHUB_API_URL \
+            -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+            -e AWS_REGION -e AWS_DEFAULT_REGION \
+            -e PRBOT_PLATFORM=github \
+            -e PRBOT_REPO="${{ github.repository }}" \
+            -e PRBOT_PR_NUMBER="${{ github.event.pull_request.number }}" \
+            "${{ steps.image.outputs.ref }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRBOT_PLATFORM: github
@@ -157,27 +179,46 @@ jobs:
   review:
     name: Fork PR Review
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.full_name != github.repository
     environment: fork-review  # Require manual approval for first-time contributors
+    # Every gate is a job-level condition. `exit 0` inside a run: step ends
+    # that step successfully and lets the job continue, so an unknown author
+    # would still reach the OIDC role and a paid review.
+    if: >-
+      github.event.pull_request.head.repo.full_name != github.repository
+      && github.event.pull_request.state != 'closed'
+      && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR'
+      && github.event.pull_request.author_association != 'NONE'
     steps:
-      # Skip unknown contributors
-      - name: Check author association
-        env:
-          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
-        run: |
-          if [ "$AUTHOR_ASSOCIATION" = "FIRST_TIME_CONTRIBUTOR" ] || [ "$AUTHOR_ASSOCIATION" = "NONE" ]; then
-            echo "::warning::Skipping review for $AUTHOR_ASSOCIATION"
-            exit 0
-          fi
-
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
         with:
           role-to-assume: ${{ vars.PRBOT_FORK_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.PRBOT_AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ vars.PRBOT_AWS_REGION || 'ap-southeast-2' }}
 
       - name: Run prbot
-        uses: docker://ghcr.io/nilesuan/prbot:latest
+      - name: Resolve image digest
+        id: image
+        env:
+          PRBOT_IMAGE: ghcr.io/nilesuan/prbot
+          PRBOT_IMAGE_TAG: v0.2.0
+        run: |
+          digest=$(docker buildx imagetools inspect \
+            "${PRBOT_IMAGE}:${PRBOT_IMAGE_TAG}" \
+            --format '{{.Manifest.Digest}}')
+          echo "ref=${PRBOT_IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Run prbot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm \
+            -e GITHUB_TOKEN -e GITHUB_ACTIONS=true -e GITHUB_API_URL \
+            -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+            -e AWS_REGION -e AWS_DEFAULT_REGION \
+            -e PRBOT_PLATFORM=github \
+            -e PRBOT_REPO="${{ github.repository }}" \
+            -e PRBOT_PR_NUMBER="${{ github.event.pull_request.number }}" \
+            "${{ steps.image.outputs.ref }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRBOT_PLATFORM: github
@@ -208,8 +249,12 @@ All configuration can be set via `PRBOT_`-prefixed environment variables in the 
 | `PRBOT_ALLOWED_REGIONS` | `ap-southeast-2` | Comma-separated list of allowed AWS regions |
 | `PRBOT_CONFIDENCE_THRESHOLD` | `70` | Minimum confidence (0-100) to report a finding |
 | `PRBOT_BLOCKER_THRESHOLD` | `70` | Minimum confidence (0-100) to mark a finding as a blocker |
-| `PRBOT_GENERAL_MODEL_ID` | `us.anthropic.claude-sonnet-4-20250514` | Bedrock model ID for general review agent |
-| `PRBOT_SECURITY_MODEL_ID` | `us.anthropic.claude-opus-4-0-20250514` | Bedrock model ID for security review agent |
+| `PRBOT_GENERAL_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | Bedrock model ID for general review agent |
+| `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | Bedrock model ID for security review agent |
+| `PRBOT_MIN_PASSING_SCORE` | `70` | Minimum review score (0-100) required to pass |
+| `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
+| `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |
+| `PRBOT_ALLOWED_REGIONS` | `ap-southeast-2` | Comma-separated regions the review may run in |
 | `PRBOT_MAX_DIFF_TOKENS` | `100000` | Maximum diff size in tokens before rejection |
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Maximum estimated cost per review |
 | `PRBOT_TIMEOUT_SECONDS` | `300` | Review timeout in seconds |
@@ -257,7 +302,29 @@ To make blocker findings non-blocking (advisory mode), wrap the run step:
 ```yaml
       - name: Run prbot
         continue-on-error: true
-        uses: docker://ghcr.io/nilesuan/prbot:latest
+      - name: Resolve image digest
+        id: image
+        env:
+          PRBOT_IMAGE: ghcr.io/nilesuan/prbot
+          PRBOT_IMAGE_TAG: v0.2.0
+        run: |
+          digest=$(docker buildx imagetools inspect \
+            "${PRBOT_IMAGE}:${PRBOT_IMAGE_TAG}" \
+            --format '{{.Manifest.Digest}}')
+          echo "ref=${PRBOT_IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Run prbot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm \
+            -e GITHUB_TOKEN -e GITHUB_ACTIONS=true -e GITHUB_API_URL \
+            -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+            -e AWS_REGION -e AWS_DEFAULT_REGION \
+            -e PRBOT_PLATFORM=github \
+            -e PRBOT_REPO="${{ github.repository }}" \
+            -e PRBOT_PR_NUMBER="${{ github.event.pull_request.number }}" \
+            "${{ steps.image.outputs.ref }}"
         env:
           # ...
 ```
@@ -281,7 +348,7 @@ The prbot container image is signed with [Sigstore Cosign](https://docs.sigstore
 
       - name: Verify prbot image
         env:
-          PRBOT_IMAGE: ghcr.io/nilesuan/prbot:latest
+          PRBOT_IMAGE: ghcr.io/nilesuan/prbot:v0.2.0
         run: |
           cosign verify "$PRBOT_IMAGE" \
             --certificate-identity-regexp=".*" \
@@ -300,7 +367,7 @@ Check that your IAM role has `bedrock:InvokeModel` permission and the trust poli
 
 ### "No VCS token found"
 
-`GITHUB_TOKEN` should be passed as an env var to the container step. The `uses: docker://...` syntax does not automatically inject secrets -- you must list them explicitly in `env:`.
+`GITHUB_TOKEN` must be passed explicitly to the container. Nothing is injected automatically. The container is launched with `docker run` rather than `uses: docker://...` because `uses:` cannot interpolate an expression, so it cannot reference the digest that was verified.
 
 ### "Configuration validation failed: repo must be 'owner/name'"
 
@@ -315,5 +382,7 @@ The `PRBOT_REPO` value must be in `owner/repo` format (e.g., `octocat/hello-worl
 ### Review costs too much
 
 - Lower `PRBOT_BUDGET_LIMIT_USD` to cap estimated cost
-- Use a cheaper model for `PRBOT_GENERAL_MODEL_ID` (e.g., `anthropic.claude-haiku-3-20240307`)
+- Point `PRBOT_GENERAL_MODEL_ID` at a cheaper model, and check it
+  against `PRICING` in `review/budget.py` so the cost estimate is
+  accurate rather than falling back to the Opus upper bound
 - Add exclusion patterns to reduce diff size

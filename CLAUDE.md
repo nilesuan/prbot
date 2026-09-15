@@ -14,9 +14,9 @@ The container image is published to `ghcr.io/nilesuan/prbot:latest` and signed w
 - **Package manager:** uv (with `--frozen` for reproducible installs)
 - **Config:** Pydantic v2 frozen models, TOML config files via tomllib
 - **HTTP client:** httpx (async) -- no CLI tools (gh/glab) at runtime
-- **AWS:** boto3 for Bedrock Converse API (structured JSON output via native schema enforcement)
+- **AWS:** boto3 for Bedrock Converse API (structured output enforced with a forced tool carrying `FINDING_JSON_SCHEMA`)
 - **Logging:** structlog with JSON renderer to stdout
-- **Retry:** tenacity with exponential backoff + jitter
+- **Retry:** hand-rolled exponential backoff with jitter (`review/runner.py` for Bedrock, `vcs/retry.py` for VCS APIs)
 - **Linter:** ruff
 - **Tests:** pytest with pytest-asyncio, pytest-cov
 - **Container:** Multi-stage Dockerfile, python:3.12-slim base (digest-pinned), non-root user
@@ -103,7 +103,7 @@ src/prbot/
 
 ## Review Checks
 
-Check specs are in `prompts/general.md` (Q-* checks) and `prompts/security.md` (S-* checks). The general agent covers: architecture (Q-ARCH), maintainability (Q-MAINT), testing (Q-TEST), error handling (Q-ERR), API contracts (Q-API), and completeness (Q-COMP -- docs, version bump, changelog, examples). The security agent covers: credentials (S-CRED), input validation (S-INPUT), auth (S-AUTH), cryptography (S-CRYPTO), and data safety (S-DATA).
+Check specs are in `src/prbot/prompts/general.md` (Q-* checks) and `src/prbot/prompts/security.md` (S-* checks), bundled as package data and loaded via `importlib.resources`. `PRBOT_PROMPTS_DIR` overrides the directory at runtime. The general agent covers: architecture (Q-ARCH), maintainability (Q-MAINT), testing (Q-TEST), error handling (Q-ERR), API contracts (Q-API), and completeness (Q-COMP -- docs, version bump, changelog, examples). The security agent covers: credentials (S-CRED), input validation (S-INPUT), auth (S-AUTH), cryptography (S-CRYPTO), and data safety (S-DATA).
 
 ## CI/CD
 
