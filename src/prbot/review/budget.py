@@ -42,7 +42,12 @@ PRICING: dict[str, dict[str, float]] = {
     },
 }
 
-# Fallback pricing — uses Opus rates as upper bound (G-09)
+# Fallback for a model the table does not know (G-09). The point is that it
+# bounds every entry above, not that it matches any current model: these are
+# the retired Opus 4.1 rates, and today's most expensive Claude is well under
+# them. Do not "correct" it down to a current price - that would make an
+# unknown model cheaper than a known one and understate the spend it is there
+# to catch. test_fallback_is_an_upper_bound enforces the property.
 DEFAULT_PRICING: dict[str, float] = {
     "input": 15.00,
     "output": 75.00,
