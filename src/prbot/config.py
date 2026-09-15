@@ -243,8 +243,8 @@ class PrBotConfig(BaseModel, frozen=True):
     # different quantity from blocker_threshold that happens to share a
     # range; comparing one against the other was a category error (B3).
     min_passing_score: int = Field(default=70, ge=0, le=100)
-    general_model_id: str = "au.anthropic.claude-sonnet-4-6"
-    security_model_id: str = "au.anthropic.claude-sonnet-4-6"
+    general_model_id: str = "au.anthropic.claude-sonnet-5"
+    security_model_id: str = "au.anthropic.claude-sonnet-5"
     max_diff_tokens: int = Field(default=100_000, gt=0)
     # B5: explicit cap on each agent response. Left to the Bedrock
     # default, output length is neither reproducible nor visible to the
