@@ -115,6 +115,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
     from prbot.auth import (
         resolve_token,
         validate_aws_session_credentials,
+        validate_token_scopes,
     )
     from prbot.observability.audit import (
         AgentAuditInfo,
@@ -172,6 +173,17 @@ async def run_pipeline(config: PrBotConfig) -> int:
         "auth.resolved source=%s token=%s",
         token.source, token.redacted,
     )
+
+    # A9: scope validation was written, tested and never called, so a token
+    # missing a scope failed later as an opaque 403 rather than a clear
+    # configuration error. Token types that cannot report their own scopes
+    # skip the check rather than failing it.
+    from prbot.vcs import _resolve_api_base_url
+
+    await validate_token_scopes(
+        token, config.platform, _resolve_api_base_url(config),
+    )
+
     validate_aws_session_credentials()
 
     # Create VCS adapter

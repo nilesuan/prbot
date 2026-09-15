@@ -80,10 +80,12 @@ def _pipeline_patches(
     """Patch auth + VCS adapter creation for pipeline tests."""
     resolve = "prbot.auth.resolve_token"
     validate = "prbot.auth.validate_aws_session_credentials"
+    scopes = "prbot.auth.validate_token_scopes"
     create = "prbot.vcs.create_vcs_adapter"
     with (
         patch(resolve, new_callable=AsyncMock) as mock_r,
         patch(validate),
+        patch(scopes, new_callable=AsyncMock),
         patch(create, return_value=adapter),
     ):
         mock_r.return_value = _mock_token()
@@ -259,3 +261,41 @@ class TestIsBotAuthor:
         assert _is_bot_author(
             "Dependabot[bot]", authenticated_user="prbot[bot]",
         )
+
+
+class TestScopeValidationRuns:
+    """A9: the check must actually be reached by the pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_validates_token_scopes(self) -> None:
+        config = _make_config()
+        adapter = AsyncMock()
+        adapter.get_pr_metadata.return_value = _make_metadata(state="closed")
+
+        # _pipeline_patches also patches the scope validator, so this patch
+        # has to be entered last to be the one in effect.
+        with _pipeline_patches(adapter), patch(
+            "prbot.auth.validate_token_scopes", new_callable=AsyncMock,
+        ) as mock_scopes:
+            await run_pipeline(config)
+
+        mock_scopes.assert_awaited_once()
+        args = mock_scopes.await_args.args
+        assert args[1] == "github"
+
+    @pytest.mark.asyncio
+    async def test_insufficient_scopes_stops_before_any_api_call(self) -> None:
+        from prbot.exceptions import InsufficientScopesError
+
+        config = _make_config()
+        adapter = AsyncMock()
+
+        failing = AsyncMock(
+            side_effect=InsufficientScopesError("missing repo"),
+        )
+        with _pipeline_patches(adapter), \
+                patch("prbot.auth.validate_token_scopes", failing), \
+                pytest.raises(InsufficientScopesError):
+            await run_pipeline(config)
+
+        adapter.get_pr_metadata.assert_not_called()

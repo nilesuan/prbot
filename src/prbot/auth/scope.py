@@ -102,8 +102,28 @@ async def _validate_github_scopes(
             f"Token scope validation failed: HTTP {response.status_code}"
         )
 
+    # A9: only OAuth tokens and classic PATs report scopes. A GitHub Actions
+    # GITHUB_TOKEN is an app installation token and a fine-grained PAT is not
+    # an OAuth token; neither sends X-OAuth-Scopes, and neither is missing
+    # anything. Treating silence as "no scopes granted" would fail every
+    # GitHub Actions run. The 200 above already proves the token authenticates;
+    # what it can reach is then enforced by the API itself.
+    if "x-oauth-scopes" not in response.headers:
+        logger.info(
+            "Token does not report OAuth scopes (installation or "
+            "fine-grained token); skipping scope check",
+        )
+        return
+
     scopes_header = response.headers.get("x-oauth-scopes", "")
     granted = {s.strip() for s in scopes_header.split(",") if s.strip()}
+
+    if not granted:
+        logger.info(
+            "Token reports an empty scope list (fine-grained token); "
+            "skipping scope check",
+        )
+        return
 
     missing = required - granted
     if missing:
@@ -137,16 +157,29 @@ async def _validate_gitlab_scopes(
             f"Token scope validation failed: {base_url} unreachable"
         ) from e
 
-    if response.status_code == 401:
-        raise AuthError("Token scope validation failed: token is invalid (401)")
-    if response.status_code == 403:
-        raise AuthError("Token scope validation failed: forbidden (403)")
+    # A9: a CI_JOB_TOKEN is not a personal access token and cannot
+    # introspect itself, and older self-hosted GitLab has no such endpoint.
+    # Neither case means the token lacks scopes.
+    if response.status_code in (401, 403, 404):
+        logger.info(
+            "Token cannot introspect its own scopes (HTTP %d); skipping "
+            "scope check",
+            response.status_code,
+        )
+        return
     if response.status_code >= 400:
         raise AuthError(
             f"Token scope validation failed: HTTP {response.status_code}"
         )
 
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError:
+        logger.info("Scope endpoint returned a non-JSON body; skipping check")
+        return
+    if not isinstance(data, dict) or "scopes" not in data:
+        logger.info("Scope endpoint did not report scopes; skipping check")
+        return
     granted = set(data.get("scopes", []))
 
     missing = required - granted
