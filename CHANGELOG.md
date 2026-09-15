@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Runtime dependencies bumped: pathspec 0.12.1 to 1.1.1, structlog 25.5.0
+  to 26.1.0, boto3 and botocore 1.42.64 to 1.43.94, pydantic 2.12.5 to
+  2.13.5, s3transfer 0.16.0 to 0.19.2.
+- pathspec 1.0 renamed its registered pattern factory, so the exclusion
+  matcher now asks for `gitignore` rather than `gitwildmatch`. The names are
+  inverted between majors (0.x deprecates `gitignore`, 1.x deprecates
+  `gitwildmatch`), so the floor is pinned at `pathspec>=1,<2` instead of
+  branching on the installed version. Matching behaviour is unchanged.
+  Taking the bump without this refuses every exclusion pattern in the
+  project: `_compile` turns any exception into `ConfigError`, so the
+  deprecation arrives as a hard failure rather than a warning.
+
 ### Fixed
 
 - The Dockerfile stripped pip, setuptools and wheel from the runtime image
