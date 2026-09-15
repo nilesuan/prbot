@@ -145,6 +145,11 @@ now in CI.
   image, where it closes CVE-2026-45409; the other three are in the
   development closure. Trivy now reports no advisory at any severity
   against `uv.lock`, and none at CRITICAL or HIGH against the image.
+- pytest 8.4.2 to 9.1.1, closing GHSA-6w46-j5rx-g56g (vulnerable tmpdir
+  handling). This one needed a `pyproject.toml` change rather than a
+  lockfile bump, because `pytest<9` was a declared ceiling; pytest-asyncio
+  moves to 1.x with it, since 0.x caps pytest below 9. Test tooling only,
+  so the shipped image is untouched.
 
 - Fork reviews are gated before the OIDC role is assumed. The previous gate
   used `exit 0` inside a step, which does not stop later steps.

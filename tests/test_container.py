@@ -24,8 +24,15 @@ class TestDockerfile:
     """Smoke tests for the production container image."""
 
     @pytest.fixture(scope="class")
-    def built_image(self) -> str:
-        """Build the Docker image once for all tests."""
+    @classmethod
+    def built_image(cls) -> str:
+        """Build the Docker image once for all tests.
+
+        A class-scoped fixture must be a classmethod: it runs once per class
+        while each test gets a fresh instance, so anything it set on ``self``
+        would be invisible to the tests. pytest 9 raises on the instance-method
+        form, and this suite turns warnings into errors.
+        """
         tag = "prbot:test-smoke"
         result = subprocess.run(
             ["docker", "build", "-t", tag, "."],
