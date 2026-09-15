@@ -97,3 +97,66 @@ def apply_metadata_datamarking(
         apply_datamarking(body),
         apply_datamarking(author),
     )
+
+
+# Lines git writes rather than the pull request author. Marking these
+# defends against nothing and destroys the structure the model reads line
+# numbers from (B2).
+_STRUCTURAL_PREFIXES = (
+    "@@",
+    "diff --git",
+    "index ",
+    "--- ",
+    "+++ ",
+    "old mode ",
+    "new mode ",
+    "similarity index ",
+    "rename from ",
+    "rename to ",
+    "new file mode ",
+    "deleted file mode ",
+    "Binary files ",
+    "\\ No newline at end of file",
+)
+
+
+def apply_diff_datamarking(patch: str) -> str:
+    """Datamark the content of a patch while preserving its structure (B2).
+
+    apply_datamarking splits on whitespace and marks every token, which turns
+
+        @@ -82,7 +82,7 @@ class Handler:
+
+    into
+
+        ^mark^ @@ ^mark^ -82,7 ^mark^ +82,7 ^mark^ @@ ^mark^ class ...
+
+    and separates every + or - from the line it belongs to. Those are the
+    cues the model uses to attribute a finding to a line number, and the
+    pipeline then deducts 40 confidence points from findings whose lines do
+    not land inside a hunk. The effect was to garble the line information and
+    then penalise the model for getting lines wrong.
+
+    Hunk and file headers come from git, not from the author, so they carry
+    no injected payload and are passed through verbatim. On a changed or
+    context line the leading +, - or space is kept in place and only the
+    content after it is marked, which is where an author can write anything
+    they like.
+    """
+    if not patch:
+        return patch
+
+    marked_lines: list[str] = []
+    for line in patch.split("\n"):
+        if not line:
+            marked_lines.append(line)
+            continue
+        if line.startswith(_STRUCTURAL_PREFIXES):
+            marked_lines.append(line)
+            continue
+        if line[0] in "+- ":
+            marked_lines.append(line[0] + apply_datamarking(line[1:]))
+            continue
+        marked_lines.append(apply_datamarking(line))
+
+    return "\n".join(marked_lines)

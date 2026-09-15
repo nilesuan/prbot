@@ -99,14 +99,22 @@ def build_system_prompt(agent: str) -> str:
     )
 
 
-def build_user_prompt(pr_diff: PRDiff, metadata: PRMetadata) -> str:
+def build_user_prompt(
+    pr_diff: PRDiff,
+    metadata: PRMetadata,
+    *,
+    datamark_diff: bool = True,
+) -> str:
     """Build the user prompt containing PR metadata and diff.
 
     This is the untrusted content boundary (S7) — all PR data goes here,
     not in the system prompt. All content is datamarked for prompt injection
     defense (story-6-1).
     """
-    from prbot.security.datamarking import apply_datamarking, apply_metadata_datamarking
+    from prbot.security.datamarking import (
+        apply_diff_datamarking,
+        apply_metadata_datamarking,
+    )
 
     # Datamark metadata fields (S53)
     dm_title, dm_body, dm_author = apply_metadata_datamarking(
@@ -120,8 +128,14 @@ def build_user_prompt(pr_diff: PRDiff, metadata: PRMetadata) -> str:
         if f.previous_path:
             safe_prev = sanitize_path_for_prompt(f.previous_path)
             header += f" (renamed from {safe_prev})"
-        # Datamark the diff patch content
-        dm_patch = apply_datamarking(f.patch) if f.patch else ""
+        # Datamark the patch content, preserving hunk and file headers
+        # and the leading +/- of each line (B2)
+        if not f.patch:
+            dm_patch = ""
+        elif datamark_diff:
+            dm_patch = apply_diff_datamarking(f.patch)
+        else:
+            dm_patch = f.patch
         files_section.append(f"{header}\n```diff\n{dm_patch}\n```")
 
     files_text = "\n\n".join(files_section)

@@ -266,7 +266,10 @@ async def run_pipeline(config: PrBotConfig) -> int:
             return EXIT_PASS
 
         # Validate diff size and estimate cost
-        diff_text = build_user_prompt(filtered_diff, metadata)
+        diff_text = build_user_prompt(
+            filtered_diff, metadata,
+            datamark_diff=config.datamark_diff,
+        )
         validate_diff_size(diff_text, config.max_diff_tokens)
         agents = [
             {
@@ -291,6 +294,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
             filtered_diff, metadata, agents,
             budget, config.aws_region,
             max_output_tokens=config.max_output_tokens,
+            datamark_diff=config.datamark_diff,
         )
 
         # Hallucination validation

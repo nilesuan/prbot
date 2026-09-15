@@ -101,6 +101,13 @@ class PrBotConfig(BaseModel, frozen=True):
     api_base_url: str | None = None
     secret_name: str | None = None
     draft_behavior: Literal["skip", "review"] = "skip"
+    # B2: whether the patch content is datamarked. Metadata is always
+    # datamarked, since the title, body and author are author-written
+    # prose and the obvious injection vector. Whether marking the patch
+    # as well helps or hurts finding precision is a question for
+    # measurement, which this switch makes possible; see
+    # scripts/measure_datamarking.py.
+    datamark_diff: bool = True
     excluded_patterns: list[str] = Field(default_factory=list)
     log_level: str = "INFO"
     dry_run: bool = False
@@ -277,7 +284,7 @@ _INT_FIELDS = frozenset({
     "min_passing_score",
 })
 _FLOAT_FIELDS = frozenset({"budget_limit_usd"})
-_BOOL_FIELDS = frozenset({"dry_run"})
+_BOOL_FIELDS = frozenset({"dry_run", "datamark_diff"})
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
