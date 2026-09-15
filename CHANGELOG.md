@@ -5,6 +5,20 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The CI templates and every setup document pinned
+  `ghcr.io/nilesuan/prbot:v0.2.0`, an image tag that is never published.
+  `build.yml` tags with docker/metadata-action's
+  `type=semver,pattern={{version}}`, which strips the leading `v`, so the
+  git tag is `v0.2.0` while the image tag is `0.2.0`. Every review run
+  failed at the digest step with `not found`. The 16 references are
+  corrected and each pin now carries a comment saying why there is no `v`.
+  No code and no image change: the published `0.2.0` image is correct and
+  is what these references now resolve to.
+
 ## [0.2.0] - 2026-09-15
 
 A correctness and hardening release. Several shipped controls did not do what
