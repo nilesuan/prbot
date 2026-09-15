@@ -1,3 +1,3 @@
 """prbot — Security-hardened PR/MR review bot."""
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
