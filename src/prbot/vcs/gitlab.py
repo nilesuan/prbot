@@ -23,10 +23,14 @@ from prbot.exceptions import (
     VCSServerError,
 )
 from prbot.vcs.models import FileDiff, PRDiff, PRMetadata, validate_response
+from prbot.vcs.retry import send_with_retry
 
 logger = logging.getLogger(__name__)
 
 _STATE_MARKER = "<!-- prbot:state:"
+
+# Hard cap on pages followed (D3). See the note in github.py.
+_MAX_PAGES = 100
 
 
 class GitLabAdapter:
@@ -195,19 +199,11 @@ class GitLabAdapter:
         url: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Make an HTTP request with error classification (G4-15)."""
-        try:
-            response = await self._client.request(method, url, **kwargs)
-        except httpx.TimeoutException as e:
-            raise VCSError(
-                f"GitLab API timed out: {method} {url}"
-            ) from e
-        except httpx.ConnectError as e:
-            raise VCSError(
-                f"GitLab API unreachable: {method} {url}"
-            ) from e
-
-        _classify_response(response, method, url)
+        """Make an HTTP request with retry and error classification (G4-15)."""
+        response = await send_with_retry(
+            self._client, method, url,
+            classify=_classify_response, label="GitLab", **kwargs,
+        )
 
         # Some GitLab endpoints return 204 No Content
         if response.status_code == 204:
@@ -227,21 +223,21 @@ class GitLabAdapter:
         """
         params: dict[str, Any] = {"per_page": 100}
         page = 1
+        pages = 0
 
         while True:
-            params["page"] = page
-            try:
-                response = await self._client.get(url, params=params)
-            except httpx.TimeoutException as e:
+            pages += 1
+            if pages > _MAX_PAGES:
                 raise VCSError(
-                    f"GitLab API timed out during pagination: {url}"
-                ) from e
-            except httpx.ConnectError as e:
-                raise VCSError(
-                    f"GitLab API unreachable during pagination: {url}"
-                ) from e
+                    f"GitLab API pagination exceeded {_MAX_PAGES} pages "
+                    f"for {url}; refusing to follow further"
+                )
 
-            _classify_response(response, "GET", url)
+            params["page"] = page
+            response = await send_with_retry(
+                self._client, "GET", url,
+                classify=_classify_response, label="GitLab", params=params,
+            )
             items = _expect_list(
                 _decode_json(response, "GET", url), "GET", url,
             )

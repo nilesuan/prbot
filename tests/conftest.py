@@ -15,6 +15,21 @@ _HEAD_SHA = "abcdef1234567890abcdef1234567890abcdef12"
 _BASE_SHA = "1234567890abcdef1234567890abcdef12345678"
 
 
+@pytest.fixture(autouse=True)
+def _no_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove retry sleeps from the suite.
+
+    The VCS adapters retry rate limits and server errors with exponential
+    backoff (D3). Several tests deliberately return a 429 or a 500, so
+    without this the suite spends most of its wall clock asleep. Tests that
+    assert on the backoff itself set the constants they need.
+    """
+    import prbot.vcs.retry as retry_module
+
+    monkeypatch.setattr(retry_module, "RETRY_BASE_SECONDS", 0.0)
+    monkeypatch.setattr(retry_module, "MAX_RETRY_AFTER_SECONDS", 0.0)
+
+
 @pytest.fixture
 def mock_boto3() -> Generator[boto3.client, None, None]:
     """Provide a moto-backed Secrets Manager with a pre-seeded token."""

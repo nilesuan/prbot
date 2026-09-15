@@ -22,6 +22,7 @@ from prbot.exceptions import (
     VCSServerError,
 )
 from prbot.vcs.models import FileDiff, PRDiff, PRMetadata, validate_response
+from prbot.vcs.retry import send_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,12 @@ _STATE_MARKER = "<!-- prbot:state:"
 
 # GitHub API file limit before truncation
 _GITHUB_FILE_LIMIT = 3000
+
+# Hard cap on pages followed (D3). At per_page=100 this is 10,000 items,
+# past any pull request worth reviewing. Without it a server returning a
+# Link header that points back at itself holds the CI job open until the
+# job timeout, with no log line saying why.
+_MAX_PAGES = 100
 
 
 class GitHubAdapter:
@@ -195,19 +202,11 @@ class GitHubAdapter:
         url: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Make an HTTP request with error classification (G4-15)."""
-        try:
-            response = await self._client.request(method, url, **kwargs)
-        except httpx.TimeoutException as e:
-            raise VCSError(
-                f"GitHub API timed out: {method} {url}"
-            ) from e
-        except httpx.ConnectError as e:
-            raise VCSError(
-                f"GitHub API unreachable: {method} {url}"
-            ) from e
-
-        _classify_response(response, method, url)
+        """Make an HTTP request with retry and error classification (G4-15)."""
+        response = await send_with_retry(
+            self._client, method, url,
+            classify=_classify_response, label="GitHub", **kwargs,
+        )
         return _decode_json(response, method, url)
 
     async def _paginate(
@@ -223,22 +222,21 @@ class GitHubAdapter:
         """
         params: dict[str, Any] = {"per_page": 100}
         current_url: str | None = url
+        origin = httpx.URL(url).host
+        pages = 0
 
         while current_url:
-            try:
-                response = await self._client.get(
-                    current_url, params=params,
+            pages += 1
+            if pages > _MAX_PAGES:
+                raise VCSError(
+                    f"GitHub API pagination exceeded {_MAX_PAGES} pages "
+                    f"for {url}; refusing to follow further"
                 )
-            except httpx.TimeoutException as e:
-                raise VCSError(
-                    f"GitHub API timed out during pagination: {current_url}"
-                ) from e
-            except httpx.ConnectError as e:
-                raise VCSError(
-                    f"GitHub API unreachable during pagination: {current_url}"
-                ) from e
 
-            _classify_response(response, "GET", current_url)
+            response = await send_with_retry(
+                self._client, "GET", current_url,
+                classify=_classify_response, label="GitHub", params=params,
+            )
             items = _expect_list(
                 _decode_json(response, "GET", current_url),
                 "GET",
@@ -255,6 +253,15 @@ class GitHubAdapter:
             current_url = _parse_next_link(
                 response.headers.get("link", ""),
             )
+
+            # D3: the next URL comes from the server and is followed with the
+            # Authorization header attached. A compromised or misconfigured
+            # host must not be able to redirect the token somewhere else.
+            if current_url and httpx.URL(current_url).host != origin:
+                raise VCSError(
+                    f"GitHub API pagination pointed at a different host: "
+                    f"{httpx.URL(current_url).host!r} is not {origin!r}"
+                )
 
 
 def _decode_json(
@@ -302,6 +309,16 @@ def _classify_response(
             f"GitHub API authentication failed (401): {method} {url}"
         )
     if status == 403:
+        # D3: GitHub signals its primary rate limit with 403 and an exhausted
+        # quota header, and a secondary limit with 403 plus Retry-After.
+        # Classifying either as an auth failure reported a transient
+        # throttle to CI as a permanent configuration error, and skipped the
+        # retry that would have cleared it.
+        remaining = response.headers.get("x-ratelimit-remaining")
+        if remaining == "0" or response.headers.get("retry-after"):
+            raise VCSRateLimitError(
+                f"GitHub API rate_limited (403): {method} {url}. {body_text}"
+            )
         raise VCSAuthError(
             f"GitHub API forbidden (403): {method} {url}. {body_text}"
         )
