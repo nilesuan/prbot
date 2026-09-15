@@ -306,7 +306,7 @@ permissions:
 
 env:
   PRBOT_IMAGE: ghcr.io/nilesuan/prbot
-  PRBOT_IMAGE_TAG: 0.3.0
+  PRBOT_IMAGE_TAG: 0.3.1
 
 jobs:
   review:
@@ -359,7 +359,7 @@ Add to `.gitlab-ci.yml`:
 ```yaml
 prbot-review:
   stage: test
-  image: ghcr.io/nilesuan/prbot:0.3.0
+  image: ghcr.io/nilesuan/prbot:0.3.1
   id_tokens:
     GITLAB_OIDC_TOKEN:
       aud: https://gitlab.com  # must match the role's trust policy

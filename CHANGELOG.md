@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-16
+
+### Fixed
+
+- Both review agents failed on every run under 0.3.0. Claude Sonnet 5
+  refuses `temperature` and `top_p` outright, answering
+  `ValidationException: \`temperature\` is deprecated for this model`, and
+  prbot always sent `temperature: 0`. The call is now retried once with
+  `maxTokens` alone when a model rejects a sampling parameter, matched on
+  the parameter name rather than a model list so it does not go stale.
+  `maxTokens` and the forced tool survive the retry. Any other
+  `ValidationException` still fails immediately.
+- An agent that gave up never logged why. The audit record stores only
+  `status="error:AgentError"` and the verdict logs "Both agents failed"
+  with no cause, so the failure above was indistinguishable from a
+  permissions problem without reproducing it by hand. Every terminal agent
+  failure now logs its type and message.
+
 ## [0.3.0] - 2026-09-16
 
 ### Changed
