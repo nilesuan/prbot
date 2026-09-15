@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-prbot is a containerised PR/MR review bot that runs as a GitHub Actions or GitLab CI job. It fetches diffs and metadata via VCS adapters, runs 2 parallel AWS Bedrock (Claude) agents -- Sonnet for general review, Opus for security -- aggregates findings with confidence scoring, and posts a structured review comment.
+prbot is a containerised PR/MR review bot that runs as a GitHub Actions or GitLab CI job. It fetches diffs and metadata via VCS adapters, runs 2 parallel AWS Bedrock (Claude) agents -- one for general review and one for security, both defaulting to Claude Sonnet and each independently overridable -- aggregates findings with confidence scoring, and posts a structured review comment.
 
 The container image is published to `ghcr.io/nilesuan/prbot:latest` and signed with Cosign.
 
