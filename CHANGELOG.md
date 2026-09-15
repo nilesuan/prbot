@@ -5,31 +5,40 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.1] - 2026-09-16
+
+The GitLab CI template had never worked. Both defects were found by running
+it on two real GitLab projects, and neither was reachable from the GitHub
+side: that path calls `docker run` directly and never asks for a shell, and
+it passes the region through the workflow rather than through GitLab
+variable expansion. Nothing in the container changed.
 
 ### Fixed
 
-- The GitLab template set `PRBOT_AWS_REGION: $PRBOT_AWS_REGION`, which is
-  self-referential. GitLab does not expand it, and because job-level
-  variables take precedence the definition shadowed the project variable
-  with the literal string, so prbot refused to start with
-  `aws_region must match format like 'us-east-1': '$PRBOT_AWS_REGION'`
-  even when the variable was configured correctly. The line is removed: a
-  CI/CD variable of that name already reaches the job. A test now rejects
-  any variable whose value is only a reference to itself.
-
-- The GitLab CI template has never worked. The image declares
+- The template did not clear the image entrypoint. The image declares
   `ENTRYPOINT ["prbot"]`, and GitLab appends its shell-detection command
   rather than replacing the entrypoint, so the container ran
   `prbot sh -c '...'` and argparse refused it:
   `prbot: error: unrecognized arguments: sh -c if [ -x /bin/bash ]`. The job
   exited 2 before a review started. The template, the README example and
-  both `gitlab-setup.md` examples now clear the entrypoint. GitHub Actions
-  was never affected: it calls `docker run` directly and never asks for a
-  shell.
-- A test now asserts every image in the GitLab template clears its
-  entrypoint. The previous tests read the `image` key only as a string, so
-  none of them could see the difference.
+  both `docs/gitlab-setup.md` examples now set `entrypoint: [""]`.
+- Behind that, the template set `PRBOT_AWS_REGION: $PRBOT_AWS_REGION`, which
+  is self-referential. GitLab does not expand it, and because job-level
+  variables take precedence the definition shadowed the project or group
+  variable with the literal string, so prbot refused to start with
+  `aws_region must match format like 'us-east-1': '$PRBOT_AWS_REGION'`.
+  Setting the variable correctly could not help, because the job overrode it
+  with a value that cannot expand. The line is removed; a CI/CD variable of
+  that name already reaches the job.
+
+### Added
+
+- Two tests that would have caught the above. One asserts every image in the
+  GitLab template clears its entrypoint, and first asserts the Dockerfile
+  still declares one so it cannot become vacuous. The other rejects any
+  variable whose value is only a reference to itself, in `$FOO` or `${FOO}`
+  form. The previous tests read the `image` key only as a string, so a bare
+  string and a mapping with the entrypoint cleared were indistinguishable.
 
 ## [0.4.0] - 2026-09-16
 

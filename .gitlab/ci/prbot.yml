@@ -23,7 +23,7 @@
   # No "v" prefix: the git tag is v0.2.0, but the published image tag is
   # 0.2.0, because build.yml strips it via type=semver,pattern={{version}}.
   image:
-    name: ghcr.io/nilesuan/prbot:0.4.0
+    name: ghcr.io/nilesuan/prbot:0.4.1
     # The image declares ENTRYPOINT ["prbot"]. GitLab appends its shell
     # detection command rather than replacing the entrypoint, so without
     # this the container runs `prbot sh -c '...'` and argparse refuses it:
