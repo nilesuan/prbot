@@ -1,6 +1,9 @@
 # Claude Code
 .claude/
 
+# Worktrees
+.cdocs/
+
 # Python
 __pycache__/
 *.py[cod]
