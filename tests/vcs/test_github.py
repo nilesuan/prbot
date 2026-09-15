@@ -421,3 +421,69 @@ class TestPrPayloadIsFetchedOnce:
         finally:
             await adapter.close()
         assert diff.head_sha == github_pr_response["head"]["sha"]
+
+
+class TestAuthenticatedUserUnderAnInstallationToken:
+    """GET /user is not available to secrets.GITHUB_TOKEN.
+
+    It is a GitHub App installation token, and GitHub answers 403 rather
+    than 200. Raising there fails every GitHub Actions run.
+    """
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_403_yields_empty_identity_not_an_error(self) -> None:
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(
+                403,
+                json={"message": "Resource not accessible by integration"},
+            ),
+        )
+        adapter = _make_adapter()
+        assert await adapter.get_authenticated_user() == ""
+        await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_403_result_is_cached(self) -> None:
+        """One failed lookup, not one per caller."""
+        route = respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(403, json={"message": "nope"}),
+        )
+        adapter = _make_adapter()
+        await adapter.get_authenticated_user()
+        await adapter.get_authenticated_user()
+        assert route.call_count == 1
+        await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_rate_limited_403_still_raises(self) -> None:
+        """A throttle is a transient fault, not an unknown identity."""
+        from prbot.exceptions import VCSRateLimitError
+
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(
+                403,
+                headers={"x-ratelimit-remaining": "0"},
+                json={"message": "API rate limit exceeded"},
+            ),
+        )
+        adapter = _make_adapter()
+        with pytest.raises(VCSRateLimitError):
+            await adapter.get_authenticated_user()
+        await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_401_still_raises(self) -> None:
+        """A bad credential must not be reported as an unknown identity."""
+        from prbot.exceptions import VCSAuthError
+
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(401, json={"message": "Bad credentials"}),
+        )
+        adapter = _make_adapter()
+        with pytest.raises(VCSAuthError):
+            await adapter.get_authenticated_user()
+        await adapter.close()

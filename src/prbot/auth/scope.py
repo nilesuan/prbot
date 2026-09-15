@@ -96,7 +96,25 @@ async def _validate_github_scopes(
     if response.status_code == 401:
         raise AuthError("Token scope validation failed: token is invalid (401)")
     if response.status_code == 403:
-        raise AuthError("Token scope validation failed: forbidden (403)")
+        # A9, GitHub half. secrets.GITHUB_TOKEN is an app installation token
+        # and GET /user is not available to one: GitHub answers 403, not the
+        # 200 the scope-header logic below assumed. A 401 means the
+        # credential is bad; a 403 means it authenticated and this endpoint
+        # is simply not for it, which says nothing about scopes. The GitLab
+        # path already makes the same allowance for CI_JOB_TOKEN.
+        #
+        # GitHub also answers 403 when the primary rate limit is exhausted,
+        # so only skip when the budget is not the reason.
+        if response.headers.get("x-ratelimit-remaining") == "0":
+            raise AuthError(
+                "Token scope validation failed: GitHub API rate limit "
+                "exceeded (403)"
+            )
+        logger.info(
+            "Token cannot introspect its own scopes (HTTP 403, installation "
+            "or otherwise restricted token); skipping scope check",
+        )
+        return
     if response.status_code >= 400:
         raise AuthError(
             f"Token scope validation failed: HTTP {response.status_code}"

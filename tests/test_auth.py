@@ -390,6 +390,60 @@ class TestScopeValidationDegradesHonestly:
 
     @respx.mock
     @pytest.mark.asyncio
+    async def test_github_installation_token_gets_403_not_200(self) -> None:
+        """The real shape of a GitHub Actions run.
+
+        secrets.GITHUB_TOKEN is an app installation token, and GET /user is
+        not available to one: GitHub answers 403, not 200. Treating that as
+        fatal fails every Actions run before a single review starts.
+        """
+        from prbot.auth.scope import validate_token_scopes
+
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(
+                403,
+                json={"message": "Resource not accessible by integration"},
+            ),
+        )
+        token = TokenResult(value="ghs_installation", source="test")
+        await validate_token_scopes(token, "github")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_github_403_when_rate_limited_still_fails(self) -> None:
+        """A 403 with the budget exhausted is a real fault, not a token kind.
+
+        GitHub uses 403 for primary rate limit exhaustion as well, so the
+        skip must not swallow it.
+        """
+        from prbot.auth.scope import validate_token_scopes
+
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(
+                403,
+                headers={"x-ratelimit-remaining": "0"},
+                json={"message": "API rate limit exceeded"},
+            ),
+        )
+        token = TokenResult(value="ghs_installation", source="test")
+        with pytest.raises(AuthError, match="rate limit"):
+            await validate_token_scopes(token, "github")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_github_401_remains_fatal(self) -> None:
+        """401 means the credential is bad, unlike GitLab's job token case."""
+        from prbot.auth.scope import validate_token_scopes
+
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(401, json={"message": "Bad credentials"}),
+        )
+        token = TokenResult(value="ghs_bad", source="test")
+        with pytest.raises(AuthError, match="invalid"):
+            await validate_token_scopes(token, "github")
+
+    @respx.mock
+    @pytest.mark.asyncio
     async def test_github_empty_scope_header_is_not_a_failure(self) -> None:
         """A fine-grained PAT returns the header with an empty value."""
         from prbot.auth.scope import validate_token_scopes
