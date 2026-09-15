@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The GitLab template set `PRBOT_AWS_REGION: $PRBOT_AWS_REGION`, which is
+  self-referential. GitLab does not expand it, and because job-level
+  variables take precedence the definition shadowed the project variable
+  with the literal string, so prbot refused to start with
+  `aws_region must match format like 'us-east-1': '$PRBOT_AWS_REGION'`
+  even when the variable was configured correctly. The line is removed: a
+  CI/CD variable of that name already reaches the job. A test now rejects
+  any variable whose value is only a reference to itself.
+
 - The GitLab CI template has never worked. The image declares
   `ENTRYPOINT ["prbot"]`, and GitLab appends its shell-detection command
   rather than replacing the entrypoint, so the container ran
