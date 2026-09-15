@@ -41,8 +41,14 @@ cover accurately.
 ## Known open questions
 
 - Whether datamarking the patch content, as opposed to the metadata, helps or
-  hurts finding precision. `PRBOT_DATAMARK_DIFF` and
-  `scripts/measure_datamarking.py` exist to answer it with data.
+  hurts injection resistance. Measured on 2026-09-15 against
+  `au.anthropic.claude-sonnet-4-6`: ten injection vectors, marking on and off,
+  none succeeded in either arm, and finding counts were identical. That shows
+  turning it off opened none of these ten; it cannot show the marking helps,
+  because a suite where nothing succeeds has no signal to compare. See
+  `evals/README.md`. The cost side is settled and was previously misstated:
+  the patch inflates about 2x, but the whole prompt inflates 1.06x on a small
+  diff and 1.87x on a large one, because the system prompt is fixed.
 - Whether giving the model the surrounding code, rather than the hunks alone,
   raises precision enough to justify the tokens. `PRBOT_CONTEXT_LINES` exists
   to answer it.
