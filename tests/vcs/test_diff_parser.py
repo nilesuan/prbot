@@ -210,3 +210,56 @@ class TestValidateResponse:
             validate_response({}, ["head.sha", "base.ref"])
         assert "head.sha" in str(exc_info.value)
         assert "base.ref" in str(exc_info.value)
+
+
+class TestStateRecordIsAdvisoryNotAuthenticated:
+    """D10: the docstring claimed the HMAC prevents replay. It cannot.
+
+    The key is review_id, which is published in plaintext inside the same
+    HTML comment. Anyone who can edit the comment can recompute a valid
+    digest. It is a salted digest, useful for detecting accidental change,
+    and it is not an authentication tag. These tests pin that reading so a
+    later change cannot quietly start trusting it.
+    """
+
+    @staticmethod
+    def _findings() -> list[dict[str, object]]:
+        return [{"id": "general-1", "check_id": "Q-ERR-01", "severity": "high"}]
+
+    def test_the_digest_changes_when_the_findings_change(self) -> None:
+        review_id = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        first = ReviewStateRecord.compute_findings_hash(
+            self._findings(), review_id,
+        )
+        altered = [{**self._findings()[0], "severity": "low"}]
+        assert first != ReviewStateRecord.compute_findings_hash(
+            altered, review_id,
+        )
+
+    def test_the_digest_is_reproducible_from_public_data(self) -> None:
+        """Which is exactly why it is not an integrity control."""
+        review_id = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        forged = ReviewStateRecord.compute_findings_hash(
+            [{"id": "x", "check_id": "Q-ARCH-01", "severity": "info"}],
+            review_id,
+        )
+        record = ReviewStateRecord(
+            review_id=review_id,
+            head_sha="a" * 40,
+            score=100,
+            verdict="APPROVE",
+            findings_hash=forged,
+            timestamp="2026-09-15T00:00:00+00:00",
+        )
+        restored = ReviewStateRecord.from_html_comment(
+            record.to_html_comment(),
+        )
+        assert restored is not None
+        assert restored.findings_hash == forged
+
+    def test_the_docstring_does_not_claim_replay_protection(self) -> None:
+        doc = ReviewStateRecord.compute_findings_hash.__doc__ or ""
+        assert "replay" not in doc.lower(), (
+            "the key is published alongside the digest, so this cannot "
+            "prevent replay"
+        )
