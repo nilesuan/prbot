@@ -117,6 +117,30 @@ async def run_review(
     return outcomes
 
 
+def _fail(
+    agent_name: str,
+    error_type: str,
+    message: str,
+    *,
+    retryable: bool = False,
+) -> AgentError:
+    """Record an agent failure and say why in the log.
+
+    The audit record keeps only status="error:AgentError" and the verdict
+    logs "Both agents failed" with no cause, so without this a failing run
+    gives no way to tell a permission problem from a rejected parameter
+    without reproducing it by hand.
+    """
+    logger.error("agent.failed name=%s type=%s: %s",
+                 agent_name, error_type, message)
+    return AgentError(
+        agent=agent_name,
+        error_type=error_type,
+        message=message,
+        retryable=retryable,
+    )
+
+
 async def _run_single_agent(
     agent_name: str,
     model_id: str,
@@ -163,22 +187,14 @@ async def _run_single_agent(
 
         except ValueError as e:
             logger.error(str(e))
-            return AgentError(
-                agent=agent_name,
-                error_type="invalid_response",
-                message=str(e),
-                retryable=False,
-            )
+            return _fail(agent_name, "invalid_response", str(e))
 
         except TimeoutError:
-            return AgentError(
-                agent=agent_name,
-                error_type="timeout",
-                message=(
-                    f"Agent {agent_name} timed out after "
-                    f"{time.monotonic() - start_time:.1f}s"
-                ),
-                retryable=False,
+            return _fail(
+                agent_name,
+                "timeout",
+                f"Agent {agent_name} timed out after "
+                f"{time.monotonic() - start_time:.1f}s",
             )
 
         except BedrockError as e:
@@ -193,27 +209,21 @@ async def _run_single_agent(
                 await asyncio.sleep(wait)
                 continue
 
-            return AgentError(
-                agent=agent_name,
-                error_type=error_type,
-                message=str(e),
+            return _fail(
+                agent_name, error_type, str(e),
                 retryable=_is_retryable(error_type),
             )
 
         except Exception as e:
-            return AgentError(
-                agent=agent_name,
-                error_type="unhandled",
-                message=f"{type(e).__name__}: {e}",
-                retryable=False,
+            return _fail(
+                agent_name, "unhandled", f"{type(e).__name__}: {e}",
             )
 
     # Should not reach here, but just in case
-    return AgentError(
-        agent=agent_name,
-        error_type="max_retries_exceeded",
-        message=f"Agent {agent_name} failed after {_MAX_RETRIES} retries",
-        retryable=False,
+    return _fail(
+        agent_name,
+        "max_retries_exceeded",
+        f"Agent {agent_name} failed after {_MAX_RETRIES} retries",
     )
 
 
@@ -245,6 +255,20 @@ def _findings_tool_config() -> dict[str, Any]:
     }
 
 
+def _rejects_sampling_params(error: Any) -> bool:
+    """Does this ValidationException name a sampling parameter?
+
+    Matched on the parameter name rather than a model list, which would go
+    stale on the next release. Bedrock reports these as, for example,
+    "`temperature` is deprecated for this model."
+    """
+    err = getattr(error, "response", {}).get("Error", {})
+    if err.get("Code") != "ValidationException":
+        return False
+    message = err.get("Message", "").lower()
+    return any(p in message for p in ("temperature", "top_p", "topp"))
+
+
 def _invoke_bedrock(
     model_id: str,
     system_prompt: str,
@@ -265,8 +289,8 @@ def _invoke_bedrock(
 
     client = boto3.client("bedrock-runtime", region_name=aws_region)
 
-    try:
-        response = client.converse(
+    def _call(inference_config: dict[str, Any]) -> dict[str, Any]:
+        return client.converse(
             modelId=model_id,
             messages=[
                 {
@@ -276,18 +300,32 @@ def _invoke_bedrock(
             ],
             system=[{"text": system_prompt}],
             toolConfig=_findings_tool_config(),
-            inferenceConfig={
-                "maxTokens": max_output_tokens,
-                "temperature": 0.0,
-            },
+            inferenceConfig=inference_config,
         )
-    except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "")
-        raise BedrockError(
-            f"Bedrock API error ({code}): {e}"
-        ) from e
 
-    return response
+    try:
+        return _call({"maxTokens": max_output_tokens, "temperature": 0.0})
+    except ClientError as e:
+        if not _rejects_sampling_params(e):
+            code = e.response.get("Error", {}).get("Code", "")
+            raise BedrockError(f"Bedrock API error ({code}): {e}") from e
+
+        # Claude Sonnet 5 and later refuse temperature and top_p outright,
+        # answering ValidationException rather than ignoring them, so sending
+        # temperature fails the agent before a single token is produced.
+        # Asking without it is the only thing the model will accept, and the
+        # determinism temperature bought is not available to trade for.
+        # maxTokens and the forced tool both stay: one bounds the spend, the
+        # other is what keeps the reply parseable.
+        logger.info(
+            "Model %s rejects sampling parameters; retrying with maxTokens "
+            "only", model_id,
+        )
+        try:
+            return _call({"maxTokens": max_output_tokens})
+        except ClientError as e2:
+            code = e2.response.get("Error", {}).get("Code", "")
+            raise BedrockError(f"Bedrock API error ({code}): {e2}") from e2
 
 
 def _extract_token_usage(
