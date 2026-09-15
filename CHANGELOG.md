@@ -5,10 +5,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-09-16
+
+The container now runs Python 3.14, and the dependencies it ships crossed two
+majors. Nothing in prbot's own interface changed: no CLI flag, environment
+variable, config key or exit code moved, and a review behaves as it did in
+0.3.2. The version is minor because what runs the tool underneath is not the
+same runtime any more.
 
 ### Changed
 
+- Base image `python:3.12-slim` to `python:3.14-slim`, giving Python 3.14.7
+  in the container. The full suite was run under 3.14 before taking it, not
+  only inside the image, and reports the same 957 passed as on 3.12.
 - Runtime dependencies bumped: pathspec 0.12.1 to 1.1.1, structlog 25.5.0
   to 26.1.0, boto3 and botocore 1.42.64 to 1.43.94, pydantic 2.12.5 to
   2.13.5, s3transfer 0.16.0 to 0.19.2.
@@ -39,6 +48,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   puts the virtual environment's interpreter first and that cannot see
   system site-packages, so an import check passes even when every file is
   still present.
+
+### Security
+
+- Every GitHub Action bumped, each pinned to a full commit SHA that was
+  checked against its published tag: `actions/checkout` v4.2.2 to v7.0.1,
+  `aws-actions/configure-aws-credentials` v4.0.2 to v6.2.4,
+  `docker/build-push-action` v6.18.0 to v7.3.0, `docker/login-action` v3.4.0
+  to v4.6.0, `docker/metadata-action` v5.7.0 to v6.2.0,
+  `docker/setup-buildx-action` v3.10.0 to v4.3.0,
+  `sigstore/cosign-installer` v3.8.1 to v4.1.2, `aquasecurity/trivy-action`
+  0.35.0 to 0.36.0. `metadata-action` v6 changes its default runtime to Node
+  24 and how `#` is handled inside list inputs; it does not change semver tag
+  generation, which every image pin depends on.
+- Development dependencies bumped: pytest-cov 6.3.0 to 7.1.0, respx 0.22.0
+  to 0.23.1, ruff 0.15.5 to 0.16.7. None reach the container.
 
 ## [0.3.2] - 2026-09-16
 
