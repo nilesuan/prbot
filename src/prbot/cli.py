@@ -392,14 +392,22 @@ async def run_pipeline(config: PrBotConfig) -> int:
             )
 
         # Hallucination validation
+        # GEN-ARCH-01: validate each outcome against the chunk that
+        # produced it, not the whole diff. An agent only ever saw one
+        # chunk's files, so checking against filtered_diff accepted a
+        # finding naming a file from a chunk that agent never read, which
+        # is exactly the invented cross-reference this check exists to
+        # catch. outcomes are appended chunk by chunk in roster order, so
+        # outcome i belongs to chunk i // len(agents).
         for i, outcome in enumerate(outcomes):
+            source_chunk = chunks[i // len(agents)] if chunks else filtered_diff
             if (
                 isinstance(outcome, AgentResult)
                 and outcome.findings
             ):
                 pre_count = len(outcome.findings)
                 validated = validate_findings_against_diff(
-                    outcome.findings, filtered_diff,
+                    outcome.findings, source_chunk,
                 )
                 hallucinations_removed += (
                     pre_count - len(validated)

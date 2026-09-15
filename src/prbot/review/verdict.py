@@ -10,7 +10,7 @@ from __future__ import annotations
 import enum
 import logging
 
-from prbot.review.models import AgentError, AgentOutcome, AgentResult
+from prbot.review.models import AgentOutcome, AgentResult
 from prbot.review.scorer import ReviewScore, ScoredFinding
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,27 @@ def has_blocker_findings(
     )
 
 
+def agents_without_coverage(
+    outcomes: list[AgentOutcome],
+) -> set[str]:
+    """Agents that produced no result at all (GEN-ARCH-01).
+
+    Chunking changed the shape of the outcomes list. It used to hold one
+    entry per agent, so any AgentError meant an agent was missing. It now
+    holds one entry per agent per chunk, and a transient failure in a single
+    chunk is not a missing agent: the other chunks still covered their files.
+
+    An agent has lost coverage only when every one of its attempts failed.
+    """
+    succeeded: set[str] = set()
+    attempted: set[str] = set()
+    for outcome in outcomes:
+        attempted.add(outcome.agent)
+        if isinstance(outcome, AgentResult):
+            succeeded.add(outcome.agent)
+    return attempted - succeeded
+
+
 def determine_verdict(
     outcomes: list[AgentOutcome],
     reported: list[ScoredFinding],
@@ -58,7 +79,8 @@ def determine_verdict(
 
     Scenarios:
     1. No findings, all agents OK → APPROVE
-    2. Any agent failed → COMMENT (never approve or reject on partial data)
+    2. An agent produced no result in any chunk → COMMENT (never approve
+       or reject on partial data)
     3. Both agents failed → COMMENT (G-28)
     4. Critical finding at or above blocker confidence → REQUEST_CHANGES
     5. Critical or high finding at or above blocker confidence →
@@ -66,7 +88,11 @@ def determine_verdict(
     6. Score below the passing mark → REQUEST_CHANGES
     7. Findings present, no blocker, score passes → COMMENT
     """
-    has_errors = any(isinstance(o, AgentError) for o in outcomes)
+    # GEN-ARCH-01: cap on an agent that produced nothing anywhere, not on
+    # any single failed attempt. With N chunks one throttled call used to
+    # discard blocker-grade findings the other chunks had already produced.
+    uncovered = agents_without_coverage(outcomes)
+    has_errors = bool(uncovered)
     has_results = any(isinstance(o, AgentResult) for o in outcomes)
     all_failed = not has_results
 
@@ -78,7 +104,8 @@ def determine_verdict(
     # Agent failure safety: never APPROVE or REQUEST_CHANGES
     if has_errors:
         logger.info(
-            "Agent failure detected — capping verdict at COMMENT",
+            "Agents with no successful pass (%s) — capping verdict at "
+            "COMMENT", ", ".join(sorted(uncovered)),
         )
         return ReviewVerdict.COMMENT
 

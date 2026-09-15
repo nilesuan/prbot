@@ -808,3 +808,89 @@ class TestInlineBodiesAreRedacted:
         assert "The handler catches every exception." in inline[0].body
         assert "Q-ERR-01" in inline[0].body
         assert "[REDACTED]" not in inline[0].body
+
+
+class TestChunkScopedValidation:
+    """GEN-ARCH-01: findings were validated against the whole diff.
+
+    Each agent invocation only sees one chunk's files, but the hallucination
+    check ran every outcome against the full filtered_diff. A finding naming
+    a file that exists somewhere in the pull request but not in the chunk the
+    agent actually read therefore passed the file-existence check, which is
+    exactly the invented cross-reference the check exists to catch.
+    """
+
+    @staticmethod
+    def _two_file_adapter() -> FakeVCSAdapter:
+        from prbot.vcs.models import FileDiff, PRDiff
+
+        head = "abcdef1234567890abcdef1234567890abcdef12"
+        base = "1234567890abcdef1234567890abcdef12345678"
+        # Each file must exceed max_diff_tokens on its own so the two land
+        # in separate chunks; otherwise there is only one chunk and nothing
+        # to scope validation to.
+        big = "\n".join(f"+line {n} of padding text here" for n in range(800))
+        return FakeVCSAdapter(
+            diff=PRDiff(
+                files=[
+                    FileDiff(path="src/first.py", status="modified",
+                             patch=f"@@ -1,1 +1,800 @@\n{big}\n", additions=800),
+                    FileDiff(path="src/second.py", status="modified",
+                             patch=f"@@ -1,1 +1,800 @@\n{big}\n", additions=800),
+                ],
+                head_sha=head, base_sha=base,
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_finding_naming_another_chunks_file_is_dropped(self) -> None:
+        adapter = self._two_file_adapter()
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            # Whichever chunk this is, claim a defect in the OTHER file.
+            other = (
+                "src/second.py" if "first.py" in kwargs["user_prompt"]
+                else "src/first.py"
+            )
+            return _bedrock_response([
+                _finding(file_path=other, line_start=5, line_end=5),
+            ])
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(
+                _config(max_diff_tokens=3000, budget_limit_usd=100.0),
+            )
+
+        body = adapter.posted_comments[0]
+        assert "_No findings to report._" in body
+
+    @pytest.mark.asyncio
+    async def test_a_finding_in_its_own_chunk_survives(self) -> None:
+        adapter = self._two_file_adapter()
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            own = (
+                "src/first.py" if "first.py" in kwargs["user_prompt"]
+                else "src/second.py"
+            )
+            return _bedrock_response([
+                _finding(file_path=own, line_start=5, line_end=5),
+            ])
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(
+                _config(max_diff_tokens=3000, budget_limit_usd=100.0),
+            )
+
+        assert "Q-ERR-01" in adapter.posted_comments[0]
+
+    @pytest.mark.asyncio
+    async def test_unchunked_validation_is_unchanged(self) -> None:
+        adapter = FakeVCSAdapter()
+        ghost = _finding(file_path="src/nowhere.py")
+        bedrock = lambda **_: _bedrock_response([ghost])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config())
+
+        assert "src/nowhere.py" not in adapter.posted_comments[0]

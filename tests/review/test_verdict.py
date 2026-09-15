@@ -270,3 +270,103 @@ class TestConfigDefaultsAgreeWithFunctionDefaults:
             sig.parameters["min_passing_score"].default
             == PrBotConfig.model_fields["min_passing_score"].default
         )
+
+
+class TestChunkedOutcomesDoNotOverCap:
+    """GEN-ARCH-01: chunking changed the shape of the outcomes list.
+
+    Before chunking, outcomes held one entry per agent, so 'any agent
+    errored' meant half the review was missing. With N chunks the list holds
+    N*len(agents) entries, and a single transient failure in one chunk
+    silently capped the whole pull request at COMMENT, discarding
+    blocker-grade findings that the other chunks had already produced.
+
+    An agent's coverage is only lost when every chunk failed for that agent.
+    """
+
+    @staticmethod
+    def _blocker() -> list[ScoredFinding]:
+        return [
+            ScoredFinding(
+                finding=Finding(
+                    id="general-1", category="general", check_id="Q-ERR-01",
+                    title="t", description="d", file_path="a.py",
+                    line_start=1, line_end=1,
+                    severity="critical", confidence=95,
+                ),
+                band="reported", deduction=23.75,
+            ),
+        ]
+
+    @staticmethod
+    def _score(
+        clamped: int = 20, override: bool = True, findings: int = 1,
+    ) -> ReviewScore:
+        return ReviewScore(
+            raw_score=float(clamped), clamped_score=clamped,
+            total_deductions=100.0 - clamped, finding_count=findings,
+            critical_override=override,
+        )
+
+    def test_one_chunk_failing_does_not_cap_the_verdict(self) -> None:
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentResult(agent="security", findings=[]),
+            AgentError(agent="general", error_type="throttled", message="m"),
+            AgentResult(agent="security", findings=[]),
+        ]
+        assert determine_verdict(
+            outcomes, self._blocker(), self._score(),
+        ) == ReviewVerdict.REQUEST_CHANGES
+
+    def test_an_agent_failing_in_every_chunk_still_caps(self) -> None:
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentError(agent="security", error_type="throttled", message="m"),
+            AgentResult(agent="general", findings=[]),
+            AgentError(agent="security", error_type="throttled", message="m"),
+        ]
+        assert determine_verdict(
+            outcomes, self._blocker(), self._score(),
+        ) == ReviewVerdict.COMMENT
+
+    def test_the_unchunked_single_failure_still_caps(self) -> None:
+        """One agent, one chunk, failed: that agent has no coverage."""
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentError(agent="security", error_type="timeout", message="m"),
+        ]
+        assert determine_verdict(
+            outcomes, self._blocker(), self._score(),
+        ) == ReviewVerdict.COMMENT
+
+    def test_every_agent_failing_everywhere_is_still_comment(self) -> None:
+        outcomes = [
+            AgentError(agent="general", error_type="x", message="m"),
+            AgentError(agent="security", error_type="x", message="m"),
+        ]
+        assert determine_verdict(
+            outcomes, [], self._score(100, False),
+        ) == ReviewVerdict.COMMENT
+
+    def test_a_clean_chunked_review_can_still_approve(self) -> None:
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentResult(agent="security", findings=[]),
+            AgentResult(agent="general", findings=[]),
+            AgentResult(agent="security", findings=[]),
+        ]
+        assert determine_verdict(
+            outcomes, [], self._score(100, False, findings=0),
+        ) == ReviewVerdict.APPROVE
+
+    def test_partial_coverage_is_reported(self) -> None:
+        from prbot.review.verdict import agents_without_coverage
+
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentError(agent="security", error_type="x", message="m"),
+            AgentError(agent="general", error_type="x", message="m"),
+            AgentError(agent="security", error_type="x", message="m"),
+        ]
+        assert agents_without_coverage(outcomes) == {"security"}

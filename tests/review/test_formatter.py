@@ -398,3 +398,66 @@ class TestFooterReportsProgress:
         from prbot.review.formatter import _format_footer
 
         assert "resolved since" not in _format_footer(0, "")
+
+
+class TestAgentStatusAggregatesChunks:
+    """GEN-ARCH-01: one bullet per outcome meant one per agent per chunk."""
+
+    @staticmethod
+    def _result(agent: str, findings: int, tokens: int, ms: int) -> AgentResult:
+        from prbot.review.models import TokenUsage
+
+        return AgentResult(
+            agent=agent,
+            findings=[],
+            token_usage=TokenUsage(tokens, 0, 0.0),
+            latency_ms=ms,
+            model_id="m",
+        )
+
+    def test_one_line_per_agent_not_per_chunk(self) -> None:
+        from prbot.review.formatter import _format_agent_status
+
+        out = _format_agent_status([
+            self._result("general", 0, 100, 10),
+            self._result("security", 0, 200, 20),
+            self._result("general", 0, 300, 30),
+            self._result("security", 0, 400, 40),
+        ])
+        lines = [ln for ln in out.splitlines() if ln.startswith("- ")]
+        assert len(lines) == 2
+
+    def test_figures_are_summed_across_chunks(self) -> None:
+        from prbot.review.formatter import _format_agent_status
+
+        out = _format_agent_status([
+            self._result("general", 0, 100, 10),
+            self._result("general", 0, 300, 30),
+        ])
+        assert "400 tokens" in out
+        assert "40ms" in out
+
+    def test_the_pass_count_is_shown_when_chunked(self) -> None:
+        from prbot.review.formatter import _format_agent_status
+
+        out = _format_agent_status([
+            self._result("general", 0, 100, 10),
+            self._result("general", 0, 300, 30),
+        ])
+        assert "2 passes" in out
+
+    def test_a_single_pass_says_nothing_about_passes(self) -> None:
+        from prbot.review.formatter import _format_agent_status
+
+        out = _format_agent_status([self._result("general", 0, 100, 10)])
+        assert "passes" not in out
+
+    def test_a_partial_failure_is_visible(self) -> None:
+        from prbot.review.formatter import _format_agent_status
+
+        out = _format_agent_status([
+            self._result("general", 0, 100, 10),
+            AgentError(agent="general", error_type="throttled", message="m"),
+        ])
+        assert "1 of 2" in out or "1/2" in out
+        assert "throttled" in out

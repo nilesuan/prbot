@@ -269,26 +269,66 @@ def _format_borderline_section(
 
 
 def _format_agent_status(outcomes: list[AgentOutcome]) -> str:
-    """Format agent status section."""
-    lines = ["### Agent Status", ""]
+    """Format agent status, aggregated per agent (GEN-ARCH-01).
+
+    A chunked review runs each agent once per chunk, so rendering one bullet
+    per outcome showed the same agent several times with unlabelled numbers
+    and nothing saying chunking had happened. Figures are summed per agent
+    and the number of passes is stated when there was more than one.
+    """
+    order: list[str] = []
+    stats: dict[str, dict[str, object]] = {}
 
     for outcome in outcomes:
+        name = outcome.agent
+        if name not in stats:
+            order.append(name)
+            stats[name] = {
+                "passes": 0, "ok": 0, "findings": 0,
+                "tokens": 0, "ms": 0, "errors": [],
+            }
+        s = stats[name]
+        s["passes"] = int(s["passes"]) + 1
         if isinstance(outcome, AgentResult):
-            findings_count = len(outcome.findings)
-            tokens = outcome.token_usage
-            lines.append(
-                f"- **{outcome.agent}**: ✅ "
-                f"{findings_count} findings, "
-                f"{tokens.input_tokens + tokens.output_tokens} tokens, "
-                f"{outcome.latency_ms}ms",
+            s["ok"] = int(s["ok"]) + 1
+            s["findings"] = int(s["findings"]) + len(outcome.findings)
+            s["tokens"] = int(s["tokens"]) + (
+                outcome.token_usage.input_tokens
+                + outcome.token_usage.output_tokens
             )
+            s["ms"] = int(s["ms"]) + outcome.latency_ms
         elif isinstance(outcome, AgentError):
             retry_note = " (retryable)" if outcome.retryable else ""
-            lines.append(
-                f"- **{outcome.agent}**: ❌ "
+            errs = s["errors"]
+            assert isinstance(errs, list)
+            errs.append(
                 f"{_cell(outcome.error_type, 64)}{retry_note} — "
                 f"{_cell(outcome.message, 400)}",
             )
+
+    lines = ["### Agent Status", ""]
+    for name in order:
+        s = stats[name]
+        passes, ok = int(s["passes"]), int(s["ok"])
+        errors = s["errors"]
+        assert isinstance(errors, list)
+
+        if ok == 0:
+            lines.append(
+                f"- **{name}**: ❌ no successful pass — {errors[0]}"
+                if errors else f"- **{name}**: ❌ no successful pass",
+            )
+            continue
+
+        pass_note = f", {passes} passes" if passes > 1 else ""
+        partial = f" ({ok} of {passes} passes succeeded)" if errors else ""
+        lines.append(
+            f"- **{name}**: {'✅' if not errors else '⚠️'} "
+            f"{s['findings']} findings, {s['tokens']} tokens, "
+            f"{s['ms']}ms{pass_note}{partial}",
+        )
+        for err in errors:
+            lines.append(f"  - {err}")
 
     return "\n".join(lines)
 
