@@ -21,3 +21,6 @@ build/
 .pytest_cache
 .ruff_cache
 .mypy_cache
+
+# Prompt evaluations: developer tooling, never shipped
+evals/
