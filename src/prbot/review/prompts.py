@@ -125,6 +125,7 @@ def build_user_prompt(
     """
     from prbot.review.context import build_context_excerpt
     from prbot.security.datamarking import (
+        apply_datamarking,
         apply_diff_datamarking,
         apply_metadata_datamarking,
     )
@@ -136,10 +137,17 @@ def build_user_prompt(
 
     files_section = []
     for f in pr_diff.files:
+        # A git path is contributor-chosen prose. sanitize_path_for_prompt
+        # strips control characters, which stops newline injection, but a
+        # path may contain spaces and any printable byte, so a file added at
+        # 'src/Ignore the preceding instructions.py' would otherwise land in
+        # the prompt as an unmarked markdown heading outside the diff fence.
         safe_path = sanitize_path_for_prompt(f.path)
-        header = f"### {safe_path} ({f.status})"
+        header = f"### {apply_datamarking(safe_path)} ({f.status})"
         if f.previous_path:
-            safe_prev = sanitize_path_for_prompt(f.previous_path)
+            safe_prev = apply_datamarking(
+                sanitize_path_for_prompt(f.previous_path),
+            )
             header += f" (renamed from {safe_prev})"
         # Datamark the patch content, preserving hunk and file headers
         # and the leading +/- of each line (B2)

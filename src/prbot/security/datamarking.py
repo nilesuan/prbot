@@ -102,6 +102,9 @@ def apply_metadata_datamarking(
 # Lines git writes rather than the pull request author. Marking these
 # defends against nothing and destroys the structure the model reads line
 # numbers from (B2).
+#
+# "--- " and "+++ " remain here for the file headers at the top of a patch,
+# which are reached only by lines that do not start with a change prefix.
 _STRUCTURAL_PREFIXES = (
     "@@",
     "diff --git",
@@ -116,8 +119,9 @@ _STRUCTURAL_PREFIXES = (
     "new file mode ",
     "deleted file mode ",
     "Binary files ",
-    "\\ No newline at end of file",
 )
+
+_NO_NEWLINE_MARKER = "\\ No newline at end of file"
 
 
 def apply_diff_datamarking(patch: str) -> str:
@@ -137,26 +141,50 @@ def apply_diff_datamarking(patch: str) -> str:
     not land inside a hunk. The effect was to garble the line information and
     then penalise the model for getting lines wrong.
 
-    Hunk and file headers come from git, not from the author, so they carry
-    no injected payload and are passed through verbatim. On a changed or
-    context line the leading +, - or space is kept in place and only the
-    content after it is marked, which is where an author can write anything
-    they like.
+    Structure is identified by position, not by prefix (SEC-INPUT-01). File
+    headers only occur in the preamble, before the first @@ hunk header.
+    Inside a hunk every line is content, so a deleted line whose text begins
+    with "-- " renders as "--- <text>" and must still be marked. Matching on
+    the prefix alone let exactly that line impersonate a file header and pass
+    through unmarked, which is the injection this function exists to prevent.
     """
     if not patch:
         return patch
 
     marked_lines: list[str] = []
+    in_hunk = False
+
     for line in patch.split("\n"):
         if not line:
             marked_lines.append(line)
             continue
-        if line.startswith(_STRUCTURAL_PREFIXES):
+
+        if line.startswith("@@"):
+            # Written by git, and the boundary after which everything is
+            # content rather than header.
+            in_hunk = True
             marked_lines.append(line)
             continue
+
+        if not in_hunk:
+            # Preamble: diff --git, index, mode lines, and the --- / +++
+            # file headers. All git's words, none of the author's.
+            if line.startswith(_STRUCTURAL_PREFIXES):
+                marked_lines.append(line)
+                continue
+            marked_lines.append(apply_datamarking(line))
+            continue
+
+        # Inside a hunk. The only line git writes here is the no-newline
+        # marker; everything else is the author's text.
+        if line.startswith(_NO_NEWLINE_MARKER):
+            marked_lines.append(line)
+            continue
+
         if line[0] in "+- ":
             marked_lines.append(line[0] + apply_datamarking(line[1:]))
             continue
+
         marked_lines.append(apply_datamarking(line))
 
     return "\n".join(marked_lines)
