@@ -119,7 +119,7 @@ Add to your `.gitlab-ci.yml`:
 prbot-review:
   stage: test
   image:
-    name: ghcr.io/nilesuan/prbot:0.5.1
+    name: ghcr.io/nilesuan/prbot:0.5.2
     # Required: the image's ENTRYPOINT is prbot itself, so GitLab
     # cannot start a shell in it without clearing this.
     entrypoint: [""]
@@ -155,7 +155,7 @@ prbot-review:
 prbot-review:
   stage: test
   image:
-    name: ghcr.io/nilesuan/prbot:0.5.1
+    name: ghcr.io/nilesuan/prbot:0.5.2
     # Required: the image's ENTRYPOINT is prbot itself, so GitLab
     # cannot start a shell in it without clearing this.
     entrypoint: [""]
@@ -222,16 +222,16 @@ The prbot image is hosted on GitHub Container Registry (`ghcr.io`). If your GitL
 
 ```bash
 # Pull from GHCR and push to your registry
-docker pull ghcr.io/nilesuan/prbot:0.5.1
-docker tag ghcr.io/nilesuan/prbot:0.5.1 registry.example.com/prbot:0.5.1
-docker push registry.example.com/prbot:0.5.1
+docker pull ghcr.io/nilesuan/prbot:0.5.2
+docker tag ghcr.io/nilesuan/prbot:0.5.2 registry.example.com/prbot:0.5.2
+docker push registry.example.com/prbot:0.5.2
 ```
 
 Then update the job:
 
 ```yaml
 prbot-review:
-  image: registry.example.com/prbot:0.5.1
+  image: registry.example.com/prbot:0.5.2
   # ...
 ```
 

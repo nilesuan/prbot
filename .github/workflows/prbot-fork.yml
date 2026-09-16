@@ -32,7 +32,7 @@ env:
   # No "v" prefix. The git tag is v0.2.0, but build.yml tags the image with
   # docker/metadata-action's type=semver,pattern={{version}}, which strips it.
   # Adding the v back here resolves to nothing and fails the digest step.
-  PRBOT_IMAGE_TAG: 0.5.1
+  PRBOT_IMAGE_TAG: 0.5.2
 
 jobs:
   review:
