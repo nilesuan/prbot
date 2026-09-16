@@ -621,12 +621,29 @@ class TestExpandedContext:
     """B8: the enclosing function is rarely inside the hunk."""
 
     @pytest.mark.asyncio
-    async def test_no_content_is_fetched_by_default(self) -> None:
+    async def test_content_is_fetched_by_default(self) -> None:
+        """Context is on out of the box (B8).
+
+        It used to default to off, so the retrieval shipped and never ran.
+        Fetching is over the API, so this still needs no checkout.
+        """
         adapter = FakeVCSAdapter()
         bedrock = lambda **_: _bedrock_response([])  # noqa: E731
 
         with _pipeline(adapter, bedrock):
             await run_pipeline(_config())
+
+        assert "get_file_content" in adapter.calls
+
+    @pytest.mark.asyncio
+    async def test_no_content_is_fetched_when_explicitly_disabled(
+        self,
+    ) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response([])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(context_lines=0))
 
         assert "get_file_content" not in adapter.calls
 

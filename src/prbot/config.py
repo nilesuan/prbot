@@ -6,6 +6,7 @@ Merge priority: CLI args > env vars (PRBOT_ prefix) > TOML config > defaults.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -253,7 +254,20 @@ class PrBotConfig(BaseModel, frozen=True):
     # B8: lines of surrounding head-revision code to include around
     # each hunk. 0 keeps the diff-only behaviour. Whether the extra
     # tokens buy precision is a question for measurement.
-    context_lines: int = Field(default=0, ge=0, le=200)
+    # Lines of the head revision fetched either side of a hunk and given to
+    # the agents. Retrieval is by API (`get_file_content`), so this needs no
+    # checkout and does not weaken the GIT_STRATEGY: none boundary.
+    #
+    # This defaulted to 0, which meant the capability shipped switched off:
+    # every agent saw naked hunks, and the hallucination check then penalised
+    # it for citing lines just outside them. 40 is enough to carry the
+    # enclosing declaration - a Terraform resource block, a function, a class
+    # method - for the large majority of real files, which is the unit a
+    # reviewer needs to judge whether a change is correct. It is a starting
+    # point to be measured, not a tuned constant: the cost is roughly linear
+    # in it, and the docstring in review/context.py is right that this is a
+    # question for measurement rather than argument.
+    context_lines: int = Field(default=40, ge=0, le=200)
     budget_limit_usd: float = Field(default=5.00, gt=0)
     timeout_seconds: int = Field(default=300, gt=0)
     api_base_url: str | None = None
@@ -557,6 +571,14 @@ _BOOL_FIELDS = frozenset({"dry_run", "datamark_diff", "force_review"})
 # only way to set a list was a TOML file, and the container workflows
 # pass configuration purely through env: (D6).
 _LIST_FIELDS = frozenset({"excluded_patterns", "allowed_regions"})
+# Fields whose value is a list of objects, which comma-splitting cannot
+# express. Without this the agent roster could only be set from TOML, and a
+# containerised run cannot reach a TOML file: the implicit search is refused
+# in CI, and GIT_STRATEGY: none means there is no repository file to point
+# --config at. A repository therefore had no supported way to add an agent to
+# its own reviews, which is the blocking dependency on shipping any new check
+# specification (D2).
+_JSON_FIELDS = frozenset({"agents", "suppress"})
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
@@ -617,6 +639,21 @@ def build_config(
                 raise ConfigError(f"Invalid float for {key}: {value!r}") from e
         elif field_name in _BOOL_FIELDS:
             merged[field_name] = _parse_bool(key, value)
+        elif field_name in _JSON_FIELDS:
+            try:
+                parsed = json.loads(value)
+            except ValueError as e:
+                raise ConfigError(
+                    f"Invalid JSON for {key}: {e}. Expected a JSON array, "
+                    f"for example "
+                    f'[{{"name": "iac", "check_prefix": "IAC-"}}].'
+                ) from e
+            if not isinstance(parsed, list):
+                raise ConfigError(
+                    f"Invalid value for {key}: expected a JSON array, got "
+                    f"{type(parsed).__name__}."
+                )
+            merged[field_name] = parsed
         elif field_name in _LIST_FIELDS:
             merged[field_name] = [
                 item.strip() for item in value.split(",") if item.strip()
