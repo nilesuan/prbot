@@ -249,14 +249,17 @@ class GitLabAdapter:
         head_sha: str,
         base_sha: str,
     ) -> int:
-        """Post a summary note, positioned discussions, and the verdict.
+        """Post the positioned discussions and the verdict.
 
-        GitLab has no single review object, so the three pieces of a GitHub
-        review are three calls here. The summary goes first: if a position is
-        stale and a discussion is rejected, the review is still delivered.
+        GitLab has no review object, so there is nothing here for `body` to
+        go in and it is deliberately unused. The caller posts the summary as
+        its own comment, which carries the state record and is rewritten in
+        place on the next run. Posting the body as a note as well left two
+        notes on every merge request, and that one had no state marker for
+        find_bot_comment to match, so a fresh copy accumulated every run.
+
+        Returns 0: there is no review object to identify.
         """
-        note_id = await self.post_comment(body)
-
         for comment in comments:
             try:
                 await self._request(
@@ -298,7 +301,7 @@ class GitLabAdapter:
                 # decision, not a review failure.
                 logger.warning("GitLab %s was refused: %s", action, e)
 
-        return note_id
+        return 0
 
     async def list_review_threads(self) -> list[ReviewThread]:
         """List positioned discussions as review threads (C8).

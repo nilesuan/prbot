@@ -94,11 +94,17 @@ class VCSAdapter(Protocol):
         discussions for the comments and approve/unapprove for the verdict,
         so the adapters differ in how they satisfy this, not in what it means.
 
+        `body` is what the review object itself says, which is not the
+        summary: the caller posts that separately as a comment it can rewrite
+        on the next run. A platform with no review object has nowhere to put
+        `body` and ignores it.
+
         An inline comment whose position the platform rejects is dropped with
         a warning rather than failing the submission: a stale line must not
         take the whole review down with it.
 
-        Returns an identifier for the submitted review or summary note.
+        Returns an identifier for the submitted review, or 0 where the
+        platform has no review object to identify.
         """
         ...
 
