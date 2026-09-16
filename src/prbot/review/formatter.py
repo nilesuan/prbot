@@ -665,8 +665,12 @@ def build_inline_comments(
     summary, rather than being anchored to a line the platform would reject.
     """
     from prbot.security.validation import _build_line_index
+    from prbot.vcs.diff_parser import map_new_to_old
 
     index = _build_line_index(diff)
+    old_sides = {
+        fd.path: map_new_to_old(fd.patch or "") for fd in diff.files
+    }
     comments: list[InlineComment] = []
 
     for scored in reported:
@@ -687,6 +691,9 @@ def build_inline_comments(
                 line=line,
                 body=_format_issue_block(scored, marker=True),
                 start_line=start,
+                # None when the anchor is an added line, which is what a
+                # platform that wants both sides has to be told apart.
+                old_line=old_sides.get(f.file_path, {}).get(line),
             ),
         )
 

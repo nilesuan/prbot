@@ -5,6 +5,29 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-09-16
+
+A fix to inline comments on GitLab, found by running 0.5.1 on a real merge
+request. GitHub is unaffected.
+
+### Fixed
+
+- **Inline comments failed on GitLab for any line that was not added.** The
+  discussion position carried only `new_line`, and GitLab builds a comment's
+  line code from the position: for a line that exists in both revisions it
+  needs both sides, and refused the rest with
+  `400 Bad request - Note {:line_code=>["can't be blank", "must be a valid
+  line code"]}`. A finding is anchored to its `line_end`, which is a context
+  line whenever the last line it describes was not itself added, so this was
+  the common case and not an edge one. The whole point of the release - a
+  comment on the line it is about - was therefore failing on GitLab and
+  degrading to a warning in the job log.
+
+  `InlineComment` now carries `old_line`, `map_new_to_old()` in
+  `diff_parser` derives it from the patch, and the GitLab adapter sends it
+  exactly when the line has an old side. Naming an old side for an added
+  line is equally invalid, so the key is present only when it is real.
+
 ## [0.5.1] - 2026-09-16
 
 A fix to what 0.5.0 does on GitLab, found by running it on two real merge

@@ -72,16 +72,23 @@ class FileDiff:
 class InlineComment:
     """A review comment anchored to a line of the head revision (C1).
 
-    Line numbers are new-side: the line as it appears after the change.
-    A deletion has no new-side line of its own, so a finding about one is
-    anchored to the surrounding context instead, which is what both
+    `line` and `start_line` are new-side: the line as it appears after the
+    change. A deletion has no new-side line of its own, so a finding about
+    one is anchored to the surrounding context instead, which is what both
     platforms expect.
+
+    `old_line` is the same line's number in the base revision, set only when
+    the line exists in both. GitHub does not need it, because `side: RIGHT`
+    identifies the line on its own. GitLab does: it computes the line code
+    from the position and refuses one that names only the new side of a line
+    that was not added.
     """
 
     path: str
     line: int
     body: str
     start_line: int | None = None
+    old_line: int | None = None
 
 
 @dataclass(frozen=True)

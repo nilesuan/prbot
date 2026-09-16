@@ -332,7 +332,7 @@ permissions:
 
 env:
   PRBOT_IMAGE: ghcr.io/nilesuan/prbot
-  PRBOT_IMAGE_TAG: 0.5.1
+  PRBOT_IMAGE_TAG: 0.5.2
 
 jobs:
   review:
@@ -386,7 +386,7 @@ Add to `.gitlab-ci.yml`:
 prbot-review:
   stage: test
   image:
-    name: ghcr.io/nilesuan/prbot:0.5.1
+    name: ghcr.io/nilesuan/prbot:0.5.2
     # Required: the image's ENTRYPOINT is prbot itself, so GitLab
     # cannot start a shell in it without clearing this.
     entrypoint: [""]
