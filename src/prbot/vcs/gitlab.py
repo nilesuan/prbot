@@ -261,23 +261,27 @@ class GitLabAdapter:
         Returns 0: there is no review object to identify.
         """
         for comment in comments:
+            position: dict[str, Any] = {
+                "position_type": "text",
+                "base_sha": base_sha,
+                "start_sha": base_sha,
+                "head_sha": head_sha,
+                "new_path": comment.path,
+                "old_path": comment.path,
+                "new_line": comment.line,
+            }
+            # A line that was not added exists on both sides, and GitLab
+            # cannot build a line code for it from the new side alone. An
+            # added line has no old side, and naming one is equally invalid,
+            # so the key is present exactly when the line has one.
+            if comment.old_line is not None:
+                position["old_line"] = comment.old_line
             try:
                 await self._request(
                     "POST",
                     f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
                     f"/merge_requests/{self._pr_number}/discussions",
-                    json={
-                        "body": comment.body,
-                        "position": {
-                            "position_type": "text",
-                            "base_sha": base_sha,
-                            "start_sha": base_sha,
-                            "head_sha": head_sha,
-                            "new_path": comment.path,
-                            "old_path": comment.path,
-                            "new_line": comment.line,
-                        },
-                    },
+                    json={"body": comment.body, "position": position},
                 )
             except VCSError as e:
                 # Almost always a line that has moved since the diff was

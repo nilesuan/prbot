@@ -86,6 +86,54 @@ def parse_unified_diff(
     return coordinates
 
 
+def map_new_to_old(patch: str) -> dict[int, int]:
+    """New-side line number to old-side line number, for lines on both sides.
+
+    Only lines that exist in both revisions appear, which is to say context
+    lines: an added line has no old side and is deliberately absent.
+
+    GitLab computes a discussion's line code from the position it is given,
+    and for a line that was not added it needs both sides. A position
+    carrying only new_line is refused with
+
+        400 Bad request - Note {:line_code=>["can't be blank",
+                                             "must be a valid line code"]}
+
+    A finding is anchored to its line_end, which is a context line whenever
+    the last line it describes was not itself added, so this is the common
+    case rather than an edge one.
+    """
+    mapping: dict[int, int] = {}
+    old_line = 0
+    new_line = 0
+    seen_hunk = False
+
+    for line in patch.splitlines():
+        hunk_match = _HUNK_PATTERN.match(line)
+        if hunk_match:
+            old_line = int(hunk_match.group(1))
+            new_line = int(hunk_match.group(3))
+            seen_hunk = True
+            continue
+        if not seen_hunk:
+            # File headers, and anything else a platform puts above the
+            # first hunk, describe no line.
+            continue
+        if line.startswith("+"):
+            new_line += 1
+        elif line.startswith("-"):
+            old_line += 1
+        elif line.startswith("\\"):
+            # "\ No newline at end of file" annotates the line before it.
+            continue
+        else:
+            mapping[new_line] = old_line
+            old_line += 1
+            new_line += 1
+
+    return mapping
+
+
 def detect_truncation(file_count: int, platform: str) -> bool:
     """Detect if a diff is truncated based on platform file limits.
 

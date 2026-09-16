@@ -48,6 +48,13 @@ actually covers, as computed by `_anchor_line` in
 rendered in the summary instead. A finding is never silently dropped for being
 unanchored.
 
+An anchor carries both sides of its line: `line` is the new-side number and
+`old_line` is the same line in the base revision, present only when the line
+exists in both. GitHub identifies a line by `line` plus `side: RIGHT` and
+needs no more. GitLab builds a line code from the position and refuses one
+that names only the new side of a line that was not added, which is most
+anchors, so omitting `old_line` there loses the comment.
+
 ## 3. The finding record
 
 Every agent returns findings against `FINDING_JSON_SCHEMA` in
@@ -371,4 +378,5 @@ agent's check spec under `## Reporting Rules`.
 | Escaping and link defusing | `_sanitise()`, `_cell()`, same file |
 | Thread identity | `src/prbot/review/identity.py` |
 | Delivery, and the refused-event fallback | `submit_review()` in `src/prbot/vcs/{github,gitlab}.py` |
+| New-side to old-side line mapping | `map_new_to_old()`, `src/prbot/vcs/diff_parser.py` |
 | Tests for this document | `tests/review/test_output_template.py` |
