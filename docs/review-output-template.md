@@ -34,7 +34,7 @@ prbot posts, per review:
 | Artifact | Count | Contents |
 |----------|-------|----------|
 | Inline comment | one per anchorable reported finding | The full issue block (section 4) |
-| Platform review | one per run, review mode only | Verdict, counts, and a pointer (section 5.2) |
+| Platform review | one per run, review mode only, GitHub only | Verdict, counts, and a pointer (section 5.2) |
 | Summary comment | exactly one, rewritten in place on re-runs | Verdict, counts, index, unanchored issues, agent status (section 5) |
 
 `review_mode` (`PRBOT_REVIEW_MODE`) selects the delivery. `review` is the
@@ -239,6 +239,12 @@ a path and line range rather than a link.
 The review object carries the verdict and the inline comments. Its body says
 only what the review itself has to say, and is never empty, because GitHub
 rejects a `REQUEST_CHANGES` review with a blank body.
+
+GitLab has no review object: the comments are discussions and the verdict is
+approve or unapprove, so there is nowhere for this body to go and the adapter
+ignores it. It must not be posted as a note - the summary comment is already
+that note, and a second one carries no state record, so nothing could find it
+again and a copy accumulated on every run.
 
 ```markdown
 ## ❌ REQUEST_CHANGES · Score: 62/100

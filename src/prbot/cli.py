@@ -662,7 +662,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
                 # in one would repost it on every push and leave the state
                 # record somewhere find_bot_comment does not look, which is
                 # what the C3 unchanged-commit skip reads.
-                cid = await adapter.submit_review(
+                await adapter.submit_review(
                     format_review_event_body(
                         verdict, score, reported, len(inline),
                     ),
@@ -672,8 +672,8 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     base_sha=metadata.base_sha,
                 )
                 logger.info(
-                    "review.submitted id=%d event=%s inline=%d",
-                    cid, verdict.value, len(inline),
+                    "review.submitted event=%s inline=%d",
+                    verdict.value, len(inline),
                 )
 
                 # A finding that is no longer reported against newer code has

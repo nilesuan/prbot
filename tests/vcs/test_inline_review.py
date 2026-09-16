@@ -216,7 +216,8 @@ class TestGitLabReviewSubmission:
             await adapter.close()
 
         assert discussions.call_count == 2
-        assert notes.call_count == 1
+        # Not 1. See test_the_summary_is_not_posted_as_a_note.
+        assert notes.call_count == 0
         payload = json.loads(discussions.calls[0].request.content)
         assert payload["position"]["new_path"] == "src/app.py"
         assert payload["position"]["new_line"] == 12
@@ -269,25 +270,56 @@ class TestGitLabReviewSubmission:
     @respx.mock
     @pytest.mark.asyncio
     async def test_a_rejected_position_does_not_lose_the_review(self) -> None:
-        """A stale line must not take the whole summary down with it."""
+        """A stale line must not take the rest of the review down with it."""
         respx.post(
             "https://gitlab.com/api/v4/projects/owner%2Frepo"
             "/merge_requests/99/discussions",
         ).mock(return_value=httpx.Response(400, json={"message": "bad line"}))
-        notes = respx.post(
+        approve = respx.post(
             "https://gitlab.com/api/v4/projects/owner%2Frepo"
-            "/merge_requests/99/notes",
-        ).mock(return_value=httpx.Response(201, json={"id": 3}))
+            "/merge_requests/99/approve",
+        ).mock(return_value=httpx.Response(201, json={}))
         adapter = _gitlab()
         try:
             await adapter.submit_review(
-                "summary", "COMMENT", _comments(),
+                "summary", "APPROVE", _comments(),
                 head_sha=_HEAD, base_sha=_BASE,
             )
         finally:
             await adapter.close()
 
-        assert notes.call_count == 1
+        assert approve.call_count == 1
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_the_summary_is_not_posted_as_a_note(self) -> None:
+        """GitLab has no review object to carry a body.
+
+        The caller posts the summary as its own comment, found and rewritten
+        on the next run via its state marker. Posting the body here as well
+        left two notes on every merge request, and this one carried no state
+        marker, so find_bot_comment could never match it and a fresh copy
+        accumulated on every single run.
+        """
+        notes = respx.post(
+            "https://gitlab.com/api/v4/projects/owner%2Frepo"
+            "/merge_requests/99/notes",
+        ).mock(return_value=httpx.Response(201, json={"id": 3}))
+        discussions = respx.post(
+            "https://gitlab.com/api/v4/projects/owner%2Frepo"
+            "/merge_requests/99/discussions",
+        ).mock(return_value=httpx.Response(201, json={"id": "abc"}))
+        adapter = _gitlab()
+        try:
+            await adapter.submit_review(
+                "## COMMENT — Score: 100/100", "COMMENT", _comments(),
+                head_sha=_HEAD, base_sha=_BASE,
+            )
+        finally:
+            await adapter.close()
+
+        assert notes.call_count == 0
+        assert discussions.call_count == 2
 
 
 class TestBuildingInlineComments:

@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-09-16
+
+A fix to what 0.5.0 does on GitLab, found by running it on two real merge
+requests. Nothing changes on GitHub.
+
+### Fixed
+
+- **prbot posted two summary notes on every GitLab merge request.** 0.5.0 made
+  the summary its own comment so it could be rewritten in place, but
+  `GitLabAdapter.submit_review` still posted the review body as a note, and
+  GitLab has no review object for that body to go in. The result was the
+  summary's header appearing a second time, with no `prbot:state` marker, so
+  `find_bot_comment` could never match it and a fresh copy accumulated on
+  every run. The adapter now posts the discussions and the verdict only, and
+  `body` is documented as unused where a platform has no review object.
+
 ## [0.5.0] - 2026-09-16
 
 Findings now land on the lines they are about, and everything prbot writes has
