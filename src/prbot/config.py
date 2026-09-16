@@ -251,10 +251,7 @@ class PrBotConfig(BaseModel, frozen=True):
     # default, output length is neither reproducible nor visible to the
     # cost estimate.
     max_output_tokens: int = Field(default=8192, gt=0)
-    # B8: lines of surrounding head-revision code to include around
-    # each hunk. 0 keeps the diff-only behaviour. Whether the extra
-    # tokens buy precision is a question for measurement.
-    # Lines of the head revision fetched either side of a hunk and given to
+    # B8: lines of the head revision fetched either side of a hunk and given to
     # the agents. Retrieval is by API (`get_file_content`), so this needs no
     # checkout and does not weaken the GIT_STRATEGY: none boundary.
     #
