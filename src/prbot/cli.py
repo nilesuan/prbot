@@ -319,6 +319,8 @@ async def run_pipeline(config: PrBotConfig) -> int:
     from prbot.review.formatter import (
         build_inline_comments,
         format_review_comment,
+        format_review_event_body,
+        unanchored_findings,
     )
     from prbot.review.models import AgentResult
     from prbot.review.outcomes import reconcile
@@ -559,6 +561,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
         # author is looking, and it turns "was this finding acted on" into
         # something measurable.
         inline: list = []
+        unanchored: list = []
         outcome_counts: dict[str, int] = {}
         outcomes_report = None
 
@@ -571,16 +574,24 @@ async def run_pipeline(config: PrBotConfig) -> int:
             )
             outcome_counts = outcomes_report.counts()
             inline = build_inline_comments(
-                [scored for scored in outcomes_report.new], filtered_diff,
+                outcomes_report.new, filtered_diff,
+            )
+            # A finding that already has a thread is detailed in it, and one
+            # that just got an inline comment is detailed there. What is left
+            # is the findings the diff cannot anchor: the summary is the only
+            # place their description can go, so the summary is given them.
+            unanchored = unanchored_findings(
+                outcomes_report.new, filtered_diff,
             )
             logger.info(
                 "review.inline new=%d persisting=%d fixed=%d resolved=%d "
-                "anchored=%d",
+                "anchored=%d unanchored=%d",
                 len(outcomes_report.new),
                 len(outcomes_report.persisting),
                 len(outcomes_report.fixed),
                 len(outcomes_report.human_resolved),
                 len(inline),
+                len(unanchored),
             )
 
 
@@ -616,6 +627,8 @@ async def run_pipeline(config: PrBotConfig) -> int:
             config.platform,
             suppressed_count=suppressed_count,
             fixed_count=outcome_counts.get("findings_fixed", 0),
+            unanchored=unanchored,
+            inline_enabled=config.review_mode == "review",
         )
         comment, secret_count = redact_secrets(comment)
 
@@ -644,8 +657,15 @@ async def run_pipeline(config: PrBotConfig) -> int:
         comment_posted = False
         if not config.dry_run:
             if config.review_mode == "review":
+                # The summary is not the review body. A review cannot be
+                # found or rewritten by a later run, so putting the summary
+                # in one would repost it on every push and leave the state
+                # record somewhere find_bot_comment does not look, which is
+                # what the C3 unchanged-commit skip reads.
                 cid = await adapter.submit_review(
-                    comment,
+                    format_review_event_body(
+                        verdict, score, reported, len(inline),
+                    ),
                     verdict.value,
                     inline,
                     head_sha=metadata.head_sha,
@@ -692,13 +712,16 @@ async def run_pipeline(config: PrBotConfig) -> int:
                             "review.threads_unresolved count=%d of=%d",
                             unresolved, len(outcomes_report.fixed),
                         )
-            elif existing:
+
+            # One summary comment, found and rewritten in place, in both
+            # modes. It carries the state record, so this is also what makes
+            # the next run able to recognise its own work.
+            if existing:
                 cid = existing[0]
                 await adapter.update_comment(cid, comment)
-                logger.info("comment.posted id=%d", cid)
             else:
                 cid = await adapter.post_comment(comment)
-                logger.info("comment.posted id=%d", cid)
+            logger.info("comment.posted id=%d", cid)
             comment_posted = True
         else:
             logger.info(

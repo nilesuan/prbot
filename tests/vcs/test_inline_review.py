@@ -15,6 +15,7 @@ import pytest
 import respx
 
 from prbot.auth.token import TokenResult
+from prbot.exceptions import VCSResponseError
 from prbot.vcs.github import GitHubAdapter
 from prbot.vcs.gitlab import GitLabAdapter
 from prbot.vcs.models import InlineComment
@@ -109,6 +110,71 @@ class TestGitHubReviewSubmission:
         assert json.loads(route.calls[0].request.content)["event"] == (
             "REQUEST_CHANGES"
         )
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_refused_event_still_delivers_the_review(self) -> None:
+        """GitHub does not permit the Actions token to approve, and nobody
+        may approve their own pull request. The verdict still reaches the
+        exit code, so losing the event beats losing the review."""
+        route = respx.post(
+            "https://api.github.com/repos/owner/repo/pulls/42/reviews",
+        ).mock(side_effect=[
+            httpx.Response(422, json={
+                "message": "GitHub Actions is not permitted to approve "
+                           "pull requests.",
+            }),
+            httpx.Response(200, json={"id": 7}),
+        ])
+        adapter = _github()
+        try:
+            await adapter.submit_review(
+                "s", "APPROVE", [], head_sha=_HEAD, base_sha=_BASE,
+            )
+        finally:
+            await adapter.close()
+
+        assert route.call_count == 2
+        assert json.loads(route.calls[1].request.content)["event"] == "COMMENT"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_rejected_position_keeps_the_event(self) -> None:
+        """A stale line costs the anchors, not the verdict."""
+        route = respx.post(
+            "https://api.github.com/repos/owner/repo/pulls/42/reviews",
+        ).mock(side_effect=[
+            httpx.Response(422, json={"message": "line must be part of diff"}),
+            httpx.Response(200, json={"id": 7}),
+        ])
+        adapter = _github()
+        try:
+            await adapter.submit_review(
+                "s", "REQUEST_CHANGES", _comments(),
+                head_sha=_HEAD, base_sha=_BASE,
+            )
+        finally:
+            await adapter.close()
+
+        second = json.loads(route.calls[1].request.content)
+        assert second["event"] == "REQUEST_CHANGES"
+        assert second["comments"] == []
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_review_that_cannot_be_delivered_still_raises(self) -> None:
+        respx.post(
+            "https://api.github.com/repos/owner/repo/pulls/42/reviews",
+        ).mock(return_value=httpx.Response(422, json={"message": "no"}))
+        adapter = _github()
+        try:
+            with pytest.raises(VCSResponseError):
+                await adapter.submit_review(
+                    "s", "APPROVE", _comments(),
+                    head_sha=_HEAD, base_sha=_BASE,
+                )
+        finally:
+            await adapter.close()
 
     @respx.mock
     @pytest.mark.asyncio

@@ -10,7 +10,14 @@ import logging
 import re
 from typing import Literal
 
-from prbot.review.models import AgentError, AgentOutcome, AgentResult
+from prbot.review.identity import finding_fingerprint, marker_for
+from prbot.review.models import (
+    SEVERITY_LEVELS,
+    AgentError,
+    AgentOutcome,
+    AgentResult,
+    Finding,
+)
 from prbot.review.scorer import ReviewScore, ScoredFinding
 from prbot.review.verdict import ReviewVerdict
 from prbot.vcs.models import InlineComment, PRDiff
@@ -129,6 +136,82 @@ _DISCLAIMER = (
 )
 
 
+# Severity ordering for every list prbot renders. Findings are read in the
+# order they have to be dealt with, so the index, the detail blocks and the
+# truncation order all share one definition.
+_SEVERITY_ORDER: dict[str, int] = {
+    level: rank for rank, level in enumerate(SEVERITY_LEVELS)
+}
+
+# Dropped first when a comment will not fit (docs/review-output-template.md
+# section 6.3). Detail about an issue nobody has to act on is the cheapest
+# thing to lose.
+_DROPPABLE_DETAIL = ("info", "low")
+
+
+def _sorted_findings(findings: list[ScoredFinding]) -> list[ScoredFinding]:
+    """Severity first, then confidence descending."""
+    return sorted(
+        findings,
+        key=lambda sf: (
+            _SEVERITY_ORDER.get(sf.finding.severity, 99),
+            -sf.finding.confidence,
+        ),
+    )
+
+
+def _format_issue_block(
+    scored: ScoredFinding,
+    *,
+    marker: bool = False,
+) -> str:
+    """One issue in the shape every issue takes (template section 4).
+
+    This is the body of the inline comment and, for a finding the diff cannot
+    anchor, the body of its entry in the summary. Both come through here so
+    that a reader meets one shape wherever a finding turns up and there is a
+    single renderer to hold to the template.
+
+    Header, Problem, Impact, Fix, marker. Impact and Fix are dropped rather
+    than rendered empty: a label with nothing after it reads as prbot having
+    lost the text, and every agent is required to supply an Impact, so an
+    empty one is a prompt-compliance problem rather than a layout decision.
+    """
+    f = scored.finding
+    # Two agents arriving at the same defect independently is evidence, and
+    # after deduplication it is the only thing that distinguishes a merged
+    # finding from a single-agent one (B1).
+    agreement = (
+        f" · reported by {len(f.reported_by)} agents"
+        if len(f.reported_by) > 1
+        else ""
+    )
+
+    parts = [
+        f"**`{_cell(f.check_id, 64)}`** · {_cell(f.severity, 16)} · "
+        f"{f.confidence}% confidence{agreement}",
+        "",
+        f"**Problem:** {_sanitise(f.description, _MAX_DESCRIPTION)}",
+    ]
+    if f.failure_scenario:
+        parts += [
+            "",
+            f"**Impact:** {_sanitise(f.failure_scenario, _MAX_DESCRIPTION)}",
+        ]
+    if f.suggestion:
+        parts += [
+            "",
+            f"**Fix:** {_sanitise(f.suggestion, _MAX_SUGGESTION)}",
+        ]
+    if marker:
+        # C8: makes this thread recognisable on the next run, so the finding
+        # is not posted twice and can be closed out when it goes away.
+        # Invisible in rendered markdown.
+        parts += ["", marker_for(finding_fingerprint(f))]
+
+    return "\n".join(parts)
+
+
 def format_review_comment(
     verdict: ReviewVerdict,
     score: ReviewScore,
@@ -140,10 +223,20 @@ def format_review_comment(
     platform: Literal["github", "gitlab"] = "github",
     suppressed_count: int = 0,
     fixed_count: int = 0,
+    *,
+    unanchored: list[ScoredFinding] | None = None,
+    inline_enabled: bool = False,
 ) -> str:
-    """Format the full review comment (G-28, S83).
+    """Format the summary comment (G-28, S83, template section 5).
 
-    Handles both-agents-failed case with distinct body.
+    With inline comments in play the summary indexes the issues and carries
+    detail only for the findings that could not be anchored; without them it
+    carries every issue in full, because there is nowhere else for that
+    detail to go.
+
+    Oversize comments are reduced by rebuilding with less in them rather than
+    by cutting rendered markdown, so every attempt is a well-formed comment
+    and each thing dropped is stated (template section 6.3).
     """
     has_results = any(isinstance(o, AgentResult) for o in outcomes)
 
@@ -151,25 +244,65 @@ def format_review_comment(
     if not has_results:
         return _format_review_incomplete(outcomes, state_html)
 
-    sections = [
-        _format_header(verdict, score),
-        _format_findings_table(reported),
-        _format_borderline_section(borderline),
-        _format_agent_status(outcomes),
-        _format_footer(
-            hidden_count, state_html, suppressed_count, fixed_count,
-        ),
-    ]
-
-    comment = "\n\n".join(s for s in sections if s)
+    # Detail belongs wherever the finding is not already being commented on.
+    detailed = list(unanchored or []) if inline_enabled else list(reported)
     limit = _PLATFORM_LIMITS.get(platform, 65536)
 
-    if len(comment) > limit:
-        comment = truncate_comment(
-            comment, limit, borderline, reported,
+    def build(
+        shown_borderline: list[ScoredFinding],
+        shown_detail: list[ScoredFinding],
+    ) -> str:
+        detail = _format_detail_section(
+            shown_detail, inline_enabled=inline_enabled,
         )
+        dropped = len(detailed) - len(shown_detail)
+        if dropped:
+            note = (
+                f"_{dropped} low-severity issue detail(s) truncated for "
+                f"size._"
+            )
+            detail = f"{detail}\n\n{note}" if detail else note
 
-    return comment
+        collapsed = _format_borderline_section(shown_borderline)
+        if borderline and not shown_borderline:
+            collapsed = "_Borderline findings truncated for size._"
+
+        sections = [
+            _format_header(verdict, score),
+            _format_counts(reported),
+            _format_findings_table(
+                reported,
+                inline_enabled=inline_enabled,
+                unanchored_count=len(detailed) if inline_enabled else 0,
+            ),
+            detail,
+            collapsed,
+            _format_agent_status(outcomes),
+            _format_footer(
+                hidden_count, state_html, suppressed_count, fixed_count,
+            ),
+        ]
+        return "\n\n".join(s for s in sections if s)
+
+    attempts = (
+        (borderline, detailed),
+        ([], detailed),
+        (
+            [],
+            [
+                sf for sf in detailed
+                if sf.finding.severity not in _DROPPABLE_DETAIL
+            ],
+        ),
+    )
+
+    comment = ""
+    for shown_borderline, shown_detail in attempts:
+        comment = build(shown_borderline, shown_detail)
+        if len(comment) <= limit:
+            return comment
+
+    return truncate_comment(comment, limit)
 
 
 def _format_review_incomplete(
@@ -188,7 +321,7 @@ def _format_review_incomplete(
     for outcome in outcomes:
         if isinstance(outcome, AgentError):
             lines.append(
-                f"- **{outcome.agent}**: {_cell(outcome.error_type, 64)} — "
+                f"- **{outcome.agent}**: {_cell(outcome.error_type, 64)} · "
                 f"{_cell(outcome.message, 400)}",
             )
 
@@ -209,77 +342,141 @@ def _format_header(verdict: ReviewVerdict, score: ReviewScore) -> str:
     badge = _VERDICT_BADGES.get(verdict.value, "")
     override = " _(critical override)_" if score.critical_override else ""
     return (
-        f"## {badge} {verdict.value} — Score: "
+        f"## {badge} {verdict.value} · Score: "
         f"{score.clamped_score}/100{override}"
     )
 
 
-def _format_findings_table(reported: list[ScoredFinding]) -> str:
-    """Format findings table sorted by severity then confidence."""
-    if not reported:
-        return "_No findings to report._"
+def format_review_event_body(
+    verdict: ReviewVerdict,
+    score: ReviewScore,
+    reported: list[ScoredFinding],
+    inline_count: int,
+) -> str:
+    """The body of the platform review object (template section 5.2).
 
-    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-    sorted_findings = sorted(
-        reported,
-        key=lambda sf: (
-            severity_order.get(sf.finding.severity, 99),
-            -sf.finding.confidence,
-        ),
+    A review cannot be found or rewritten by a later run, so the summary
+    lives in its own comment and this carries only what the review itself
+    has to say: the verdict, and how much was found. It is never empty,
+    because GitHub rejects a REQUEST_CHANGES review with a blank body.
+    """
+    lines = [_format_header(verdict, score)]
+
+    if not reported:
+        lines.extend(["", "No issues found."])
+        return "\n".join(lines)
+
+    lines.extend(["", _format_counts(reported)])
+    if inline_count:
+        lines.extend([
+            "",
+            f"{inline_count} issue(s) commented on their lines. The full "
+            "index is in prbot's summary comment.",
+        ])
+    else:
+        lines.extend(["", "The full index is in prbot's summary comment."])
+    return "\n".join(lines)
+
+
+def _format_counts(reported: list[ScoredFinding]) -> str:
+    """Severity tally, zero counts omitted (template section 5).
+
+    The first thing a reader wants is the shape of the problem, and a count
+    answers that before the table has to be read at all.
+    """
+    tally: dict[str, int] = {}
+    for scored in reported:
+        severity = scored.finding.severity
+        tally[severity] = tally.get(severity, 0) + 1
+
+    return " · ".join(
+        f"{tally[level]} {level}"
+        for level in SEVERITY_LEVELS
+        if tally.get(level)
     )
 
+
+def _format_findings_table(
+    reported: list[ScoredFinding],
+    *,
+    inline_enabled: bool = False,
+    unanchored_count: int = 0,
+) -> str:
+    """The index (template section 5). One row per issue, no detail.
+
+    The description, impact and fix are deliberately absent: they are in the
+    inline comment on the line the issue is about, and writing them twice is
+    what made the old summary unreadable.
+    """
+    if not reported:
+        return "No issues found."
+
     lines = [
-        "### Findings",
+        "### Issues",
         "",
-        "| Severity | Check | File | Lines | Confidence | Title |",
-        "|----------|-------|------|-------|------------|-------|",
+        "| Severity | Check | Location | Confidence | Issue |",
+        "|----------|-------|----------|------------|-------|",
     ]
 
-    for sf in sorted_findings:
-        f = sf.finding
+    for scored in _sorted_findings(reported):
+        f = scored.finding
         emoji = _SEVERITY_EMOJI.get(f.severity, "")
-        agreement = (
-            " (both agents)" if len(f.reported_by) > 1 else ""
+        location = _cell(
+            f"{f.file_path}:{f.line_start}-{f.line_end}", _MAX_PATH,
         )
         lines.append(
             f"| {emoji} {f.severity} | `{_cell(f.check_id, 64)}` | "
-            f"`{_cell(f.file_path, _MAX_PATH)}` | "
-            f"{f.line_start}-{f.line_end} | "
-            f"{f.confidence}% | {_cell(f.title, _MAX_TITLE)}{agreement} |",
+            f"`{location}` | {f.confidence}% | "
+            f"{_cell(f.title, _MAX_TITLE)} |",
         )
 
-    # Add details for each finding
-    lines.append("")
-    for sf in sorted_findings:
-        f = sf.finding
-        lines.extend([
-            f"#### `{_cell(f.check_id, 64)}`: {_cell(f.title, _MAX_TITLE)}",
-            "",
-            f"**File:** `{_cell(f.file_path, _MAX_PATH)}` "
-            f"(L{f.line_start}-L{f.line_end})",
-            "",
-            _sanitise(f.description, _MAX_DESCRIPTION),
-            "",
-        ])
-        if f.failure_scenario:
-            lines.extend([
-                "**How it breaks:** "
-                + _sanitise(f.failure_scenario, _MAX_DESCRIPTION),
-                "",
-            ])
-        if f.suggestion:
-            lines.extend([
-                f"**Suggestion:** {_sanitise(f.suggestion, _MAX_SUGGESTION)}",
-                "",
-            ])
+    if inline_enabled:
+        # Say where the detail went, and admit the rows this does not cover
+        # rather than claiming every issue has a thread.
+        note = "Each issue above is commented on its line in the Files tab"
+        if unanchored_count:
+            note += f", except the {unanchored_count} listed below"
+        lines.extend(["", f"{note}."])
 
     return "\n".join(lines)
+
+
+def _format_detail_section(
+    detailed: list[ScoredFinding],
+    *,
+    inline_enabled: bool,
+) -> str:
+    """Full issue blocks for findings with no thread of their own.
+
+    Under review mode that is the findings the diff cannot anchor; in comment
+    mode it is all of them. Either way this is the only copy of that detail,
+    which is why it is here and not repeated beside the index.
+    """
+    if not detailed:
+        return ""
+
+    header = ""
+    if inline_enabled:
+        header = (
+            f"### Not anchored to a line ({len(detailed)})\n\n"
+            "These lines fall outside the diff, so they have no inline "
+            "thread.\n\n"
+        )
+
+    return header + "\n\n".join(
+        _format_issue_block(scored) for scored in _sorted_findings(detailed)
+    )
 
 
 def _format_borderline_section(
     borderline: list[ScoredFinding],
 ) -> str:
-    """Format borderline findings in collapsed section."""
+    """Format borderline findings in collapsed section.
+
+    One line each, never a full block: these are below the reporting
+    threshold and are shown so the reader can see what was weighed, not so
+    they can be worked through.
+    """
     if not borderline:
         return ""
 
@@ -289,16 +486,17 @@ def _format_borderline_section(
         "",
     ]
 
-    for sf in borderline:
-        f = sf.finding
+    for scored in _sorted_findings(borderline):
+        f = scored.finding
         emoji = _SEVERITY_EMOJI.get(f.severity, "")
-        lines.extend([
-            f"- {emoji} **`{_cell(f.check_id, 64)}`**: "
-            f"{_cell(f.title, _MAX_TITLE)} "
-            f"(`{_cell(f.file_path, _MAX_PATH)}` "
-            f"L{f.line_start}-L{f.line_end}, "
-            f"{f.confidence}% confidence)",
-        ])
+        location = _cell(
+            f"{f.file_path}:{f.line_start}-{f.line_end}", _MAX_PATH,
+        )
+        lines.append(
+            f"- {emoji} {f.severity} · `{_cell(f.check_id, 64)}` · "
+            f"`{location}` · {f.confidence}% confidence · "
+            f"{_cell(f.title, _MAX_TITLE)}",
+        )
 
     lines.extend(["", "</details>"])
     return "\n".join(lines)
@@ -338,7 +536,7 @@ def _format_agent_status(outcomes: list[AgentOutcome]) -> str:
             errs = s["errors"]
             assert isinstance(errs, list)
             errs.append(
-                f"{_cell(outcome.error_type, 64)}{retry_note} — "
+                f"{_cell(outcome.error_type, 64)}{retry_note} · "
                 f"{_cell(outcome.message, 400)}",
             )
 
@@ -411,63 +609,49 @@ def _format_footer(
     return "\n".join(lines)
 
 
-def truncate_comment(
-    comment: str,
-    limit: int,
-    borderline: list[ScoredFinding],
-    reported: list[ScoredFinding],
-) -> str:
-    """Progressively truncate comment to fit platform limit (S17).
+def truncate_comment(comment: str, limit: int) -> str:
+    """Last-resort hard cut, preserving the footer (template section 6.3).
 
-    Truncation order:
-    1. Remove borderline section
-    2. Remove low-severity finding details
-    3. Truncate remaining content, preserving header and footer
+    Progressive reduction happens in format_review_comment by rebuilding the
+    comment with less in it, which always yields well-formed markdown. This
+    is what remains when even the smallest well-formed comment does not fit,
+    and its one job is to keep the disclaimer and the state record, without
+    which the next run cannot find its own comment.
     """
-    # Step 1: Remove borderline section
-    if "<details>" in comment and len(comment) > limit:
-        start = comment.find("<details>")
-        end = comment.find("</details>")
-        if start != -1 and end != -1:
-            comment = (
-                comment[:start]
-                + "_Borderline findings truncated for size._\n"
-                + comment[end + len("</details>") :]
-            )
-
     if len(comment) <= limit:
         return comment
 
-    # Step 2: Remove low-severity details (info, low)
-    for severity in ("info", "low"):
-        for sf in reported:
-            if sf.finding.severity == severity:
-                detail_header = f"#### `{sf.finding.check_id}`: {sf.finding.title}"
-                idx = comment.find(detail_header)
-                if idx != -1:
-                    next_header = comment.find("####", idx + 1)
-                    next_section = comment.find("###", idx + 1)
-                    end_pos = min(
-                        p for p in (next_header, next_section, len(comment)) if p > idx
-                    )
-                    comment = comment[:idx] + comment[end_pos:]
-
-        if len(comment) <= limit:
-            return comment
-
-    # Step 3: Hard truncate preserving footer
-    footer_marker = comment.rfind("---")
+    # The footer's own rule, which is the last one in the comment: model
+    # prose is rendered above it, so the final match is always ours.
+    footer_marker = comment.rfind("\n---\n")
     if footer_marker != -1:
         footer = comment[footer_marker:]
-        available = limit - len(footer) - 50
+        available = limit - len(footer) - 40
         if available > 0:
-            comment = (
+            return (
                 comment[:available]
-                + "\n\n_...truncated for size..._\n\n"
+                + "\n\n_...truncated for size..._"
                 + footer
             )
 
     return comment[:limit]
+
+
+def _anchor_line(
+    finding: Finding,
+    index: dict[str, set[int] | None],
+) -> int | None:
+    """The new-side line an inline comment on this finding can be posted to.
+
+    None when the diff does not cover it: the platform would reject that
+    position, or worse, silently move it.
+    """
+    covered = index.get(finding.file_path)
+    if not covered:
+        return None
+    if finding.line_end not in covered:
+        return None
+    return finding.line_end
 
 
 def build_inline_comments(
@@ -477,14 +661,9 @@ def build_inline_comments(
     """Turn findings into comments anchored to the lines they are about (C1).
 
     Only findings that land on a line the diff actually covers become inline.
-    Anything else stays in the summary, where it can still be read, rather
-    than being anchored to a line the platform would reject or, worse,
-    silently move.
-
-    diff_parser has computed these coordinates since the beginning and
-    nothing used them.
+    Anything else is returned by unanchored_findings and carried in the
+    summary, rather than being anchored to a line the platform would reject.
     """
-    from prbot.review.identity import finding_fingerprint, marker_for
     from prbot.security.validation import _build_line_index
 
     index = _build_line_index(diff)
@@ -492,43 +671,42 @@ def build_inline_comments(
 
     for scored in reported:
         f = scored.finding
-        covered = index.get(f.file_path)
-        if not covered:
-            continue
-        if f.line_end not in covered:
+        line = _anchor_line(f, index)
+        if line is None:
             continue
 
-        parts = [
-            f"**`{_cell(f.check_id, 64)}`** "
-            f"({_cell(f.severity, 16)}, {f.confidence}% confidence)",
-            "",
-            _sanitise(f.description, _MAX_DESCRIPTION),
-        ]
-        if f.failure_scenario:
-            parts += [
-                "",
-                "**How it breaks:** "
-                + _sanitise(f.failure_scenario, _MAX_DESCRIPTION),
-            ]
-        if f.suggestion:
-            parts += [
-                "",
-                "**Suggestion:** " + _sanitise(f.suggestion, _MAX_SUGGESTION),
-            ]
-
-        # C8: the fingerprint makes this thread recognisable on the next
-        # run, so the finding is not posted twice and can be closed out when
-        # it goes away. Invisible in rendered markdown.
-        parts += ["", marker_for(finding_fingerprint(f))]
-
-        start = f.line_start if f.line_start in covered else None
+        covered = index[f.file_path]
+        start = (
+            f.line_start
+            if covered and f.line_start in covered and f.line_start != line
+            else None
+        )
         comments.append(
             InlineComment(
                 path=f.file_path,
-                line=f.line_end,
-                body="\n".join(parts),
-                start_line=start if start != f.line_end else None,
+                line=line,
+                body=_format_issue_block(scored, marker=True),
+                start_line=start,
             ),
         )
 
     return comments
+
+
+def unanchored_findings(
+    reported: list[ScoredFinding],
+    diff: PRDiff,
+) -> list[ScoredFinding]:
+    """The findings no inline comment can be posted for (C1).
+
+    The exact complement of build_inline_comments. The summary carries their
+    detail in full, because there is no thread for it to live in, and a
+    finding is never dropped for want of an anchor.
+    """
+    from prbot.security.validation import _build_line_index
+
+    index = _build_line_index(diff)
+    return [
+        scored for scored in reported
+        if _anchor_line(scored.finding, index) is None
+    ]

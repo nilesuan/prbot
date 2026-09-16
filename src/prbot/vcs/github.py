@@ -322,34 +322,50 @@ class GitHubAdapter:
         commit_id pins the review to the revision it was produced from, so a
         push that lands mid-review does not silently move the comments onto
         code nobody looked at.
+
+        Two things GitHub refuses are both survivable. A position it rejects
+        is usually a line that has moved. An event it rejects is usually the
+        token: GitHub does not permit the Actions token to approve a pull
+        request, and nobody may approve their own. Each fallback gives up one
+        of those and keeps the rest, because the verdict still reaches the
+        exit code and losing the review entirely does not.
         """
         url = (
             f"{self._base_url}/repos/{self._repo}"
             f"/pulls/{self._pr_number}/reviews"
         )
-        payload: dict[str, Any] = {
-            "body": body,
-            "event": event,
-            "commit_id": head_sha,
-            "comments": [
-                _github_comment(comment) for comment in comments
-            ],
-        }
-        try:
-            data = await self._request("POST", url, json=payload)
-        except VCSResponseError:
-            if not comments:
-                raise
-            # A position the API rejects, typically a line that has moved,
-            # must not cost the whole review. Retry with the summary alone.
-            logger.warning(
-                "GitHub rejected %d inline comment position(s); submitting "
-                "the summary without them",
-                len(comments),
-            )
-            payload["comments"] = []
-            data = await self._request("POST", url, json=payload)
-        return data["id"]
+        rendered = [_github_comment(comment) for comment in comments]
+
+        attempts: list[tuple[str, list[dict[str, Any]]]] = [(event, rendered)]
+        if rendered:
+            attempts.append((event, []))
+        if event != "COMMENT":
+            attempts.append(("COMMENT", rendered))
+            if rendered:
+                attempts.append(("COMMENT", []))
+
+        error: VCSResponseError | None = None
+        for attempt_event, attempt_comments in attempts:
+            if error is not None:
+                logger.warning(
+                    "GitHub rejected the review (%s); retrying as %s with "
+                    "%d inline comment(s)",
+                    error, attempt_event, len(attempt_comments),
+                )
+            try:
+                data = await self._request("POST", url, json={
+                    "body": body,
+                    "event": attempt_event,
+                    "commit_id": head_sha,
+                    "comments": attempt_comments,
+                })
+            except VCSResponseError as e:
+                error = e
+                continue
+            return data["id"]
+
+        assert error is not None
+        raise error
 
     def _graphql_url(self) -> str:
         """GraphQL lives beside the REST root, not under it.

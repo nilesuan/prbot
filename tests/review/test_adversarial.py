@@ -203,7 +203,7 @@ class TestEnablingTheAgent:
 
 class TestFormatterShowsTheScenario:
     def test_the_scenario_appears_in_the_comment(self) -> None:
-        from prbot.review.formatter import _format_findings_table
+        from prbot.review.formatter import _format_issue_block
         from prbot.review.scorer import ScoredFinding
 
         scored = ScoredFinding(
@@ -228,6 +228,6 @@ class TestFormatterShowsTheScenario:
             band="reported",
             deduction=14.25,
         )
-        out = _format_findings_table([scored])
-        assert "How it breaks" in out
+        out = _format_issue_block(scored)
+        assert "**Impact:**" in out
         assert "vendor/lib/x.go is reviewed" in out

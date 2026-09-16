@@ -259,11 +259,14 @@ class PrBotConfig(BaseModel, frozen=True):
     api_base_url: str | None = None
     secret_name: str | None = None
     draft_behavior: Literal["skip", "review"] = "skip"
-    # C1/C2: "comment" posts a single summary comment, which is the
-    # long-standing behaviour. "review" submits a platform review, so
-    # findings land on their lines and the verdict reaches the pull
-    # request rather than only the exit code.
-    review_mode: Literal["comment", "review"] = "comment"
+    # C1/C2: "review" submits a platform review, so each finding lands as a
+    # comment on the line it is about and the verdict reaches the pull
+    # request rather than only the exit code. That is the default, because a
+    # review nobody reads is a review that did not happen and one summary
+    # blob at the bottom of the page is what nobody reads. "comment" keeps
+    # the older behaviour of a single summary comment, for a token that
+    # cannot submit reviews or a team that does not want line comments.
+    review_mode: Literal["comment", "review"] = "review"
     # B2: whether the patch content is datamarked. Metadata is always
     # datamarked, since the title, body and author are author-written
     # prose and the obvious injection vector. Whether marking the patch
