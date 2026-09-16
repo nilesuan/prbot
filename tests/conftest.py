@@ -178,6 +178,21 @@ class FakeVCSAdapter:
         self.submitted_reviews.append((body, event, list(comments)))
         return 900
 
+    @property
+    def posted_text(self) -> str:
+        """Everything prbot put on the pull request, summary and inline.
+
+        Under review mode a finding's description lives in its inline
+        comment, so a test about what did or did not reach the pull request
+        has to look at both.
+        """
+        bodies = list(self.posted_comments)
+        bodies += [body for _, body in self.updated_comments]
+        for _, _, comments in self.submitted_reviews:
+            bodies += [getattr(c, "body", "") for c in comments]
+        bodies += [body for _, body in self.replies]
+        return "\n\n".join(bodies)
+
     async def close(self) -> None:
         self.calls.append("close")
 

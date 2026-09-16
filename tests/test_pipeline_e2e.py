@@ -253,9 +253,10 @@ class TestSafetyLayersRunInOrder:
             await run_pipeline(_config())
 
         body = adapter.posted_comments[0]
-        # One table row and one detail heading, not two of each
-        assert body.count("Bare except swallows the error") == 2
-        assert "both agents" in body
+        # One index row. The detail is written once, in the inline comment.
+        assert body.count("Bare except swallows the error") == 1
+        _, _, inline = adapter.submitted_reviews[0]
+        assert "reported by 2 agents" in inline[0].body
 
     @pytest.mark.asyncio
     async def test_a_secret_in_a_finding_is_redacted(self) -> None:
@@ -268,7 +269,7 @@ class TestSafetyLayersRunInOrder:
         with _pipeline(adapter, bedrock):
             await run_pipeline(_config())
 
-        body = adapter.posted_comments[0]
+        body = adapter.posted_text
         assert "ghp_" + "a" * 36 not in body
         assert "[REDACTED]" in body
 
@@ -366,15 +367,29 @@ class TestReviewMode:
     """C1/C2: findings land on their lines and the verdict reaches the PR."""
 
     @pytest.mark.asyncio
-    async def test_comment_mode_is_the_default(self) -> None:
+    async def test_review_mode_is_the_default(self) -> None:
         adapter = FakeVCSAdapter()
         bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
 
         with _pipeline(adapter, bedrock):
             await run_pipeline(_config())
 
+        assert len(adapter.submitted_reviews) == 1
+        _, _, inline = adapter.submitted_reviews[0]
+        assert len(inline) == 1
+
+    @pytest.mark.asyncio
+    async def test_comment_mode_posts_one_summary_comment(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="comment"))
+
         assert adapter.submitted_reviews == []
         assert len(adapter.posted_comments) == 1
+        # Nothing is anchored, so the summary has to carry the detail.
+        assert "**Problem:**" in adapter.posted_comments[0]
 
     @pytest.mark.asyncio
     async def test_review_mode_submits_a_review(self) -> None:
@@ -387,10 +402,42 @@ class TestReviewMode:
         assert len(adapter.submitted_reviews) == 1
         body, event, inline = adapter.submitted_reviews[0]
         assert event == "COMMENT"
-        assert "Q-ERR-01" in body
+        # The review carries the verdict and the comments. The index and the
+        # state record are in the summary comment, which can be rewritten.
+        assert "COMMENT" in body
+        assert "1 medium" in body
+        assert "| Severity" not in body
         assert len(inline) == 1
         assert inline[0].path == "src/example.py"
         assert inline[0].line == 2
+        assert "Q-ERR-01" in inline[0].body
+
+    @pytest.mark.asyncio
+    async def test_the_summary_is_a_comment_not_the_review_body(self) -> None:
+        """C3: a review cannot be rewritten, and is not where the next run
+        looks for the state record."""
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        assert len(adapter.posted_comments) == 1
+        summary = adapter.posted_comments[0]
+        assert "| Severity" in summary
+        assert "<!-- prbot:state:" in summary
+
+    @pytest.mark.asyncio
+    async def test_the_summary_is_rewritten_in_place(self) -> None:
+        adapter = FakeVCSAdapter(bot_comment=(55, "old body"))
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        assert adapter.posted_comments == []
+        assert len(adapter.updated_comments) == 1
+        assert adapter.updated_comments[0][0] == 55
 
     @pytest.mark.asyncio
     async def test_a_blocker_requests_changes_on_the_pull_request(self) -> None:
@@ -728,7 +775,7 @@ class TestFindingOutcomes:
         bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
 
         with _pipeline(adapter, bedrock):
-            await run_pipeline(_config())
+            await run_pipeline(_config(review_mode="comment"))
 
         assert "list_review_threads" not in adapter.calls
         assert adapter.replies == []
@@ -794,8 +841,10 @@ class TestInlineBodiesAreRedacted:
             if payload.get("event") == "review.audit":
                 audit = payload
         assert audit is not None
-        # The summary and the inline body each carried the secret
-        assert audit["secrets_redacted"] >= 2
+        # Exactly one: the description is written in the inline body and
+        # nowhere else, so a count of two would mean the summary had started
+        # repeating the detail again.
+        assert audit["secrets_redacted"] == 1
 
     @pytest.mark.asyncio
     async def test_ordinary_inline_text_is_untouched(self) -> None:
@@ -865,7 +914,7 @@ class TestChunkScopedValidation:
             )
 
         body = adapter.posted_comments[0]
-        assert "_No findings to report._" in body
+        assert "No issues found." in body
 
     @pytest.mark.asyncio
     async def test_a_finding_in_its_own_chunk_survives(self) -> None:

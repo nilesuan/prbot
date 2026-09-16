@@ -90,6 +90,32 @@ include:
 - `confidence`: 0-100, how sure you are that the scenario is reachable
 - `suggestion`: the smallest change that removes the failure
 
+## Reporting Rules
+
+Every finding is posted as a comment on the line it is about, in one fixed
+shape. Three of your fields are rendered under fixed labels:
+
+- `description` becomes **Problem:** - what is wrong, and why that is wrong.
+- `failure_scenario` becomes **Impact:** - the concrete trigger, then the
+  wrong outcome, in that order.
+- `suggestion` becomes **Fix:** - the smallest change that removes the defect.
+
+Report only what went wrong. None of the following may appear in any field:
+
+- Praise or reassurance of any kind.
+- A summary of what the change does. The author wrote it.
+- Restating the code back, when the comment is already attached to that code.
+- Questions to the author. A finding is a claim, not a question. If you cannot
+  assert it, lower the confidence until it is filtered out.
+- Hedging stacks such as "you might possibly want to consider perhaps".
+- Second person coaching, next steps, or anything addressed to the author
+  rather than about the code.
+- Your own reasoning process, retries or uncertainty written out as prose.
+- Emoji, headings, horizontal rules, tables or links. Write plain sentences.
+
+`title` names the defect as a noun phrase under 80 characters: "Hardcoded AWS
+secret key", not "Consider using Secrets Manager", and never a question.
+
 ## Confidence Calibration
 
 Confidence here means one thing: how sure you are that the failure scenario is

@@ -83,20 +83,46 @@ prbot doesn't just review code quality -- it checks that PRs are complete:
 - Missing changelog entries for non-trivial changes
 - Outdated examples when public APIs change
 
-### Inline Comments and Real Reviews
+### One Issue, One Comment
 
-By default prbot posts one summary comment. Set `PRBOT_REVIEW_MODE=review` and
-it submits a platform review instead: each finding that lands on a line the
-diff covers becomes a comment on that line, and the verdict reaches the pull
-request rather than only the exit code. On GitHub that is one review with
-`event: APPROVE`, `COMMENT` or `REQUEST_CHANGES`, pinned to the commit
-reviewed. On GitLab it is a summary note, one positioned discussion per
-finding, and approve or unapprove.
+Every finding is posted as a comment on the line it is about, and every one of
+those comments has the same shape:
 
-A finding whose lines fall outside the diff stays in the summary rather than
-being anchored to a line the platform would reject. An inline position the
-platform refuses, usually a line that has moved, is dropped with a warning:
-losing one anchor is acceptable, losing the review is not.
+```markdown
+**`S-CRED-01`** · critical · 92% confidence
+
+**Problem:** The AWS secret access key is written as a string literal in the
+client constructor instead of being read from the credentials provider.
+
+**Impact:** Anyone with read access to the repository, including every fork
+and the full git history, obtains live production credentials.
+
+**Fix:** Delete the literal and let boto3 resolve credentials from the default
+provider chain.
+```
+
+Problem, Impact, Fix. Nothing else - no praise, no summary of what the change
+does, no questions for the author. The full contract, including what the
+summary comment contains and what may never appear in any of it, is
+[`docs/review-output-template.md`](docs/review-output-template.md).
+
+The summary comment is an index: the verdict, a severity count, and one table
+row per issue pointing at its line. It is found and rewritten in place on every
+run, so a pull request has one of them however many times prbot has looked at
+it. A finding whose lines fall outside the diff has no line to sit on, so the
+summary carries it in full instead - detail is written in exactly one place,
+never twice.
+
+Alongside that, prbot submits a platform review carrying the verdict: on GitHub
+one review with `event: APPROVE`, `COMMENT` or `REQUEST_CHANGES` pinned to the
+commit reviewed, on GitLab a note plus approve or unapprove. An inline position
+the platform refuses, usually a line that has moved, is dropped with a warning,
+and an event it refuses - GitHub does not permit the Actions token to approve -
+falls back to `COMMENT`. Losing an anchor or an event is acceptable; losing the
+review is not.
+
+Set `PRBOT_REVIEW_MODE=comment` to turn the line comments off and get the
+summary alone, which is what a token that cannot submit reviews needs.
 
 ### Surrounding Code
 
@@ -418,7 +444,7 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Max estimated cost per review |
 | `PRBOT_TIMEOUT_SECONDS` | `300` | Review timeout |
 | `PRBOT_DRAFT_BEHAVIOR` | `skip` | `skip` or `review` for draft PRs |
-| `PRBOT_REVIEW_MODE` | `comment` | `comment` for one summary comment, `review` for a platform review with inline comments |
+| `PRBOT_REVIEW_MODE` | `review` | `review` posts each finding on its line; `comment` posts the summary alone |
 | `PRBOT_FORCE_REVIEW` | `false` | Review again even if this commit was already reviewed |
 | `PRBOT_EXCLUDED_PATTERNS` | *(none)* | Comma-separated gitignore-style patterns to exclude |
 | `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |

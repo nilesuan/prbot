@@ -38,9 +38,12 @@ class Finding:
     severity: Literal["critical", "high", "medium", "low", "info"]
     confidence: int  # 0-100
     suggestion: str = ""
-    # The concrete trigger and the wrong outcome. Required of the
-    # adversarial agent, which exists to produce findings that can be
-    # checked rather than argued; empty for the checklist agents.
+    # The concrete trigger and the wrong outcome. Rendered as the Impact
+    # line of every comment, so it is asked of every agent and not only of
+    # the adversarial one: a finding whose consequence cannot be stated is
+    # one the reader cannot weigh. Still defaulted, because the renderer
+    # drops the line rather than printing an empty label when a model
+    # ignores the instruction.
     failure_scenario: str = ""
     # Which agents reported this defect. Two agents arriving at the same
     # finding independently is evidence, and it is the only way to tell a
@@ -87,7 +90,8 @@ FINDING_JSON_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "required": [
                     "check_id", "title", "description",
-                    "file_path", "line_start", "line_end",
+                    "failure_scenario", "file_path",
+                    "line_start", "line_end",
                     "severity", "confidence", "suggestion",
                 ],
                 "additionalProperties": False,
@@ -111,8 +115,9 @@ FINDING_JSON_SCHEMA: dict[str, Any] = {
                     "failure_scenario": {
                         "type": "string",
                         "description": (
-                            "Concrete trigger then wrong outcome. Required "
-                            "for X-* checks; leave empty otherwise."
+                            "Concrete trigger then wrong outcome, in that "
+                            "order. Rendered as the Impact line of the "
+                            "comment, so every finding needs one."
                         ),
                     },
                 },
