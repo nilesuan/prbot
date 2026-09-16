@@ -991,3 +991,59 @@ class TestForgedThreadsAreIgnoredEndToEnd:
 
         assert adapter.replies == []
         assert adapter.resolved == []
+
+
+class TestBorderlineFindingsAreAnchored:
+    """Inline comments were starved by the reporting threshold (D7).
+
+    build_inline_comments only ever received the `reported` band, and across
+    19 audited production reviews exactly one finding reached it. prbot has
+    therefore posted zero inline comments in its entire life, across 2,272
+    notes, while both consuming repositories had review mode on and
+    only_allow_merge_if_all_discussions_are_resolved set. The gate the
+    templates describe was decorative because nothing ever anchored.
+    """
+
+    @staticmethod
+    def _finding(confidence: int, check_id: str, line: int = 2) -> dict:
+        return {
+            "check_id": check_id,
+            "title": f"Defect {check_id}",
+            "description": "d",
+            "failure_scenario": "trigger then outcome",
+            "file_path": "src/example.py",
+            "line_start": line,
+            "line_end": line,
+            "severity": "medium",
+            "confidence": confidence,
+            "suggestion": "s",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_borderline_finding_gets_its_own_thread(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response(  # noqa: E731
+            [self._finding(60, "Q-ARCH-01")],
+        )
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        inline = adapter.submitted_reviews[-1][2]
+        assert inline, (
+            "a 60%-confidence finding is shown in the summary but never "
+            "anchored, so it cannot hold a merge"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_hidden_finding_is_not_anchored(self) -> None:
+        """The floor is for findings worth showing, not for everything."""
+        adapter = FakeVCSAdapter()
+        bedrock = lambda **_: _bedrock_response(  # noqa: E731
+            [self._finding(20, "Q-ARCH-01")],
+        )
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        assert not adapter.submitted_reviews[-1][2]

@@ -587,8 +587,18 @@ async def run_pipeline(config: PrBotConfig) -> int:
             threads = await adapter.list_review_threads()
             # SEC-AUTH-02: the finding marker is not identity, so only
             # threads this token actually wrote are reconciled.
+            # D7: anchor everything worth showing, not only what cleared
+            # the reporting threshold. Inline comments used to be built from
+            # `reported` alone, and with the threshold at its default almost
+            # nothing reaches that band: across 19 audited production reviews
+            # one finding did, so prbot had never posted an inline comment at
+            # all while both repositories had review mode on and their merges
+            # gated on unresolved discussions. A borderline finding is shown
+            # in the summary already; giving it a thread puts it on the line
+            # it is about and lets it be resolved or fixed like any other.
+            anchorable = [*reported, *borderline]
             outcomes_report = reconcile(
-                reported, threads, bot_user=authenticated_user,
+                anchorable, threads, bot_user=authenticated_user,
             )
             outcome_counts = outcomes_report.counts()
             inline = build_inline_comments(
@@ -598,9 +608,16 @@ async def run_pipeline(config: PrBotConfig) -> int:
             # that just got an inline comment is detailed there. What is left
             # is the findings the diff cannot anchor: the summary is the only
             # place their description can go, so the summary is given them.
-            unanchored = unanchored_findings(
-                outcomes_report.new, filtered_diff,
-            )
+            # Only reported findings earn full detail in the summary. A
+            # borderline one that cannot be anchored is already listed in the
+            # collapsed section, and repeating it in full would say the same
+            # thing twice at two different prominences.
+            unanchored = [
+                sf for sf in unanchored_findings(
+                    outcomes_report.new, filtered_diff,
+                )
+                if sf.band == "reported"
+            ]
             logger.info(
                 "review.inline new=%d persisting=%d fixed=%d resolved=%d "
                 "anchored=%d unanchored=%d",
