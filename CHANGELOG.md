@@ -5,6 +5,68 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-16
+
+Findings now land on the lines they are about, and everything prbot writes has
+one fixed shape. The contract lives in
+[`docs/review-output-template.md`](docs/review-output-template.md): the prompts
+and the renderer are implementations of that document rather than three places
+that each decide the format for themselves.
+
+### Changed
+
+- **`PRBOT_REVIEW_MODE` now defaults to `review`.** Each finding that lands on
+  a line the diff covers is posted as a comment on that line. Set
+  `PRBOT_REVIEW_MODE=comment` for the previous behaviour of one summary
+  comment, which is what a token that cannot submit reviews needs.
+- **Every issue has one shape, everywhere.** Header, then `**Problem:**`,
+  `**Impact:**` and `**Fix:**` in that order, rendered by a single function so
+  an inline comment and a summary entry cannot drift apart. The old
+  `**How it breaks:**` and `**Suggestion:**` labels are gone.
+- **The summary comment indexes rather than repeats.** It carries the verdict,
+  a severity count line, and one table row per issue giving its check, location
+  and confidence. The per-finding detail sections underneath the table are
+  gone: that detail is in the inline comment. A finding whose lines fall
+  outside the diff has no inline thread, so the summary carries it in full
+  under `Not anchored to a line` - detail is written in exactly one place.
+- **`failure_scenario` is required of every agent**, not only the adversarial
+  one, because it is rendered as the `**Impact:**` line. The general and
+  security check specs ask for it, and the schema lists it as required. A
+  finding that arrives without one still renders, minus that line, rather than
+  printing a bare label.
+- **Every check spec carries `## Reporting Rules`**, which is the list of what
+  may never appear in a finding: praise, a summary of what the change does,
+  restating the code, questions to the author, hedging stacks, coaching, and
+  emoji or links in the prose.
+- The empty-review body is now `No issues found.` rather than
+  `_No findings to report._`, and the em dash separators in the header, agent
+  status and error lines are now middots.
+- An oversized comment is rebuilt with less in it rather than cut apart as
+  rendered markdown, so every attempt is well-formed and each thing dropped is
+  stated. `truncate_comment()` is now the last-resort hard cut only and takes
+  `(comment, limit)`.
+
+### Fixed
+
+- **The summary is no longer the platform review body.** A review object cannot
+  be found and rewritten by a later run, so review mode reposted the whole
+  summary on every push and left the state record somewhere `find_bot_comment`
+  does not look, which is what the unchanged-commit skip reads. The summary is
+  now one comment, rewritten in place, in both modes; the review carries the
+  verdict, the inline comments and a short body pointing at it.
+- **A review event the platform refuses no longer fails the run.** GitHub does
+  not permit the Actions token to approve a pull request and nobody may approve
+  their own, so an `APPROVE` verdict returned 422 and exited 3. The adapter now
+  retries without the inline positions, then as a plain `COMMENT`, keeping as
+  much as each attempt allows.
+
+### Added
+
+- `docs/review-output-template.md`, the output contract, and
+  `tests/review/test_output_template.py`, which holds the renderer to it.
+- `unanchored_findings()` and `format_review_event_body()` in
+  `prbot.review.formatter`.
+
 ## [0.4.1] - 2026-09-16
 
 The GitLab CI template had never worked. Both defects were found by running
