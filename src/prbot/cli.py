@@ -172,6 +172,7 @@ def _apply_safety(
     chunks: list[Any],
     filtered_diff: Any,
     agent_count: int,
+    context_lines: int = 0,
 ) -> tuple[list[Any], int, int]:
     """Validate findings against their own chunk, then redact PII.
 
@@ -201,7 +202,9 @@ def _apply_safety(
 
         if findings:
             pre_count = len(findings)
-            findings = validate_findings_against_diff(findings, source_chunk)
+            findings = validate_findings_against_diff(
+                findings, source_chunk, context_lines,
+            )
             hallucinations_removed += pre_count - len(findings)
 
         cleaned = []
@@ -522,6 +525,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
         # prose field (GEN-ARCH-01).
         outcomes, hallucinations_removed, pii_redacted_total = _apply_safety(
             outcomes, chunks, filtered_diff, len(agents),
+            config.context_lines,
         )
 
         # C4: apply suppressions after deduplication so one rule silences a

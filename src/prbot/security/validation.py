@@ -17,6 +17,9 @@ from prbot.vcs.models import PRDiff
 logger = logging.getLogger(__name__)
 
 # Confidence penalty for findings referencing lines outside changed ranges
+# The most confidence a finding can lose for citing lines the agent was
+# never shown. It is charged in full only well beyond the context window;
+# see _distance_penalty.
 HALLUCINATION_PENALTY = 40
 
 
@@ -69,15 +72,41 @@ def _build_line_index(diff: PRDiff) -> dict[str, set[int] | None]:
     return index
 
 
+def _distance_penalty(gap: int, context_lines: int) -> int:
+    """Confidence to remove for citing a line `gap` lines outside a hunk.
+
+    The flat penalty this replaces was 40 points for any gap at all, which
+    is larger than the whole borderline band and enough on its own to drive
+    a 90%-confidence finding below the reporting threshold. It was charged
+    even when the agent had been shown the line: `context_lines` puts the
+    enclosing declaration in the prompt, so a finding a few lines outside a
+    hunk is reasoning about code the agent actually read.
+
+    The rule follows from that. Inside the window the agent was given the
+    code, so nothing is charged. Beyond it the finding cites code the agent
+    never saw, and the charge rises with how far outside it went, reaching
+    the full penalty one window further out.
+
+    With context off the window is empty and any gap is charged in full,
+    which is the behaviour that shipped before.
+    """
+    if gap <= context_lines:
+        return 0
+    beyond = gap - context_lines
+    scale = max(context_lines, 1)
+    return min(HALLUCINATION_PENALTY, round(HALLUCINATION_PENALTY * beyond / scale))
+
+
 def validate_findings_against_diff(
     findings: list[Finding],
     diff: PRDiff,
+    context_lines: int = 0,
 ) -> list[Finding]:
     """Validate findings against diff content (S7 Layer 4).
 
     - Removes findings referencing non-existent files
-    - Penalizes findings for lines outside changed ranges
-      by reducing confidence by HALLUCINATION_PENALTY
+    - Reduces confidence for lines outside the region the agent was shown,
+      in proportion to how far outside they fall
 
     Returns a new list of validated findings.
     """
@@ -107,18 +136,29 @@ def validate_findings_against_diff(
         )
 
         if not finding_lines & changed_lines:
-            # No overlap — penalize confidence
-            new_confidence = max(0, finding.confidence - HALLUCINATION_PENALTY)
-            logger.warning(
-                "Penalizing finding %s: lines %d-%d not in changed "
-                "range (confidence %d → %d)",
-                finding.id,
-                finding.line_start,
-                finding.line_end,
-                finding.confidence,
-                new_confidence,
-            )
-            finding = replace(finding, confidence=new_confidence)
+            # Distance to the nearest reviewed line, which with several
+            # hunks need not be the first or the last of them.
+            gap = min(
+                min(
+                    abs(finding.line_start - covered),
+                    abs(finding.line_end - covered),
+                )
+                for covered in changed_lines
+            ) if changed_lines else HALLUCINATION_PENALTY
+            penalty = _distance_penalty(gap, context_lines)
+            if penalty:
+                new_confidence = max(0, finding.confidence - penalty)
+                logger.warning(
+                    "Penalizing finding %s: lines %d-%d are %d lines outside "
+                    "the reviewed region (confidence %d → %d)",
+                    finding.id,
+                    finding.line_start,
+                    finding.line_end,
+                    gap,
+                    finding.confidence,
+                    new_confidence,
+                )
+                finding = replace(finding, confidence=new_confidence)
 
         validated.append(finding)
 

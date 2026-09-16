@@ -260,3 +260,77 @@ class TestValidationCoversTheWholeHunk:
         finding = self._finding(1, 1)
         finding = replace(finding, file_path="src/other.py")
         assert validate_findings_against_diff([finding], self._diff()) == []
+
+
+class TestPenaltyIsProportionateToDistance:
+    """The flat 40-point penalty was larger than the whole borderline band.
+
+    Any finding whose lines fell outside a hunk lost 40 confidence points,
+    which is more than the 15-point gap between reported and borderline and
+    enough on its own to drive a 90%-confidence finding below the threshold.
+    It was also charged against agents that had been shown the surrounding
+    code: context_lines now puts the enclosing declaration in the prompt, so
+    a finding about a line just outside a hunk is reasoning about code the
+    agent actually read, not evidence of hallucination.
+    """
+
+    @staticmethod
+    def _diff() -> PRDiff:
+        # one hunk covering new-side lines 100-104
+        patch = (
+            "@@ -100,5 +100,5 @@\n"
+            " a\n b\n-c\n+c2\n d\n e\n"
+        )
+        return PRDiff(
+            files=[FileDiff(path="f.py", status="modified", patch=patch)],
+        )
+
+    @staticmethod
+    def _finding(line_start: int, line_end: int, confidence: int = 90):
+        return Finding(
+            id="1", category="general", check_id="Q-ARCH-01", title="t",
+            description="d", file_path="f.py",
+            line_start=line_start, line_end=line_end,
+            severity="medium", confidence=confidence,
+        )
+
+    def test_inside_the_hunk_is_not_penalised(self) -> None:
+        out = validate_findings_against_diff(
+            [self._finding(101, 102)], self._diff(), context_lines=40,
+        )
+        assert out[0].confidence == 90
+
+    def test_inside_the_context_window_is_not_penalised(self) -> None:
+        """The agent was shown these lines, so citing them is not a guess."""
+        out = validate_findings_against_diff(
+            [self._finding(130, 131)], self._diff(), context_lines=40,
+        )
+        assert out[0].confidence == 90
+
+    def test_just_beyond_the_window_loses_a_little(self) -> None:
+        out = validate_findings_against_diff(
+            [self._finding(150, 150)], self._diff(), context_lines=40,
+        )
+        assert 0 < 90 - out[0].confidence < HALLUCINATION_PENALTY
+
+    def test_far_beyond_the_window_loses_the_full_penalty(self) -> None:
+        out = validate_findings_against_diff(
+            [self._finding(900, 900)], self._diff(), context_lines=40,
+        )
+        assert out[0].confidence == 90 - HALLUCINATION_PENALTY
+
+    def test_penalty_grows_with_distance(self) -> None:
+        near = validate_findings_against_diff(
+            [self._finding(150, 150)], self._diff(), context_lines=40,
+        )[0].confidence
+        far = validate_findings_against_diff(
+            [self._finding(170, 170)], self._diff(), context_lines=40,
+        )[0].confidence
+        assert far < near
+
+    def test_without_context_the_old_behaviour_is_preserved(self) -> None:
+        """With context off, any line outside a hunk is a full penalty."""
+        out = validate_findings_against_diff(
+            [self._finding(150, 150)], self._diff(), context_lines=0,
+        )
+        assert out[0].confidence == 90 - HALLUCINATION_PENALTY
