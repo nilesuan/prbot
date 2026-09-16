@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import logging
 import sys
 import uuid
@@ -531,7 +532,16 @@ async def run_pipeline(config: PrBotConfig) -> int:
         # C4: apply suppressions after deduplication so one rule silences a
         # defect both agents reported, and before scoring so a suppressed
         # finding does not deduct.
+        # What the agents returned, before anything downstream removes a
+        # finding. hallucinations_removed has already been taken out of
+        # outcomes by _apply_safety, so it is added back to get the total the
+        # comment has to account for (D5).
+        produced_count = sum(
+            len(o.findings) for o in outcomes if isinstance(o, AgentResult)
+        ) + hallucinations_removed
+
         merged = deduplicate_findings(outcomes)
+        merged_count = produced_count - hallucinations_removed - len(merged)
         kept, suppressed = apply_suppressions(merged, config.suppress)
         suppressed_count = len(suppressed)
         if suppressed_count:
@@ -545,6 +555,10 @@ async def run_pipeline(config: PrBotConfig) -> int:
                 blocker_threshold=config.blocker_threshold,
             )
         )
+        # The real de-duplication happens above, on every agent's findings,
+        # not inside score_findings, which is handed one already-merged
+        # result. The count therefore has to be put back on the score here.
+        score = dataclasses.replace(score, merged_count=merged_count)
         verdict = determine_verdict(
             outcomes, reported, score,
             blocker_confidence=config.blocker_threshold,
@@ -633,6 +647,8 @@ async def run_pipeline(config: PrBotConfig) -> int:
             fixed_count=outcome_counts.get("findings_fixed", 0),
             unanchored=unanchored,
             inline_enabled=config.review_mode == "review",
+            produced_count=produced_count,
+            dropped_count=hallucinations_removed,
         )
         comment, secret_count = redact_secrets(comment)
 

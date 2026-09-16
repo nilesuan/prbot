@@ -151,7 +151,9 @@ def _merge(a: Finding, b: Finding) -> Finding:
     )
 
 
-def deduplicate_findings(outcomes: list[AgentOutcome]) -> list[Finding]:
+def deduplicate_findings(
+    outcomes: list[AgentOutcome],
+) -> list[Finding]:
     """Collapse findings that describe the same defect (B1).
 
     score_findings previously concatenated every agent's findings, so a
@@ -225,6 +227,8 @@ class ReviewScore:
     total_deductions: float
     finding_count: int
     critical_override: bool
+    # How many reports were collapsed into another as one defect (D1).
+    merged_count: int = 0
 
 
 def classify_confidence_band(
@@ -273,7 +277,16 @@ def score_findings(
     hidden_count = 0
     critical_override = False
 
-    for finding in deduplicate_findings(outcomes):
+    # How many reports were collapsed into another as one defect. A reader
+    # told the agents produced six findings and shown four needs the other
+    # two accounted for, so the count is carried into the comment.
+    produced = sum(
+        len(o.findings) for o in outcomes if isinstance(o, AgentResult)
+    )
+    deduplicated = deduplicate_findings(outcomes)
+    merged_count = produced - len(deduplicated)
+
+    for finding in deduplicated:
         scored = ScoredFinding.from_finding(finding, threshold)
 
         if scored.band == "reported":
@@ -303,6 +316,7 @@ def score_findings(
         total_deductions=total_deductions,
         finding_count=len(reported) + len(borderline) + hidden_count,
         critical_override=critical_override,
+        merged_count=merged_count,
     )
 
     if hidden_count > 0:

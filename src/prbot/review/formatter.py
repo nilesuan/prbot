@@ -226,6 +226,8 @@ def format_review_comment(
     *,
     unanchored: list[ScoredFinding] | None = None,
     inline_enabled: bool = False,
+    produced_count: int = 0,
+    dropped_count: int = 0,
 ) -> str:
     """Format the summary comment (G-28, S83, template section 5).
 
@@ -280,6 +282,15 @@ def format_review_comment(
             _format_agent_status(outcomes),
             _format_footer(
                 hidden_count, state_html, suppressed_count, fixed_count,
+                reconciliation=_format_reconciliation(
+                    produced_count=produced_count,
+                    merged_count=score.merged_count,
+                    dropped_count=dropped_count,
+                    suppressed_count=suppressed_count,
+                    hidden_count=hidden_count,
+                    borderline_count=len(borderline),
+                    reported_count=len(reported),
+                ),
             ),
         ]
         return "\n\n".join(s for s in sections if s)
@@ -572,16 +583,61 @@ def _format_agent_status(outcomes: list[AgentOutcome]) -> str:
     return "\n".join(lines)
 
 
+def _format_reconciliation(
+    *,
+    produced_count: int,
+    merged_count: int,
+    dropped_count: int,
+    suppressed_count: int,
+    hidden_count: int,
+    borderline_count: int,
+    reported_count: int,
+) -> str:
+    """One line accounting for every finding the agents produced (D5).
+
+    The comment used to have three silent sinks. De-duplication collapsed
+    findings without saying so, the diff check deleted findings naming a
+    file outside the diff to a log line nobody reads, and a suppression rule
+    removed them quietly. A reader told in Agent Status that an agent
+    produced four findings, and then shown three, had no way to learn what
+    happened to the fourth, and no way to tell a filtered review from a
+    clean one.
+
+    Printed only when something was in fact lost between what the agents
+    returned and what is on the page, so a clean review does not grow a line
+    of accounting noise.
+    """
+    shown = reported_count + borderline_count
+    lost = merged_count + dropped_count + suppressed_count + hidden_count
+    if not lost or not produced_count:
+        return ""
+
+    parts = [f"{produced_count} produced"]
+    if merged_count:
+        parts.append(f"{merged_count} merged as one defect")
+    if dropped_count:
+        parts.append(f"{dropped_count} outside the diff")
+    if suppressed_count:
+        parts.append(f"{suppressed_count} suppressed by configuration")
+    if hidden_count:
+        parts.append(f"{hidden_count} hidden as low confidence")
+    parts.append(f"{shown} shown")
+    return f"_Findings: {' · '.join(parts)}._"
+
+
 def _format_footer(
     hidden_count: int,
     state_html: str,
     suppressed_count: int = 0,
     fixed_count: int = 0,
+    reconciliation: str = "",
 ) -> str:
     """Format footer with metadata, disclaimer, and state record."""
     lines = ["---"]
 
-    if hidden_count > 0:
+    if reconciliation:
+        lines.append(reconciliation)
+    elif hidden_count > 0:
         lines.append(
             f"_{hidden_count} low-confidence findings hidden._",
         )
