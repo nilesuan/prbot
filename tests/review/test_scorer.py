@@ -123,6 +123,44 @@ class TestScoredFinding:
         assert scored.deduction == 0.0
 
 
+class TestBorderlineMovesTheScore:
+    """Half a weight is only half a weight if it reaches the total.
+
+    ScoredFinding.from_finding computed a borderline deduction, but
+    score_findings summed only the reported band, so the deduction was
+    computed and then thrown away and the score stayed at 100.
+    """
+
+    def test_a_borderline_finding_lowers_the_score(self) -> None:
+        result = _make_result([_make_finding(severity="high", confidence=60)])
+        _, borderline, _, score = score_findings([result])
+        assert len(borderline) == 1
+        assert score.clamped_score < 100
+
+    def test_the_total_counts_both_bands(self) -> None:
+        result = _make_result([
+            _make_finding(severity="high", confidence=85),    # reported
+            _make_finding(severity="high", confidence=60),    # borderline
+        ])
+        _, _, _, score = score_findings([result])
+        expected = 15.0 * 0.85 + 15.0 * 0.60 * 0.5
+        assert score.total_deductions == pytest.approx(expected)
+
+    def test_a_surfaced_critical_moves_the_score(self) -> None:
+        """The MR 194 shape: a low-confidence critical must cost something."""
+        result = _make_result(
+            [_make_finding(severity="critical", confidence=38)],
+        )
+        _, _, _, score = score_findings([result])
+        assert score.clamped_score == int(100 - 25.0 * 0.38 * 0.5)
+
+    def test_hidden_findings_still_cost_nothing(self) -> None:
+        result = _make_result([_make_finding(severity="low", confidence=10)])
+        _, _, hidden, score = score_findings([result])
+        assert hidden == 1
+        assert score.clamped_score == 100
+
+
 class TestSeverityFloor:
     """A finding that would lose data is never silently dropped (C3)."""
 

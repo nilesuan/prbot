@@ -302,7 +302,13 @@ def score_findings(
         else:
             hidden_count += 1
 
-    total_deductions = sum(sf.deduction for sf in reported)
+    # Both bands, because a borderline finding's reduced deduction is only a
+    # reduced deduction if it reaches the total. Summing `reported` alone is
+    # how the deduction was computed and then discarded, leaving the score at
+    # 100 with findings on the page.
+    total_deductions = sum(
+        sf.deduction for sf in (*reported, *borderline)
+    )
     raw_score = 100.0 - total_deductions
 
     if critical_override:

@@ -681,3 +681,48 @@ class TestFindingsReconcile:
         )
         assert "4 produced" in body
         assert "1 outside the diff" in body
+
+
+def _clean_outcome() -> AgentResult:
+    return AgentResult(
+        agent="iac",
+        findings=[],
+        token_usage=TokenUsage(1, 1, 0.0),
+        latency_ms=1,
+        model_id="m",
+    )
+
+
+class TestHeaderDoesNotDenyShownFindings:
+    """"No issues found." printed above a red critical is a lie.
+
+    The header keyed off the reported band alone, so once borderline
+    findings began to be shown and scored the summary could assert there was
+    nothing wrong directly above a list saying otherwise.
+    """
+
+    def test_borderline_findings_are_not_no_issues(self) -> None:
+        from prbot.review.formatter import format_review_comment
+
+        body = format_review_comment(
+            ReviewVerdict.COMMENT,
+            _make_score(clamped=91),
+            [],
+            [_make_scored(severity="critical", confidence=38)],
+            0,
+            [_clean_outcome()],
+        )
+        assert "No issues found." not in body
+
+    def test_a_genuinely_clean_review_still_says_so(self) -> None:
+        from prbot.review.formatter import format_review_comment
+
+        body = format_review_comment(
+            ReviewVerdict.APPROVE,
+            _make_score(clamped=100),
+            [],
+            [],
+            0,
+            [_clean_outcome()],
+        )
+        assert "No issues found." in body

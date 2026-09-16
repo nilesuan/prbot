@@ -277,6 +277,7 @@ def format_review_comment(
                 reported,
                 inline_enabled=inline_enabled,
                 unanchored_count=len(detailed) if inline_enabled else 0,
+                borderline_count=len(shown_borderline),
             ),
             detail,
             collapsed,
@@ -414,6 +415,7 @@ def _format_findings_table(
     *,
     inline_enabled: bool = False,
     unanchored_count: int = 0,
+    borderline_count: int = 0,
 ) -> str:
     """The index (template section 5). One row per issue, no detail.
 
@@ -422,6 +424,14 @@ def _format_findings_table(
     what made the old summary unreadable.
     """
     if not reported:
+        # Borderline findings are shown below and count towards the score,
+        # so claiming there are no issues directly above a red critical
+        # would be a plain contradiction. Say what is true instead.
+        if borderline_count:
+            return (
+                f"No issues above the reporting threshold. "
+                f"{borderline_count} borderline finding(s) below."
+            )
         return "No issues found."
 
     lines = [
