@@ -643,6 +643,14 @@ async def run_pipeline(config: PrBotConfig) -> int:
         findings_hash = ReviewStateRecord.compute_findings_hash(
             findings_dicts, review_id,
         )
+        # The comment is rewritten in place, so without carrying the
+        # previous record forward this run silently deletes what prbot said
+        # about the last commit. That is how two APPROVE verdicts at 100/100
+        # on MR 194 became invisible.
+        previous_state = (
+            ReviewStateRecord.from_html_comment(existing[1])
+            if existing else None
+        )
         state_record = ReviewStateRecord(
             review_id=review_id,
             head_sha=metadata.head_sha,
@@ -653,6 +661,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
                 datetime.UTC,
             ).isoformat(),
         )
+        state_record = state_record.superseding(previous_state)
         state_html = state_record.to_html_comment()
 
         # Format comment, redact secrets
@@ -666,6 +675,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
             inline_enabled=config.review_mode == "review",
             produced_count=produced_count,
             dropped_count=hallucinations_removed,
+            history=state_record.history,
         )
         comment, secret_count = redact_secrets(comment)
 

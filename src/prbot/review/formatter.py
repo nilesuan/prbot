@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from prbot.review.identity import finding_fingerprint, marker_for
 from prbot.review.models import (
@@ -228,6 +228,7 @@ def format_review_comment(
     inline_enabled: bool = False,
     produced_count: int = 0,
     dropped_count: int = 0,
+    history: tuple[dict[str, Any], ...] = (),
 ) -> str:
     """Format the summary comment (G-28, S83, template section 5).
 
@@ -280,6 +281,7 @@ def format_review_comment(
             detail,
             collapsed,
             _format_agent_status(outcomes),
+            _format_history(history),
             _format_footer(
                 hidden_count, state_html, suppressed_count, fixed_count,
                 reconciliation=_format_reconciliation(
@@ -580,6 +582,34 @@ def _format_agent_status(outcomes: list[AgentOutcome]) -> str:
         for err in errors:
             lines.append(f"  - {err}")
 
+    return "\n".join(lines)
+
+
+def _format_history(history: tuple[dict[str, Any], ...]) -> str:
+    """The verdicts this comment has replaced (D8).
+
+    prbot updates one comment rather than posting a new one, so without this
+    the only verdict a reader can ever see is the one on the current commit.
+    That hid two APPROVE verdicts at 100/100 on a change that would have
+    destroyed live infrastructure, and it defeats any attempt to measure
+    whether prbot is getting better, because the record of what it said
+    before a fix is deleted by the fix.
+    """
+    if not history:
+        return ""
+    lines = [
+        "<details>",
+        f"<summary>Earlier reviews of this pull request "
+        f"({len(history)})</summary>",
+        "",
+    ]
+    for entry in history:
+        sha = str(entry.get("head_sha", ""))[:8]
+        verdict = _cell(str(entry.get("verdict", "")), 32)
+        score = entry.get("score", "")
+        when = str(entry.get("timestamp", ""))[:19]
+        lines.append(f"- `{sha}` - **{verdict}**, score {score} ({when})")
+    lines.extend(["", "</details>"])
     return "\n".join(lines)
 
 

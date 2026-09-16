@@ -6,6 +6,7 @@ SHA fields are validated against git SHA-1 (40 hex) and SHA-256 (64 hex) formats
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -24,6 +25,13 @@ _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 _STATE_MARKER = "<!-- prbot:state:"
 _STATE_END_MARKER = " -->"
 _STATE_MAX_SIZE = 10 * 1024  # 10KB limit
+
+# How many superseded verdicts a state record carries. prbot rewrites its
+# comment in place, so without this only its most recent verdict survives and
+# what it said about the code before a fix is deleted by the fix. Ten entries
+# is a few hundred bytes against a 10KB budget, and is more revisions than a
+# pull request normally has.
+_HISTORY_LIMIT = 10
 
 
 def _validate_sha(value: str, field_name: str) -> None:
@@ -146,6 +154,29 @@ class ReviewStateRecord:
     verdict: str
     findings_hash: str
     timestamp: str  # ISO 8601
+    # Verdicts this record supersedes, oldest first. prbot updates its
+    # comment rather than posting a new one, so this is the only surviving
+    # trace that it reviewed an earlier commit at all: 13 of 34 audited
+    # production comments had been rewritten, and on MR 194 two APPROVE
+    # verdicts at 100/100 were overwritten by the third review. A bot that
+    # deletes its own history cannot be measured, and its worst result is
+    # the one most likely to be overwritten.
+    history: tuple[dict[str, Any], ...] = ()
+
+    def superseding(
+        self, previous: ReviewStateRecord | None,
+    ) -> ReviewStateRecord:
+        """This record, carrying what the one it replaces had said."""
+        if previous is None:
+            return self
+        entry = {
+            "head_sha": previous.head_sha,
+            "score": previous.score,
+            "verdict": previous.verdict,
+            "timestamp": previous.timestamp,
+        }
+        carried = (*previous.history, entry)[-_HISTORY_LIMIT:]
+        return dataclasses.replace(self, history=carried)
 
     def __post_init__(self) -> None:
         # Validate UUID4 format
@@ -182,6 +213,7 @@ class ReviewStateRecord:
             "verdict": self.verdict,
             "findings_hash": self.findings_hash,
             "timestamp": self.timestamp,
+            **({"history": list(self.history)} if self.history else {}),
         }, separators=(",", ":"))
         return f"{_STATE_MARKER}{payload}{_STATE_END_MARKER}"
 
@@ -216,6 +248,9 @@ class ReviewStateRecord:
                 verdict=data["verdict"],
                 findings_hash=data["findings_hash"],
                 timestamp=data["timestamp"],
+                # Absent in comments written by earlier versions, which must
+                # keep parsing rather than being treated as corrupt.
+                history=tuple(data.get("history") or ()),
             )
         except (json.JSONDecodeError, KeyError, ValueError, TypeError):
             return None
