@@ -106,7 +106,7 @@ Report only what went wrong. None of the following may appear in any field:
 - A summary of what the change does. The author wrote it.
 - Restating the code back, when the comment is already attached to that code.
 - Questions to the author. A finding is a claim, not a question. If you cannot
-  assert it, lower the confidence until it is filtered out.
+  assert it, do not report it.
 - Hedging stacks such as "you might possibly want to consider perhaps".
 - Second person coaching, next steps, or anything addressed to the author
   rather than about the code.
@@ -126,7 +126,17 @@ is what severity is for.
   code the diff calls.
 - **70-89**: The path is clear but one step depends on code not shown.
 - **50-69**: The scenario is plausible and you cannot confirm the trigger.
-- Below 50: do not report it.
+- **30-49**: You cannot confirm the trigger, but the shape of the code admits
+  the failure and the outcome would be serious. Report it at this confidence
+  and name, in the description, the thing you could not confirm.
+- Below 30: do not report it. That is a guess, and a guess costs the reader
+  more than it saves.
+
+Nothing you report is discarded for want of confidence. A finding below the
+reporting threshold is shown with its confidence printed and counts towards
+the score at a reduced weight, and a critical or high finding is always shown
+whatever its confidence. Filing a serious defect low is therefore not a way
+to hedge: it is how the reader learns you suspected it.
 
 ## Scope
 

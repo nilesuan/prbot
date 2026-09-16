@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from prbot.review.identity import finding_fingerprint, marker_for
 from prbot.review.models import (
@@ -226,6 +226,9 @@ def format_review_comment(
     *,
     unanchored: list[ScoredFinding] | None = None,
     inline_enabled: bool = False,
+    produced_count: int = 0,
+    dropped_count: int = 0,
+    history: tuple[dict[str, Any], ...] = (),
 ) -> str:
     """Format the summary comment (G-28, S83, template section 5).
 
@@ -274,12 +277,23 @@ def format_review_comment(
                 reported,
                 inline_enabled=inline_enabled,
                 unanchored_count=len(detailed) if inline_enabled else 0,
+                borderline_count=len(shown_borderline),
             ),
             detail,
             collapsed,
             _format_agent_status(outcomes),
+            _format_history(history),
             _format_footer(
                 hidden_count, state_html, suppressed_count, fixed_count,
+                reconciliation=_format_reconciliation(
+                    produced_count=produced_count,
+                    merged_count=score.merged_count,
+                    dropped_count=dropped_count,
+                    suppressed_count=suppressed_count,
+                    hidden_count=hidden_count,
+                    borderline_count=len(borderline),
+                    reported_count=len(reported),
+                ),
             ),
         ]
         return "\n\n".join(s for s in sections if s)
@@ -401,6 +415,7 @@ def _format_findings_table(
     *,
     inline_enabled: bool = False,
     unanchored_count: int = 0,
+    borderline_count: int = 0,
 ) -> str:
     """The index (template section 5). One row per issue, no detail.
 
@@ -409,6 +424,14 @@ def _format_findings_table(
     what made the old summary unreadable.
     """
     if not reported:
+        # Borderline findings are shown below and count towards the score,
+        # so claiming there are no issues directly above a red critical
+        # would be a plain contradiction. Say what is true instead.
+        if borderline_count:
+            return (
+                f"No issues above the reporting threshold. "
+                f"{borderline_count} borderline finding(s) below."
+            )
         return "No issues found."
 
     lines = [
@@ -572,16 +595,89 @@ def _format_agent_status(outcomes: list[AgentOutcome]) -> str:
     return "\n".join(lines)
 
 
+def _format_history(history: tuple[dict[str, Any], ...]) -> str:
+    """The verdicts this comment has replaced (D8).
+
+    prbot updates one comment rather than posting a new one, so without this
+    the only verdict a reader can ever see is the one on the current commit.
+    That hid two APPROVE verdicts at 100/100 on a change that would have
+    destroyed live infrastructure, and it defeats any attempt to measure
+    whether prbot is getting better, because the record of what it said
+    before a fix is deleted by the fix.
+    """
+    if not history:
+        return ""
+    lines = [
+        "<details>",
+        f"<summary>Earlier reviews of this pull request "
+        f"({len(history)})</summary>",
+        "",
+    ]
+    for entry in history:
+        sha = str(entry.get("head_sha", ""))[:8]
+        verdict = _cell(str(entry.get("verdict", "")), 32)
+        score = entry.get("score", "")
+        when = str(entry.get("timestamp", ""))[:19]
+        lines.append(f"- `{sha}` - **{verdict}**, score {score} ({when})")
+    lines.extend(["", "</details>"])
+    return "\n".join(lines)
+
+
+def _format_reconciliation(
+    *,
+    produced_count: int,
+    merged_count: int,
+    dropped_count: int,
+    suppressed_count: int,
+    hidden_count: int,
+    borderline_count: int,
+    reported_count: int,
+) -> str:
+    """One line accounting for every finding the agents produced (D5).
+
+    The comment used to have three silent sinks. De-duplication collapsed
+    findings without saying so, the diff check deleted findings naming a
+    file outside the diff to a log line nobody reads, and a suppression rule
+    removed them quietly. A reader told in Agent Status that an agent
+    produced four findings, and then shown three, had no way to learn what
+    happened to the fourth, and no way to tell a filtered review from a
+    clean one.
+
+    Printed only when something was in fact lost between what the agents
+    returned and what is on the page, so a clean review does not grow a line
+    of accounting noise.
+    """
+    shown = reported_count + borderline_count
+    lost = merged_count + dropped_count + suppressed_count + hidden_count
+    if not lost or not produced_count:
+        return ""
+
+    parts = [f"{produced_count} produced"]
+    if merged_count:
+        parts.append(f"{merged_count} merged as one defect")
+    if dropped_count:
+        parts.append(f"{dropped_count} outside the diff")
+    if suppressed_count:
+        parts.append(f"{suppressed_count} suppressed by configuration")
+    if hidden_count:
+        parts.append(f"{hidden_count} hidden as low confidence")
+    parts.append(f"{shown} shown")
+    return f"_Findings: {' · '.join(parts)}._"
+
+
 def _format_footer(
     hidden_count: int,
     state_html: str,
     suppressed_count: int = 0,
     fixed_count: int = 0,
+    reconciliation: str = "",
 ) -> str:
     """Format footer with metadata, disclaimer, and state record."""
     lines = ["---"]
 
-    if hidden_count > 0:
+    if reconciliation:
+        lines.append(reconciliation)
+    elif hidden_count > 0:
         lines.append(
             f"_{hidden_count} low-confidence findings hidden._",
         )

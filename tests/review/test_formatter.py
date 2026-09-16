@@ -616,3 +616,113 @@ class TestEveryFailureIsShown:
             AgentError(agent="general", error_type="timeout", message="two"),
         ])
         assert "2" in out
+
+
+class TestFindingsReconcile:
+    """Every finding the agents produced must be accounted for (D5).
+
+    tfmod!245 reported "security: 4 findings" in its Agent Status block,
+    listed three under Borderline, and had no hidden line. One finding was
+    gone with no accounting anywhere in the output. There are three silent
+    sinks - de-duplication, the not-in-the-diff drop, and suppression rules -
+    and none of them said anything in the comment.
+    """
+
+    @staticmethod
+    def _outcome(n: int) -> AgentResult:
+        return AgentResult(
+            agent="security",
+            findings=[_make_finding(confidence=55) for _ in range(n)],
+            token_usage=TokenUsage(100, 10, 0.0),
+            latency_ms=1,
+            model_id="m",
+        )
+
+    def _comment(self, **kwargs: object) -> str:
+        from prbot.review.formatter import format_review_comment
+
+        defaults: dict[str, object] = {
+            "verdict": ReviewVerdict.COMMENT,
+            "score": ReviewScore(100.0, 100, 0.0, 0, False),
+            "reported": [],
+            "borderline": [],
+            "hidden_count": 0,
+            "outcomes": [self._outcome(0)],
+        }
+        defaults.update(kwargs)
+        return format_review_comment(**defaults)  # type: ignore[arg-type]
+
+    def test_the_comment_states_what_became_of_every_finding(self) -> None:
+        body = self._comment(
+            outcomes=[self._outcome(2)],
+            hidden_count=1,
+            produced_count=4,
+            dropped_count=1,
+            suppressed_count=0,
+            score=ReviewScore(100.0, 100, 0.0, 1, False, merged_count=1),
+        )
+        assert "4 produced" in body
+        assert "1 merged" in body
+        assert "1 outside the diff" in body
+        assert "1 hidden" in body
+
+    def test_nothing_is_said_when_nothing_was_lost(self) -> None:
+        """A clean run must not grow a line of accounting noise."""
+        body = self._comment(produced_count=0)
+        assert "produced" not in body
+
+    def test_a_silent_sink_is_visible(self) -> None:
+        """Agents produced 4, three are shown, one vanished."""
+        body = self._comment(
+            outcomes=[self._outcome(3)],
+            borderline=[_make_scored(confidence=60) for _ in range(3)],
+            produced_count=4,
+            dropped_count=1,
+        )
+        assert "4 produced" in body
+        assert "1 outside the diff" in body
+
+
+def _clean_outcome() -> AgentResult:
+    return AgentResult(
+        agent="iac",
+        findings=[],
+        token_usage=TokenUsage(1, 1, 0.0),
+        latency_ms=1,
+        model_id="m",
+    )
+
+
+class TestHeaderDoesNotDenyShownFindings:
+    """"No issues found." printed above a red critical is a lie.
+
+    The header keyed off the reported band alone, so once borderline
+    findings began to be shown and scored the summary could assert there was
+    nothing wrong directly above a list saying otherwise.
+    """
+
+    def test_borderline_findings_are_not_no_issues(self) -> None:
+        from prbot.review.formatter import format_review_comment
+
+        body = format_review_comment(
+            ReviewVerdict.COMMENT,
+            _make_score(clamped=91),
+            [],
+            [_make_scored(severity="critical", confidence=38)],
+            0,
+            [_clean_outcome()],
+        )
+        assert "No issues found." not in body
+
+    def test_a_genuinely_clean_review_still_says_so(self) -> None:
+        from prbot.review.formatter import format_review_comment
+
+        body = format_review_comment(
+            ReviewVerdict.APPROVE,
+            _make_score(clamped=100),
+            [],
+            [],
+            0,
+            [_clean_outcome()],
+        )
+        assert "No issues found." in body

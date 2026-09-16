@@ -175,3 +175,84 @@ class TestCommentLookupHappensOnce:
         await _pipeline(adapter, _config())
         assert adapter.calls.count("find_bot_comment") == 1
         assert adapter.calls.count("post_or_update_comment") == 0
+
+
+class TestReviewHistoryIsPreserved:
+    """prbot overwrites its own comment, so only its last verdict survives.
+
+    13 of the 34 audited production comments had updated_at later than
+    created_at, and the state marker always tracked updated_at. On MR 194
+    prbot reviewed three commits and approved the first two at 100/100 with
+    zero findings; GitLab preserved only the third. Reconstructing what the
+    bot had said about the code before the fixes required the CI audit
+    records, and any attempt to measure whether prbot is improving is
+    defeated by the same thing: the record of what it said before a fix is
+    deleted by the fix.
+    """
+
+    @staticmethod
+    def _record(sha: str, score: int, verdict: str, **kw: object):
+        from prbot.vcs.models import ReviewStateRecord
+
+        return ReviewStateRecord(
+            review_id="4b1e8a1e-0f9c-4b2e-8a3d-1c2f3e4a5b6c",
+            head_sha=sha,
+            score=score,
+            verdict=verdict,
+            findings_hash="0" * 64,
+            timestamp="2026-09-16T02:37:01+00:00",
+            **kw,  # type: ignore[arg-type]
+        )
+
+    def test_a_record_round_trips_its_history(self) -> None:
+        from prbot.vcs.models import ReviewStateRecord
+
+        first = self._record("a" * 40, 100, "APPROVE")
+        second = self._record("b" * 40, 89, "REQUEST_CHANGES").superseding(
+            first,
+        )
+
+        parsed = ReviewStateRecord.from_html_comment(second.to_html_comment())
+        assert parsed is not None
+        assert parsed.head_sha == "b" * 40
+        assert len(parsed.history) == 1
+        assert parsed.history[0]["head_sha"] == "a" * 40
+        assert parsed.history[0]["score"] == 100
+        assert parsed.history[0]["verdict"] == "APPROVE"
+
+    def test_history_accumulates_in_order(self) -> None:
+        r1 = self._record("a" * 40, 100, "APPROVE")
+        r2 = self._record("b" * 40, 100, "APPROVE").superseding(r1)
+        r3 = self._record("c" * 40, 89, "REQUEST_CHANGES").superseding(r2)
+
+        assert [h["head_sha"][0] for h in r3.history] == ["a", "b"]
+
+    def test_history_is_bounded(self) -> None:
+        """The state record lives in a comment with a size limit."""
+        from prbot.vcs.models import _HISTORY_LIMIT
+
+        record = self._record("0" * 40, 100, "APPROVE")
+        for i in range(_HISTORY_LIMIT + 5):
+            record = self._record(
+                f"{i:040x}", 100, "APPROVE",
+            ).superseding(record)
+
+        assert len(record.history) == _HISTORY_LIMIT
+
+    def test_superseding_nothing_leaves_an_empty_history(self) -> None:
+        assert self._record("a" * 40, 100, "APPROVE").superseding(None).history == ()
+
+    def test_a_record_without_history_still_parses(self) -> None:
+        """Comments written by earlier versions must keep working."""
+        from prbot.vcs.models import ReviewStateRecord
+
+        legacy = (
+            '<!-- prbot:state:{"review_id":'
+            '"4b1e8a1e-0f9c-4b2e-8a3d-1c2f3e4a5b6c",'
+            f'"head_sha":"{"a" * 40}","score":100,"verdict":"APPROVE",'
+            '"findings_hash":"' + "0" * 64 + '",'
+            '"timestamp":"2026-09-16T02:37:01+00:00"} -->'
+        )
+        parsed = ReviewStateRecord.from_html_comment(legacy)
+        assert parsed is not None
+        assert parsed.history == ()

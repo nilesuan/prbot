@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import logging
 import sys
 import uuid
@@ -172,6 +173,7 @@ def _apply_safety(
     chunks: list[Any],
     filtered_diff: Any,
     agent_count: int,
+    context_lines: int = 0,
 ) -> tuple[list[Any], int, int]:
     """Validate findings against their own chunk, then redact PII.
 
@@ -201,7 +203,9 @@ def _apply_safety(
 
         if findings:
             pre_count = len(findings)
-            findings = validate_findings_against_diff(findings, source_chunk)
+            findings = validate_findings_against_diff(
+                findings, source_chunk, context_lines,
+            )
             hallucinations_removed += pre_count - len(findings)
 
         cleaned = []
@@ -522,12 +526,22 @@ async def run_pipeline(config: PrBotConfig) -> int:
         # prose field (GEN-ARCH-01).
         outcomes, hallucinations_removed, pii_redacted_total = _apply_safety(
             outcomes, chunks, filtered_diff, len(agents),
+            config.context_lines,
         )
 
         # C4: apply suppressions after deduplication so one rule silences a
         # defect both agents reported, and before scoring so a suppressed
         # finding does not deduct.
+        # What the agents returned, before anything downstream removes a
+        # finding. hallucinations_removed has already been taken out of
+        # outcomes by _apply_safety, so it is added back to get the total the
+        # comment has to account for (D5).
+        produced_count = sum(
+            len(o.findings) for o in outcomes if isinstance(o, AgentResult)
+        ) + hallucinations_removed
+
         merged = deduplicate_findings(outcomes)
+        merged_count = produced_count - hallucinations_removed - len(merged)
         kept, suppressed = apply_suppressions(merged, config.suppress)
         suppressed_count = len(suppressed)
         if suppressed_count:
@@ -541,6 +555,10 @@ async def run_pipeline(config: PrBotConfig) -> int:
                 blocker_threshold=config.blocker_threshold,
             )
         )
+        # The real de-duplication happens above, on every agent's findings,
+        # not inside score_findings, which is handed one already-merged
+        # result. The count therefore has to be put back on the score here.
+        score = dataclasses.replace(score, merged_count=merged_count)
         verdict = determine_verdict(
             outcomes, reported, score,
             blocker_confidence=config.blocker_threshold,
@@ -569,8 +587,18 @@ async def run_pipeline(config: PrBotConfig) -> int:
             threads = await adapter.list_review_threads()
             # SEC-AUTH-02: the finding marker is not identity, so only
             # threads this token actually wrote are reconciled.
+            # D7: anchor everything worth showing, not only what cleared
+            # the reporting threshold. Inline comments used to be built from
+            # `reported` alone, and with the threshold at its default almost
+            # nothing reaches that band: across 19 audited production reviews
+            # one finding did, so prbot had never posted an inline comment at
+            # all while both repositories had review mode on and their merges
+            # gated on unresolved discussions. A borderline finding is shown
+            # in the summary already; giving it a thread puts it on the line
+            # it is about and lets it be resolved or fixed like any other.
+            anchorable = [*reported, *borderline]
             outcomes_report = reconcile(
-                reported, threads, bot_user=authenticated_user,
+                anchorable, threads, bot_user=authenticated_user,
             )
             outcome_counts = outcomes_report.counts()
             inline = build_inline_comments(
@@ -580,9 +608,16 @@ async def run_pipeline(config: PrBotConfig) -> int:
             # that just got an inline comment is detailed there. What is left
             # is the findings the diff cannot anchor: the summary is the only
             # place their description can go, so the summary is given them.
-            unanchored = unanchored_findings(
-                outcomes_report.new, filtered_diff,
-            )
+            # Only reported findings earn full detail in the summary. A
+            # borderline one that cannot be anchored is already listed in the
+            # collapsed section, and repeating it in full would say the same
+            # thing twice at two different prominences.
+            unanchored = [
+                sf for sf in unanchored_findings(
+                    outcomes_report.new, filtered_diff,
+                )
+                if sf.band == "reported"
+            ]
             logger.info(
                 "review.inline new=%d persisting=%d fixed=%d resolved=%d "
                 "anchored=%d unanchored=%d",
@@ -608,6 +643,14 @@ async def run_pipeline(config: PrBotConfig) -> int:
         findings_hash = ReviewStateRecord.compute_findings_hash(
             findings_dicts, review_id,
         )
+        # The comment is rewritten in place, so without carrying the
+        # previous record forward this run silently deletes what prbot said
+        # about the last commit. That is how two APPROVE verdicts at 100/100
+        # on MR 194 became invisible.
+        previous_state = (
+            ReviewStateRecord.from_html_comment(existing[1])
+            if existing else None
+        )
         state_record = ReviewStateRecord(
             review_id=review_id,
             head_sha=metadata.head_sha,
@@ -618,6 +661,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
                 datetime.UTC,
             ).isoformat(),
         )
+        state_record = state_record.superseding(previous_state)
         state_html = state_record.to_html_comment()
 
         # Format comment, redact secrets
@@ -629,6 +673,9 @@ async def run_pipeline(config: PrBotConfig) -> int:
             fixed_count=outcome_counts.get("findings_fixed", 0),
             unanchored=unanchored,
             inline_enabled=config.review_mode == "review",
+            produced_count=produced_count,
+            dropped_count=hallucinations_removed,
+            history=state_record.history,
         )
         comment, secret_count = redact_secrets(comment)
 

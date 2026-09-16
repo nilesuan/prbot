@@ -51,15 +51,63 @@ directory, point `PRBOT_PROMPTS_DIR` at it, and give the agent a name and a
 check prefix. Each entry may set its own `model_id`, and `enabled = false`
 turns one off without deleting it.
 
+In CI there is usually no TOML file to read: the implicit config search is
+refused when CI is detected, and a job running with `GIT_STRATEGY: none` has
+no repository checkout to point `--config` at. Declare the roster in the
+environment instead, as JSON, from a variable only a maintainer can set:
+
+```yaml
+variables:
+  PRBOT_AGENTS: >-
+    [{"name": "general",  "check_prefix": "Q-"},
+     {"name": "security", "check_prefix": "S-"},
+     {"name": "iac",      "check_prefix": "IAC-"}]
+```
+
+### Infrastructure Agent (optional)
+
+Terraform, OpenTofu, CloudFormation, Pulumi, Bicep and Kubernetes manifests
+fail in ways the general and security checklists do not ask about. Between
+them there is no check for resource replacement, state adoption, provider
+lifecycle, blast radius or secrets reaching state, so on an infrastructure
+diff the agents correctly answer the question they were given and find
+nothing.
+
+`iac.md` adds 24 checks in six families: `IAC-ADOPT` (bringing live resources
+under management), `IAC-REPLACE` (changes that destroy something holding
+state), `IAC-SCOPE` (blast radius and gating), `IAC-PROVIDER` (region and
+provider binding), `IAC-SECRET` (credentials reaching state or plan output)
+and `IAC-TEST` (guards and assertions that cannot fail). Severity is
+calibrated on what the apply does rather than on how the code reads.
+
+Like the adversarial agent it is off by default, because a third agent costs
+roughly 50% more per review and an infrastructure agent has nothing to say
+about an application diff. Add `{"name": "iac", "check_prefix": "IAC-"}` to
+the roster in a repository where it earns its place.
+
 ### Confidence-Based Scoring
 
 Not all findings are equal. prbot uses confidence bands to reduce noise:
 
-- **Reported** -- high confidence findings shown directly in the review
-- **Borderline** -- medium confidence findings collapsed in a details section
-- **Hidden** -- low confidence findings counted but not shown
+- **Reported** -- high confidence findings, shown in the table and posted on their line
+- **Borderline** -- medium confidence findings, also posted on their line and listed in a collapsed section
+- **Hidden** -- low confidence findings, counted in the footer but not shown
 
-Each finding has a severity weight and confidence score. The combination produces a 0-100 review score and a deterministic verdict (APPROVE, COMMENT, or REQUEST_CHANGES).
+Each finding has a severity weight and a confidence score. A reported finding
+deducts its full weight scaled by confidence; a borderline one deducts half of
+that, so a finding the model is less sure of costs something rather than
+nothing. Hidden findings deduct nothing.
+
+**A critical or high finding is never hidden.** However low its confidence, it
+is surfaced as borderline with that confidence printed. It is not promoted into
+reported, because the floor is there to make a finding visible rather than to
+claim the model was confident, and for the same reason a low-confidence
+critical does not on its own block a review.
+
+The combination produces a 0-100 review score and a deterministic verdict
+(APPROVE, COMMENT, or REQUEST_CHANGES). The footer accounts for every finding
+the agents produced: how many were merged as one defect, dropped as outside the
+diff, suppressed by configuration, or hidden, and how many are shown.
 
 ### Security by Default
 
@@ -440,13 +488,15 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-5` | Security review model |
 | `PRBOT_MAX_DIFF_TOKENS` | `100000` | Tokens per review call; a larger diff is reviewed in several passes |
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
-| `PRBOT_CONTEXT_LINES` | `0` | Lines of surrounding code to include around each hunk |
+| `PRBOT_CONTEXT_LINES` | `40` | Lines of surrounding code fetched by API and included around each hunk; `0` disables |
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Max estimated cost per review |
 | `PRBOT_TIMEOUT_SECONDS` | `300` | Review timeout |
 | `PRBOT_DRAFT_BEHAVIOR` | `skip` | `skip` or `review` for draft PRs |
 | `PRBOT_REVIEW_MODE` | `review` | `review` posts each finding on its line; `comment` posts the summary alone |
 | `PRBOT_FORCE_REVIEW` | `false` | Review again even if this commit was already reviewed |
 | `PRBOT_EXCLUDED_PATTERNS` | *(none)* | Comma-separated gitignore-style patterns to exclude |
+| `PRBOT_AGENTS` | *(shipped roster)* | JSON array declaring the agent roster, for CI where no TOML file is reachable |
+| `PRBOT_SUPPRESS` | *(none)* | JSON array of suppression rules |
 | `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |
 | `PRBOT_LOG_LEVEL` | `INFO` | Log level for prbot's own output |
 | `PRBOT_ALLOW_IMPLICIT_CONFIG` | *(unset)* | Allow searching the working directory for `.prbot.toml`; never applies in CI |

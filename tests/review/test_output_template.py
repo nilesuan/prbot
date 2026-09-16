@@ -428,7 +428,7 @@ class TestTruncationDegradesHonestly:
 class TestEveryAgentIsHeldToTheSameContract:
     """Section 3.1 and section 8, carried into the prompts."""
 
-    AGENTS = ("general", "security", "adversarial")
+    AGENTS = ("general", "security", "adversarial", "iac")
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_the_failure_scenario_is_demanded(self, agent: str) -> None:

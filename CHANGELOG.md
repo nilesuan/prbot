@@ -5,6 +5,99 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-16
+
+A review-quality release. prbot was running, posting, and finding almost
+nothing: across the 19 reviews it posted to two production repositories its
+agents produced 40 findings, exactly 1 reached the findings table, and 18 of
+the 19 scored exactly 100/100. On one merge request it approved, twice, at
+100/100 with zero findings, a change that would have destroyed and recreated a
+live organization-wide IAM Access Analyzer on the next apply.
+
+The evidence behind every change here is in `research/production-review-audit/`
+and `research/mr194-review-miss/`. Two causes ran through all of it: the agents
+were asked the wrong questions, and what they did find was then destroyed by
+scoring.
+
+### Added
+
+- **An infrastructure-as-code check specification.** Neither shipped spec
+  contained a single infrastructure category, so on a Terraform diff an empty
+  findings array was the correct answer to the question asked, and that is what
+  came back. `iac.md` adds 24 checks in six families - `IAC-ADOPT`,
+  `IAC-REPLACE`, `IAC-SCOPE`, `IAC-PROVIDER`, `IAC-SECRET`, `IAC-TEST` - each
+  written as a property of declarative infrastructure rather than of any
+  provider, and tested to contain no provider-specific identifiers. Off by
+  default; add it to the roster where it earns its place.
+- **A findings reconciliation line in the comment footer.** De-duplication, the
+  not-in-the-diff drop and suppression rules all removed findings silently, so
+  a comment could report "4 findings" in Agent Status and show three with
+  nothing accounting for the fourth. The footer now names what became of each:
+  produced, merged, outside the diff, suppressed, hidden, shown. Printed only
+  when something was actually lost.
+- **Preserved review history.** prbot rewrites its own comment, so only its
+  most recent verdict survived and what it said about the code before a fix was
+  deleted by the fix. The state record now carries up to ten superseded
+  verdicts and the comment renders them in a collapsed section. Records written
+  by earlier versions have no history and still parse.
+- **`PRBOT_AGENTS` and `PRBOT_SUPPRESS` as JSON environment variables.** The
+  agent roster is a list of objects, which comma-splitting cannot express, so
+  it could only be set from TOML - and a CI run cannot reach a TOML file,
+  because the implicit search is refused in CI and `GIT_STRATEGY: none` leaves
+  no file to point `--config` at. A repository had no supported way to add an
+  agent to its own reviews.
+
+### Changed
+
+- **A finding below the reporting threshold no longer deducts exactly zero.**
+  This is why 18 of 19 reviews scored 100/100: with nothing clearing the
+  threshold, `total_deductions` was `0.0` by construction. Borderline findings
+  now deduct at half their full weight, so uncertainty moves the score without
+  deciding the verdict.
+- **A critical or high finding is never hidden.** However low its confidence it
+  is surfaced as borderline with that confidence printed. It is deliberately
+  not promoted into reported, and a low-confidence critical does not block on
+  its own. The destroy described above was filed by a human-grade reviewer at
+  38% confidence, which prbot would have hidden entirely.
+- **Findings are matched on the defect, not on coordinates.** De-duplication
+  required an exact file match and a line overlap before it would consider
+  whether two reports described the same problem, so one defect was deducted
+  once per file it appeared in. That counted a single hardcoded account id
+  twice and one unimplemented helper three times, producing 54/100
+  REQUEST_CHANGES where a human-grade review of the same commit scored 94/100
+  APPROVE.
+- **Borderline findings are posted on their line.** Inline comments were built
+  from the reported band alone, which almost nothing reaches, so prbot had
+  never posted an inline comment while both consuming repositories had review
+  mode on and gated merges on unresolved discussions.
+- **`PRBOT_CONTEXT_LINES` now defaults to `40`, was `0`.** The API-backed
+  retrieval shipped switched off, so every agent reviewed naked hunks and was
+  then penalised for citing lines just outside them. This needs no checkout and
+  does not weaken the `GIT_STRATEGY: none` boundary. It is a starting point to
+  be measured; `0` restores the previous behaviour.
+- **The hallucination penalty is charged in proportion to distance.** A flat 40
+  points for any gap at all is larger than the whole borderline band and enough
+  to silence a 90%-confidence finding over one line of drift. Nothing is
+  charged inside the context window the agent was shown, and the charge rises
+  with distance beyond it. With context off, the previous behaviour is exact.
+- **The prompts no longer teach the model to suppress its own findings.** Every
+  spec told it to "lower the confidence until it is filtered out" while the
+  scorer discarded everything below the threshold. It shows in the data: 35 of
+  68 suppressed findings sat at exactly 55, the lowest value that still
+  rendered. All four specs now define confidence as the probability the finding
+  is real, say that severity and confidence answer different questions, and
+  state that nothing is discarded for want of confidence.
+
+### Upgrading
+
+Scores will fall and more findings will appear. That is the intent: the
+previous numbers were produced by a scorer that could not deduct for most of
+what it was given. Repositories that gate on `PRBOT_MIN_PASSING_SCORE` should
+expect the change and recalibrate rather than raise the threshold back.
+
+Cost per review rises with `PRBOT_CONTEXT_LINES` at 40; set it to `0` to
+restore the previous spend while losing the precision it buys.
+
 ## [0.5.2] - 2026-09-16
 
 A fix to inline comments on GitLab, found by running 0.5.1 on a real merge

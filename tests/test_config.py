@@ -731,3 +731,73 @@ class TestImplicitConfigSearchIsOptIn:
         assert load_toml_config(str(cfg), env_vars={}) == {
             "confidence_threshold": 55,
         }
+
+
+class TestAgentRosterFromEnvironment:
+    """The roster was unreachable in CI, so no repository could add an agent.
+
+    `agents` is a list of objects, so the comma-splitting used for the other
+    list fields cannot express it, and `config.py` refuses the implicit TOML
+    search when it detects CI. Between them a containerised run was pinned to
+    the shipped roster with no supported way to change it.
+    """
+
+    def test_agents_can_be_set_from_the_environment_as_json(self) -> None:
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "pr_number": 1},
+            env_vars={
+                "PRBOT_AGENTS": (
+                    '[{"name": "iac", "check_prefix": "IAC-"},'
+                    ' {"name": "security", "check_prefix": "S-"}]'
+                ),
+            },
+            toml_config={},
+        )
+        assert config.agents is not None
+        assert [a.name for a in config.agents] == ["iac", "security"]
+        assert config.agents[0].check_prefix == "IAC-"
+
+    def test_invalid_json_is_rejected_with_the_variable_named(self) -> None:
+        with pytest.raises(ConfigError, match="PRBOT_AGENTS"):
+            build_config(
+                cli_args={"platform": "github", "repo": "o/r", "pr_number": 1},
+                env_vars={"PRBOT_AGENTS": "iac,security"},
+                toml_config={},
+            )
+
+    def test_a_json_scalar_is_rejected(self) -> None:
+        with pytest.raises(ConfigError, match="PRBOT_AGENTS"):
+            build_config(
+                cli_args={"platform": "github", "repo": "o/r", "pr_number": 1},
+                env_vars={"PRBOT_AGENTS": '"iac"'},
+                toml_config={},
+            )
+
+    def test_environment_beats_toml(self) -> None:
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "pr_number": 1},
+            env_vars={
+                "PRBOT_AGENTS": '[{"name": "iac", "check_prefix": "IAC-"}]',
+            },
+            toml_config={
+                "agents": [{"name": "general", "check_prefix": "Q-"}],
+            },
+        )
+        assert config.agents is not None
+        assert [a.name for a in config.agents] == ["iac"]
+
+
+class TestContextLinesDefault:
+    def test_context_is_on_by_default(self) -> None:
+        """The retrieval existed and was switched off, so it never ran.
+
+        `get_file_content` is called only when context_lines > 0, so a
+        default of 0 meant every agent reviewed naked hunks and was then
+        penalised for reasoning about lines it had never been shown.
+        """
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "pr_number": 1},
+            env_vars={},
+            toml_config={},
+        )
+        assert config.context_lines > 0

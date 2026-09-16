@@ -72,7 +72,7 @@ Report only what went wrong. None of the following may appear in any field:
 - A summary of what the change does. The author wrote it.
 - Restating the code back, when the comment is already attached to that code.
 - Questions to the author. A finding is a claim, not a question. If you cannot
-  assert it, lower the confidence until it is filtered out.
+  assert it, do not report it.
 - Hedging stacks such as "you might possibly want to consider perhaps".
 - Second person coaching, next steps, or anything addressed to the author
   rather than about the code.
@@ -100,4 +100,21 @@ Completeness findings require context-sensitive judgment:
 - Do NOT flag version bumps for bug fixes or minor refactors
 - Only flag examples when a public-facing interface actually changed shape (new parameters, removed options, renamed config keys)
 
-Only report findings with confidence >= 50. Prefer fewer high-confidence findings over many low-confidence ones.
+## Confidence
+
+`confidence` is your estimate of the probability that the finding is real:
+that the code does what you say it does, and that the consequence you
+describe follows from it. It means nothing else. It is not a dial for how
+prominently you want the finding shown, and lowering it is not a way to
+raise something you are unsure of without committing to it.
+
+Give each finding the confidence you actually hold. A defect you are half
+sure of is worth reporting at 50. The same defect filed at 20 to stay safe is
+a worse review, not a safer one, because the reader cannot tell it apart from
+a guess, and a real defect filed low is how a destroy gets approved.
+
+Nothing you report is discarded for want of confidence. Findings below the
+reporting threshold are shown with their confidence printed and count towards
+the score at a reduced weight, and a critical or high finding is always
+shown whatever its confidence. So there is no reason to inflate a number to
+get a finding seen, and none to deflate one to avoid committing to it.

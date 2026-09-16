@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -168,11 +169,88 @@ class TestCheckSpecsExistOnce:
         package = self._root() / "src" / "prbot" / "prompts"
         assert (package / "general.md").is_file()
         assert (package / "security.md").is_file()
+        assert (package / "iac.md").is_file()
 
     def test_specs_load_from_the_package(self) -> None:
-        for agent in ("general", "security"):
+        for agent in ("general", "security", "iac"):
             spec = load_check_spec(agent)
             assert "## Check Categories" in spec
+
+
+class TestConfidenceIsNotASuppressionDial:
+    """The prompts taught the model to hide its own findings (C2).
+
+    Every spec told the model that if it could not assert a finding it should
+    "lower the confidence until it is filtered out", while the scorer then
+    discarded everything under the threshold. Across the audited production
+    reviews 35 of 68 suppressed findings sat at exactly 55, the lowest value
+    that still rendered, which is the model doing as it was told.
+    """
+
+    SPECS = ("general", "security", "adversarial", "iac")
+
+    @pytest.mark.parametrize("agent", SPECS)
+    def test_no_spec_tells_the_model_to_filter_itself(
+        self, agent: str,
+    ) -> None:
+        spec = load_check_spec(agent).lower()
+        assert "until it is filtered out" not in spec
+        assert "lower the confidence" not in spec
+
+    @pytest.mark.parametrize("agent", SPECS)
+    def test_no_spec_trades_severity_against_confidence(
+        self, agent: str,
+    ) -> None:
+        spec = load_check_spec(agent).lower()
+        assert "lower the severity rather than the confidence" not in spec
+
+    @pytest.mark.parametrize("agent", SPECS)
+    def test_every_spec_says_what_confidence_means(self, agent: str) -> None:
+        spec = load_check_spec(agent).lower()
+        assert "probability that the finding is real" in spec or (
+            "how sure you are that the failure scenario is" in spec
+        )
+
+    @pytest.mark.parametrize("agent", SPECS)
+    def test_every_spec_says_nothing_is_discarded(self, agent: str) -> None:
+        """The model must know a low-confidence finding still lands."""
+        spec = load_check_spec(agent).lower()
+        assert "discarded for want of confidence" in spec
+
+
+class TestIacSpec:
+    """D3: no shipped spec covered infrastructure, so a Terraform diff
+    matched nothing either agent was asked to look for."""
+
+    def test_check_ids_use_the_iac_prefix(self) -> None:
+        spec = load_check_spec("iac")
+        ids = re.findall(r"\*\*(IAC-[A-Z]+-\d+)\*\*", spec)
+        assert len(ids) >= 20
+        assert len(set(ids)) == len(ids)
+
+    def test_it_covers_the_failure_modes_the_other_specs_cannot(
+        self,
+    ) -> None:
+        spec = load_check_spec("iac")
+        for family in (
+            "IAC-ADOPT", "IAC-REPLACE", "IAC-SCOPE",
+            "IAC-PROVIDER", "IAC-SECRET", "IAC-TEST",
+        ):
+            assert family in spec
+
+    def test_it_is_not_written_against_one_provider(self) -> None:
+        """A check that only fires on one resource type is worthless."""
+        spec = load_check_spec("iac")
+        flowed = " ".join(spec.split())
+        assert "Never assume a particular cloud, resource type" in flowed
+        for provider_specific in ("aws_", "azurerm_", "google_"):
+            assert provider_specific not in spec
+
+    def test_the_prefix_is_accepted_by_agentspec(self) -> None:
+        from prbot.config import AgentSpec
+
+        spec = AgentSpec(name="iac", check_prefix="IAC-")
+        assert spec.name == "iac"
 
 
 class TestDatamarkDiffIsConfigurable:

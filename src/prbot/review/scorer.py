@@ -27,6 +27,29 @@ SEVERITY_WEIGHTS: dict[str, float] = {
 
 ConfidenceBand = Literal["reported", "borderline", "hidden"]
 
+# A finding below the reporting threshold used to deduct exactly nothing, so
+# a review in which nothing cleared the threshold scored 100/100 however much
+# the agents had found. Confidence is already a multiplier on the deduction;
+# this factor is the additional discount for not having cleared the bar.
+#
+# 0.5 is chosen so that two independent borderline reports of one severity
+# cost the same as a single confident report of it, and so that no borderline
+# finding can fail a review on its own: the largest possible borderline
+# deduction is a critical at the top of the band, 25.0 * 0.69 * 0.5 = 8.6,
+# well inside the 30 points between a perfect score and the default passing
+# mark. Uncertainty should move the score, not decide the verdict.
+BORDERLINE_DEDUCTION_FACTOR = 0.5
+
+# Severities that are never hidden, whatever the confidence attached to them.
+#
+# The band is a statement about how sure the reviewer is. It is not a licence
+# to discard the finding: the cost of silently dropping a real critical is
+# unbounded, and the cost of showing a speculative one is that a human spends
+# a minute dismissing it. A finding here is surfaced as borderline with its
+# confidence printed, so the reader can weigh it, and it is never promoted
+# into `reported` - the floor makes a finding visible, not confident.
+_ALWAYS_SURFACED: frozenset[str] = frozenset({"critical", "high"})
+
 # Most severe first, so a merged finding takes the worst reading.
 _SEVERITY_RANK: dict[str, int] = {
     "critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4,
@@ -45,21 +68,72 @@ def _overlaps(a: Finding, b: Finding) -> bool:
     return a.line_start <= b.line_end and b.line_start <= a.line_end
 
 
-def _same_defect(a: Finding, b: Finding) -> bool:
-    """Whether two findings describe one defect (B1).
+# Words that carry no subject matter, so they must not make two unrelated
+# titles look alike.
+_STOPWORDS: frozenset[str] = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "for",
+    "from", "has", "have", "in", "into", "is", "it", "its", "no", "not", "of",
+    "on", "or", "that", "the", "their", "then", "there", "this", "to", "was",
+    "when", "which", "with", "without",
+})
 
-    Same file and overlapping lines is necessary but not sufficient: a line
-    can carry both a quality problem and a security problem. What settles it
-    is agreement on what the problem is, either the same check or the same
-    title. The title test matters because the agents use different check
-    prefixes, so one defect seen by both is reported as Q-... by one and
-    S-... by the other.
+# How much of two titles' combined subject vocabulary must be shared before
+# they are taken to name the same thing. At 0.5 more than half the words the
+# two titles use between them are common to both, which is a statement about
+# the titles rather than about any particular defect.
+_TITLE_AGREEMENT = 0.5
+
+
+def _subject_words(title: str) -> frozenset[str]:
+    """The content words of a title."""
+    return frozenset(_normalise_title(title).split()) - _STOPWORDS
+
+
+def _titles_agree(a: str, b: str) -> bool:
+    """Whether two titles name the same subject.
+
+    Exact equality is too strict for this. Two agents, or one agent seeing a
+    defect in two files, describe it in their own words: "AWS account ID
+    hardcoded in CI pipeline" and "Hardcoded AWS account ID exposed in public
+    README" are one defect written twice. Comparing the sets of subject words
+    recognises that without needing the wording to match.
     """
-    if a.file_path != b.file_path or not _overlaps(a, b):
-        return False
+    left, right = _subject_words(a), _subject_words(b)
+    if not left or not right:
+        return _normalise_title(a) == _normalise_title(b)
+    union = left | right
+    return len(left & right) / len(union) >= _TITLE_AGREEMENT
+
+
+def _same_defect(a: Finding, b: Finding) -> bool:
+    """Whether two findings describe one defect (B1, D1).
+
+    What makes two reports one defect is agreement about what the problem is,
+    not agreement about where it sits. The previous rule required an exact
+    file match and a line overlap before it would look at the problem at all,
+    so one defect deducted once per file it appeared in, and twice in a file
+    where the agent cited two separate line ranges for it. A hardcoded
+    credential in both a CI file and a README is one credential.
+
+    Two cases, and co-location only decides the second:
+
+    - The same check firing twice on the same lines is one defect, whatever
+      the two reports called it. Anywhere else, in another file or elsewhere
+      in the same one, the titles have to agree, because the same check
+      legitimately fires on unrelated subjects in unrelated places.
+    - Different checks are one defect only when they are co-located and name
+      the same thing. The agents use different prefixes, so one defect seen
+      by both is Q-... to one and S-... to the other.
+    """
     if a.check_id == b.check_id:
-        return True
-    return _normalise_title(a.title) == _normalise_title(b.title)
+        if a.file_path == b.file_path and _overlaps(a, b):
+            return True
+        return _titles_agree(a.title, b.title)
+    return (
+        a.file_path == b.file_path
+        and _overlaps(a, b)
+        and _normalise_title(a.title) == _normalise_title(b.title)
+    )
 
 
 def _merge(a: Finding, b: Finding) -> Finding:
@@ -77,7 +151,9 @@ def _merge(a: Finding, b: Finding) -> Finding:
     )
 
 
-def deduplicate_findings(outcomes: list[AgentOutcome]) -> list[Finding]:
+def deduplicate_findings(
+    outcomes: list[AgentOutcome],
+) -> list[Finding]:
     """Collapse findings that describe the same defect (B1).
 
     score_findings previously concatenated every agent's findings, so a
@@ -128,9 +204,17 @@ class ScoredFinding:
         threshold: int,
     ) -> ScoredFinding:
         """Classify a finding and calculate its deduction."""
-        band = classify_confidence_band(finding.confidence, threshold)
+        band = classify_confidence_band(
+            finding.confidence, threshold, finding.severity,
+        )
         weight = SEVERITY_WEIGHTS.get(finding.severity, 0.0)
-        deduction = weight * (finding.confidence / 100.0) if band == "reported" else 0.0
+        full = weight * (finding.confidence / 100.0)
+        if band == "reported":
+            deduction = full
+        elif band == "borderline":
+            deduction = full * BORDERLINE_DEDUCTION_FACTOR
+        else:
+            deduction = 0.0
         return cls(finding=finding, band=band, deduction=deduction)
 
 
@@ -143,21 +227,32 @@ class ReviewScore:
     total_deductions: float
     finding_count: int
     critical_override: bool
+    # How many reports were collapsed into another as one defect (D1).
+    merged_count: int = 0
 
 
 def classify_confidence_band(
     confidence: int,
     threshold: int,
+    severity: str | None = None,
 ) -> ConfidenceBand:
-    """Classify a finding into a confidence band (S13, S31).
+    """Classify a finding into a confidence band (S13, S31, C3).
 
     - reported: confidence >= threshold
     - borderline: threshold - 15 <= confidence < threshold
     - hidden: confidence < threshold - 15
+
+    A critical or high finding is never hidden. When severity is given and
+    names one of those, a band of "hidden" is raised to "borderline" so the
+    finding is still shown with its confidence attached. It is deliberately
+    not raised to "reported": the reviewer was not confident, and saying
+    otherwise would be a different lie from the one this fixes.
     """
     if confidence >= threshold:
         return "reported"
     if confidence >= threshold - 15:
+        return "borderline"
+    if severity in _ALWAYS_SURFACED:
         return "borderline"
     return "hidden"
 
@@ -182,7 +277,16 @@ def score_findings(
     hidden_count = 0
     critical_override = False
 
-    for finding in deduplicate_findings(outcomes):
+    # How many reports were collapsed into another as one defect. A reader
+    # told the agents produced six findings and shown four needs the other
+    # two accounted for, so the count is carried into the comment.
+    produced = sum(
+        len(o.findings) for o in outcomes if isinstance(o, AgentResult)
+    )
+    deduplicated = deduplicate_findings(outcomes)
+    merged_count = produced - len(deduplicated)
+
+    for finding in deduplicated:
         scored = ScoredFinding.from_finding(finding, threshold)
 
         if scored.band == "reported":
@@ -198,7 +302,13 @@ def score_findings(
         else:
             hidden_count += 1
 
-    total_deductions = sum(sf.deduction for sf in reported)
+    # Both bands, because a borderline finding's reduced deduction is only a
+    # reduced deduction if it reaches the total. Summing `reported` alone is
+    # how the deduction was computed and then discarded, leaving the score at
+    # 100 with findings on the page.
+    total_deductions = sum(
+        sf.deduction for sf in (*reported, *borderline)
+    )
     raw_score = 100.0 - total_deductions
 
     if critical_override:
@@ -212,6 +322,7 @@ def score_findings(
         total_deductions=total_deductions,
         finding_count=len(reported) + len(borderline) + hidden_count,
         critical_override=critical_override,
+        merged_count=merged_count,
     )
 
     if hidden_count > 0:

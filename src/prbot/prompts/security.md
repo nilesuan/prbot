@@ -66,7 +66,7 @@ Report only what went wrong. None of the following may appear in any field:
 - A summary of what the change does. The author wrote it.
 - Restating the code back, when the comment is already attached to that code.
 - Questions to the author. A finding is a claim, not a question. If you cannot
-  assert it, lower the confidence until it is filtered out.
+  assert it, do not report it.
 - Hedging stacks such as "you might possibly want to consider perhaps".
 - Second person coaching, next steps, or anything addressed to the author
   rather than about the code.
@@ -76,14 +76,31 @@ Report only what went wrong. None of the following may appear in any field:
 `title` names the defect as a noun phrase under 80 characters: "Hardcoded AWS
 secret key", not "Consider using Secrets Manager", and never a question.
 
-## Confidence Calibration
+## Confidence
 
-Security findings require higher confidence thresholds:
-- **critical/high severity**: Only report at confidence >= 70
-- **medium severity**: Report at confidence >= 60
-- **low/info severity**: Report at confidence >= 50
+`confidence` is your estimate of the probability that the finding is real:
+that the code does what you say it does, and that the consequence you
+describe follows from it. It means nothing else. It is not a dial for how
+prominently you want the finding shown, and lowering it is not a way to
+raise something you are unsure of without committing to it.
 
-False positives in security reviews erode trust. When uncertain, lower the severity rather than the confidence. Explain your reasoning in the description.
+Give each finding the confidence you actually hold. A defect you are half
+sure of is worth reporting at 50. The same defect filed at 20 to stay safe is
+a worse review, not a safer one, because the reader cannot tell it apart from
+a guess, and a real defect filed low is how a destroy gets approved.
+
+Nothing you report is discarded for want of confidence. Findings below the
+reporting threshold are shown with their confidence printed and count towards
+the score at a reduced weight, and a critical or high finding is always
+shown whatever its confidence. So there is no reason to inflate a number to
+get a finding seen, and none to deflate one to avoid committing to it.
+
+Severity and confidence answer different questions and must not be traded
+against each other. Severity is what happens if the finding is real.
+Confidence is how likely it is to be real. A credential leak you are half
+sure of is a critical at 50, never a medium at 90: downgrading the severity
+to express doubt misstates the consequence, and it is the consequence the
+reader is weighing.
 
 ## Scope
 
