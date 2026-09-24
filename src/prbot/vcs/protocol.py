@@ -133,6 +133,10 @@ class VCSAdapter(Protocol):
         """
         ...
 
+    async def unresolve_thread(self, thread: ReviewThread) -> bool:
+        """Reopen a resolved thread. Returns False if that was not possible."""
+        ...
+
     async def close(self) -> None:
         """Close the HTTP client and release resources."""
         ...

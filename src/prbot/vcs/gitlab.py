@@ -338,6 +338,9 @@ class GitLabAdapter:
                 path=position.get("new_path"),
                 line=position.get("new_line"),
                 author=(first.get("author") or {}).get("username", ""),
+                resolved_by=(first.get("resolved_by") or {}).get(
+                    "username", "",
+                ),
             ))
         return threads
 
@@ -353,15 +356,25 @@ class GitLabAdapter:
 
     async def resolve_thread(self, thread: ReviewThread) -> bool:
         """Mark a discussion resolved."""
+        return await self._set_resolved(thread, resolved=True)
+
+    async def unresolve_thread(self, thread: ReviewThread) -> bool:
+        """Reopen a discussion."""
+        return await self._set_resolved(thread, resolved=False)
+
+    async def _set_resolved(
+        self, thread: ReviewThread, *, resolved: bool,
+    ) -> bool:
         url = (
             f"{self._base_url}/api/v4/projects/{self._encoded_repo}"
             f"/merge_requests/{self._pr_number}/discussions/{thread.id}"
         )
         try:
-            await self._request("PUT", url, json={"resolved": True})
+            await self._request("PUT", url, json={"resolved": resolved})
         except VCSError as e:
             logger.warning(
-                "Could not resolve discussion %s: %s", thread.id, e,
+                "Could not set discussion %s resolved=%s: %s",
+                thread.id, resolved, e,
             )
             return False
         return True

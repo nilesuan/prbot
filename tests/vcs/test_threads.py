@@ -316,3 +316,131 @@ class TestGitLabThreads:
             )
         finally:
             await adapter.close()
+
+
+class TestWhoResolvedAThread:
+    """Who resolved a thread decides whether a returning finding reopens it."""
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_github_reports_the_resolver(self) -> None:
+        node = _node("T_kw1", "finding", resolved=True)
+        node["resolvedBy"] = {"login": "prbot[bot]"}
+        route = respx.post(_GQL).mock(
+            return_value=httpx.Response(200, json=_gql_threads(node)),
+        )
+        adapter = _github()
+        try:
+            [thread] = await adapter.list_review_threads()
+        finally:
+            await adapter.close()
+        assert thread.resolved_by == "prbot[bot]"
+        assert "resolvedBy" in json.loads(route.calls[0].request.content)["query"]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_gitlab_reports_the_resolver(self) -> None:
+        respx.get(f"{_GL}/discussions").mock(
+            return_value=httpx.Response(
+                200,
+                json=[{
+                    "id": "d1",
+                    "notes": [{
+                        "id": 5, "body": "finding", "resolved": True,
+                        "resolved_by": {"username": "project_bot"},
+                        "position": {"new_path": "a.py", "new_line": 1},
+                    }],
+                }],
+            ),
+        )
+        adapter = _gitlab()
+        try:
+            [thread] = await adapter.list_review_threads()
+        finally:
+            await adapter.close()
+        assert thread.resolved_by == "project_bot"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_an_open_thread_has_no_resolver(self) -> None:
+        respx.get(f"{_GL}/discussions").mock(
+            return_value=httpx.Response(
+                200,
+                json=[{
+                    "id": "d1",
+                    "notes": [{
+                        "id": 5, "body": "finding", "resolved": False,
+                        "resolved_by": None,
+                        "position": {"new_path": "a.py", "new_line": 1},
+                    }],
+                }],
+            ),
+        )
+        adapter = _gitlab()
+        try:
+            [thread] = await adapter.list_review_threads()
+        finally:
+            await adapter.close()
+        assert thread.resolved_by == ""
+
+
+class TestReopeningAThread:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_github_unresolves_by_node_id(self) -> None:
+        route = respx.post(_GQL).mock(
+            return_value=httpx.Response(
+                200,
+                json={"data": {"unresolveReviewThread": {"thread": {"id": "T_kw1"}}}},
+            ),
+        )
+        adapter = _github()
+        try:
+            assert await adapter.unresolve_thread(
+                ReviewThread(id="T_kw1", comment_id=11, body="b"),
+            )
+        finally:
+            await adapter.close()
+        payload = json.loads(route.calls[0].request.content)
+        assert "unresolveReviewThread" in payload["query"]
+        assert payload["variables"]["threadId"] == "T_kw1"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_github_without_a_node_id_reports_failure(self) -> None:
+        adapter = _github()
+        try:
+            assert not await adapter.unresolve_thread(
+                ReviewThread(id="12345", comment_id=11, body="b"),
+            )
+        finally:
+            await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_gitlab_sets_resolved_false(self) -> None:
+        route = respx.put(f"{_GL}/discussions/d1").mock(
+            return_value=httpx.Response(200, json={}),
+        )
+        adapter = _gitlab()
+        try:
+            assert await adapter.unresolve_thread(
+                ReviewThread(id="d1", comment_id=5, body="b"),
+            )
+        finally:
+            await adapter.close()
+        assert json.loads(route.calls[0].request.content) == {"resolved": False}
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_failed_reopen_is_reported_not_raised(self) -> None:
+        respx.put(f"{_GL}/discussions/d1").mock(
+            return_value=httpx.Response(403),
+        )
+        adapter = _gitlab()
+        try:
+            assert not await adapter.unresolve_thread(
+                ReviewThread(id="d1", comment_id=5, body="b"),
+            )
+        finally:
+            await adapter.close()

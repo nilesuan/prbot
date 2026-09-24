@@ -42,6 +42,10 @@ class OutcomeReport:
     )
     fixed: list[ReviewThread] = field(default_factory=list)
     human_resolved: list[ReviewThread] = field(default_factory=list)
+    # Threads prbot resolved itself whose finding has come back.
+    reopened: list[tuple[ScoredFinding, ReviewThread]] = field(
+        default_factory=list,
+    )
 
     def counts(self) -> dict[str, int]:
         """The shape a metrics sink wants."""
@@ -50,6 +54,7 @@ class OutcomeReport:
             "findings_persisting": len(self.persisting),
             "findings_fixed": len(self.fixed),
             "findings_human_resolved": len(self.human_resolved),
+            "findings_reopened": len(self.reopened),
         }
 
 
@@ -97,6 +102,7 @@ def reconcile(
     new: list[ScoredFinding] = []
     persisting: list[tuple[ScoredFinding, ReviewThread]] = []
     human_resolved: list[ReviewThread] = []
+    reopened: list[tuple[ScoredFinding, ReviewThread]] = []
     claimed: set[str] = set()
 
     # Exact fingerprints first, so a thread goes to the finding it was
@@ -120,6 +126,10 @@ def reconcile(
     for scored, thread in matches:
         if thread is None:
             new.append(scored)
+        elif thread.resolved and _resolved_by_bot(thread, bot_user):
+            # prbot closed this itself because one run did not report it.
+            # The finding is back, so that closure was a guess, not a fix.
+            reopened.append((scored, thread))
         elif thread.resolved:
             # Someone decided this one is settled. Re-raising it is how a
             # review bot teaches people to ignore it.
@@ -147,6 +157,7 @@ def reconcile(
         persisting=persisting,
         fixed=fixed,
         human_resolved=human_resolved,
+        reopened=reopened,
     )
     logger.info("outcomes.reconciled %s", report.counts())
     return report
@@ -212,3 +223,13 @@ def _covers(finding: Finding, thread: ReviewThread) -> bool:
         and extract_check_id(thread.body) == finding.check_id
         and finding.line_start <= thread.line <= finding.line_end
     )
+
+
+def _resolved_by_bot(thread: ReviewThread, bot_user: str) -> bool:
+    """Whether prbot itself resolved this thread.
+
+    Without an established identity, or without a recorded resolver, the
+    answer is no: reopening a thread a person closed is the costlier mistake.
+    """
+    # An empty identity would otherwise equal an empty resolver.
+    return bool(bot_user) and thread.resolved_by.lower() == bot_user.lower()

@@ -66,6 +66,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         nodes {
           id
           isResolved
+          resolvedBy { login }
           path
           line
           comments(first: 1) { nodes { databaseId body author { login } } }
@@ -79,6 +80,12 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 _RESOLVE_MUTATION = """
 mutation($threadId: ID!) {
   resolveReviewThread(input: {threadId: $threadId}) { thread { id } }
+}
+"""
+
+_UNRESOLVE_MUTATION = """
+mutation($threadId: ID!) {
+  unresolveReviewThread(input: {threadId: $threadId}) { thread { id } }
 }
 """
 
@@ -429,6 +436,9 @@ class GitHubAdapter:
                         path=item.get("path"),
                         line=item.get("line"),
                         author=author,
+                        resolved_by=(item.get("resolvedBy") or {}).get(
+                            "login", "",
+                        ),
                     ))
                 page = node.get("pageInfo") or {}
                 if not page.get("hasNextPage"):
@@ -489,6 +499,18 @@ class GitHubAdapter:
             await self._graphql(_RESOLVE_MUTATION, {"threadId": thread.id})
         except VCSError as e:
             logger.warning("Could not resolve thread %s: %s", thread.id, e)
+            return False
+        return True
+
+    async def unresolve_thread(self, thread: ReviewThread) -> bool:
+        """Reopen a review thread via GraphQL."""
+        if not thread.id.startswith("T_") and not thread.id.startswith("PRRT"):
+            logger.info("Cannot reopen thread %s: no node id", thread.id)
+            return False
+        try:
+            await self._graphql(_UNRESOLVE_MUTATION, {"threadId": thread.id})
+        except VCSError as e:
+            logger.warning("Could not reopen thread %s: %s", thread.id, e)
             return False
         return True
 

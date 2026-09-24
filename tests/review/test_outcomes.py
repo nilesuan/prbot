@@ -180,6 +180,7 @@ class TestReconcile:
             "findings_persisting": 0,
             "findings_fixed": 0,
             "findings_human_resolved": 0,
+            "findings_reopened": 0,
         }
 
 
@@ -401,6 +402,82 @@ class TestARewordedFindingKeepsItsThread:
             [_scored(self._AFTER)], [thread], bot_user="prbot",
         )
         assert len(report.new) == 1
+
+
+class TestAThreadTheBotResolvedIsReopened:
+    """prbot resolving its own thread is not a human decision.
+
+    A finding missing from one run is resolved as fixed. When the model then
+    reports it again, the thread used to count as human_resolved and the
+    finding was never raised again, so one unlucky run silently discarded a
+    true positive and recorded prbot's own guess as a person's acceptance.
+    """
+
+    _FINDING = _finding()
+
+    def _thread(self, resolved_by: str) -> ReviewThread:
+        return _thread(
+            finding_fingerprint(self._FINDING),
+            resolved=True, resolved_by=resolved_by, author="prbot",
+        )
+
+    def test_a_bot_resolved_thread_is_reopened(self) -> None:
+        report = reconcile(
+            [_scored(self._FINDING)], [self._thread("prbot")],
+            bot_user="prbot",
+        )
+        assert [t.id for _, t in report.reopened] == ["t1"]
+        assert report.human_resolved == []
+        assert report.new == []
+
+    def test_a_person_resolving_it_is_still_respected(self) -> None:
+        report = reconcile(
+            [_scored(self._FINDING)], [self._thread("alice")],
+            bot_user="prbot",
+        )
+        assert report.reopened == []
+        assert [t.id for t in report.human_resolved] == ["t1"]
+
+    def test_an_unknown_resolver_is_treated_as_a_person(self) -> None:
+        """The conservative reading: never reopen what someone may have closed."""
+        report = reconcile(
+            [_scored(self._FINDING)], [self._thread("")], bot_user="prbot",
+        )
+        assert report.reopened == []
+        assert len(report.human_resolved) == 1
+
+    def test_without_a_bot_identity_nothing_is_reopened(self) -> None:
+        report = reconcile(
+            [_scored(self._FINDING)],
+            [_thread(
+                finding_fingerprint(self._FINDING),
+                resolved=True, resolved_by="prbot",
+            )],
+        )
+        assert report.reopened == []
+
+    def test_no_identity_and_no_resolver_do_not_match_each_other(self) -> None:
+        report = reconcile(
+            [_scored(self._FINDING)],
+            [_thread(finding_fingerprint(self._FINDING), resolved=True)],
+            bot_user="",
+        )
+        assert report.reopened == []
+        assert len(report.human_resolved) == 1
+
+    def test_matching_the_resolver_is_case_insensitive(self) -> None:
+        report = reconcile(
+            [_scored(self._FINDING)], [self._thread("PrBot")],
+            bot_user="prbot",
+        )
+        assert len(report.reopened) == 1
+
+    def test_reopened_is_counted(self) -> None:
+        report = reconcile(
+            [_scored(self._FINDING)], [self._thread("prbot")],
+            bot_user="prbot",
+        )
+        assert report.counts()["findings_reopened"] == 1
 
 
 class TestAThreadGoesToTheClosestRewordedFinding:
