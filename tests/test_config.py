@@ -374,6 +374,24 @@ class TestBuildConfig:
         )
         assert config.pr_number == 42
 
+    def test_verification_is_off_by_default(self) -> None:
+        """CR-FLAG-01: a new feature ships behind a flag that defaults off,
+        and turning it on is a change of its own."""
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "config": None},
+            env_vars={"PRBOT_PR_NUMBER": "1"},
+            toml_config={},
+        )
+        assert config.verify is False
+
+    def test_verification_can_be_turned_on(self) -> None:
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "config": None},
+            env_vars={"PRBOT_PR_NUMBER": "1", "PRBOT_VERIFY": "1"},
+            toml_config={},
+        )
+        assert config.verify is True
+
     def test_reading_beyond_the_diff_is_off_by_default(self) -> None:
         config = build_config(
             cli_args={"platform": "github", "repo": "o/r", "config": None},

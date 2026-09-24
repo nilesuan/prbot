@@ -53,6 +53,8 @@ class FindingAuditInfo:
     file_path: str
     line_start: int
     line_end: int
+    # The verification verdict, empty when the pass did not run.
+    verification: str = ""
 
 
 @dataclass(frozen=True)

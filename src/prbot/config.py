@@ -265,6 +265,17 @@ class PrBotConfig(BaseModel, frozen=True):
     # (review/tools.py) and priced into the pre-flight estimate. Whether
     # the tool stays, and at what default, is decided in issue #48.
     tool_turns: int = Field(default=0, ge=0, le=10)
+    # A second call per chunk that checks each finding against the code and
+    # replaces its confidence with a verdict's (review/verifier.py). Off by
+    # default, like every new feature (CR-FLAG-01): turning it on is its own
+    # change. On terraform-modules MR 269 it raised the finding behind a
+    # verified review's high (subnets moved onto a NACL before its rules
+    # exist) from 45% to 75%, into the reported band, for 38% more cost; on
+    # infrastructure-core MR 208 it confirmed the one finding produced for
+    # 19% more. Two merge requests is not an evaluation, and it has no
+    # labelled corpus yet (QA-EVAL-01). It is the first extra the budget
+    # check gives up after reads.
+    verify: bool = False
     # SEC-DESIGN-04: the login prbot posts as, used when the token cannot
     # read it. secrets.GITHUB_TOKEN cannot call GET /user, so without this
     # prbot cannot tell its own threads from anyone else's: reworded findings
@@ -588,7 +599,9 @@ _INT_FIELDS = frozenset({
     "tool_turns",
 })
 _FLOAT_FIELDS = frozenset({"budget_limit_usd", "temperature"})
-_BOOL_FIELDS = frozenset({"dry_run", "datamark_diff", "force_review"})
+_BOOL_FIELDS = frozenset({
+    "dry_run", "datamark_diff", "force_review", "verify",
+})
 # Pydantic will not coerce a string to list[str], so without this the
 # only way to set a list was a TOML file, and the container workflows
 # pass configuration purely through env: (D6).

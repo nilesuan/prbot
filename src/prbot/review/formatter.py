@@ -238,6 +238,7 @@ def format_review_comment(
     dropped_count: int = 0,
     history: tuple[dict[str, Any], ...] = (),
     hidden: list[ScoredFinding] | None = None,
+    verification: Any = None,
 ) -> str:
     """Format the summary comment (G-28, S83, template section 5).
 
@@ -303,6 +304,7 @@ def format_review_comment(
             _format_history(history),
             _format_footer(
                 hidden_count, state_html, suppressed_count, fixed_count,
+                verification=_format_verification(verification),
                 reconciliation=_format_reconciliation(
                     produced_count=produced_count,
                     merged_count=score.merged_count,
@@ -709,18 +711,38 @@ def _format_reconciliation(
     return f"_Findings: {' · '.join(parts)}._"
 
 
+def _format_verification(stats: Any) -> str:
+    """One line saying what the verification pass concluded, if it ran."""
+    if stats is None:
+        return ""
+    parts = [
+        f"{n} {label}" for n, label in (
+            (stats.confirmed, "confirmed"),
+            (stats.refuted, "refuted"),
+            (stats.uncertain, "uncertain"),
+            (stats.unverified, "not verified"),
+        ) if n
+    ]
+    if not parts:
+        return ""
+    return f"_Verification: {' · '.join(parts)}._"
+
+
 def _format_footer(
     hidden_count: int,
     state_html: str,
     suppressed_count: int = 0,
     fixed_count: int = 0,
     reconciliation: str = "",
+    verification: str = "",
 ) -> str:
     """Format footer with metadata, disclaimer, and state record."""
     lines = ["---"]
 
     if reconciliation:
         lines.append(reconciliation)
+    if verification:
+        lines.append(verification)
     elif hidden_count > 0:
         lines.append(
             f"_{hidden_count} low-confidence findings listed, not scored._",

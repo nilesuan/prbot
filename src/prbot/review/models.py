@@ -49,6 +49,9 @@ class Finding:
     # finding independently is evidence, and it is the only way to tell a
     # merged finding from a single-agent one after deduplication (B1).
     reported_by: tuple[str, ...] = ()
+    # What the verification pass concluded: "confirmed", "refuted",
+    # "uncertain", or empty when it did not run or gave no verdict.
+    verification: str = ""
 
 
 @dataclass(frozen=True)
