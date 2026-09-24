@@ -20,14 +20,13 @@ from prbot.vcs.models import FileDiff
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
-def hunk_span(patch: str) -> tuple[int, int] | None:
-    """New-side line range covered by a patch, first hunk to last.
+def hunk_spans(patch: str) -> list[tuple[int, int]]:
+    """New-side line range of each hunk in a patch, in patch order.
 
-    Returns None when the patch declares no hunks, which is the case for a
-    binary file or a patch the host omitted.
+    Empty when the patch declares no hunks, which is the case for a binary
+    file or a patch the host omitted.
     """
-    starts: list[int] = []
-    ends: list[int] = []
+    spans: list[tuple[int, int]] = []
 
     for line in patch.split("\n"):
         match = _HUNK.match(line)
@@ -35,13 +34,11 @@ def hunk_span(patch: str) -> tuple[int, int] | None:
             continue
         start = int(match.group(1))
         count = int(match.group(2)) if match.group(2) is not None else 1
-        starts.append(start)
-        # Inclusive: a hunk starting at 10 with 4 lines ends at 13.
-        ends.append(start + max(count, 1) - 1)
+        # Inclusive: a hunk starting at 10 with 4 lines ends at 13. A
+        # zero-length new side still marks where a deletion happened.
+        spans.append((start, start + max(count, 1) - 1))
 
-    if not starts:
-        return None
-    return min(starts), max(ends)
+    return spans
 
 
 def build_context_excerpt(
@@ -59,18 +56,54 @@ def build_context_excerpt(
     if context_lines <= 0 or not content or not file_diff.patch:
         return ""
 
-    span = hunk_span(file_diff.patch)
-    if span is None:
+    spans = hunk_spans(file_diff.patch)
+    if not spans:
         return ""
 
     from prbot.security.datamarking import apply_datamarking
 
     lines = content.split("\n")
-    first = max(1, span[0] - context_lines)
-    last = min(len(lines), span[1] + context_lines)
+    windows = _windows(spans, context_lines, len(lines))
+    if not windows:
+        return ""
 
-    width = len(str(last))
-    return "\n".join(
-        f"{number:>{width}} {apply_datamarking(lines[number - 1])}"
-        for number in range(first, last + 1)
-    )
+    width = len(str(windows[-1][1]))
+    out: list[str] = []
+    for i, (first, last) in enumerate(windows):
+        if i:
+            # Without a separator the numbering is the only sign that lines
+            # were skipped, and a reader skimming 46 then 860 can miss it.
+            out.append(f"{'':>{width}} ...")
+        out.extend(
+            f"{number:>{width}} {apply_datamarking(lines[number - 1])}"
+            for number in range(first, last + 1)
+        )
+    return "\n".join(out)
+
+
+def _windows(
+    spans: list[tuple[int, int]],
+    context_lines: int,
+    line_count: int,
+) -> list[tuple[int, int]]:
+    """Each hunk widened by context_lines, clamped to the file, merged.
+
+    A window per hunk rather than one from the first hunk to the last: the
+    single range made the excerpt the whole file for any file edited near
+    both ends, and that is what a test file gaining one case at the top and
+    one at the bottom looks like. It is also the region the hallucination
+    check treats as shown, since it measures each finding's distance to the
+    nearest hunk. Windows that overlap or touch are merged so no line is
+    rendered twice.
+    """
+    windows: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        first = max(1, start - context_lines)
+        last = min(line_count, end + context_lines)
+        if first > last:
+            continue
+        if windows and first <= windows[-1][1] + 1:
+            windows[-1] = (windows[-1][0], max(windows[-1][1], last))
+        else:
+            windows.append((first, last))
+    return windows

@@ -314,8 +314,8 @@ class TestHunkHeaderFunctionContext:
 
     def test_hunk_parsing_still_works_on_a_marked_header(self) -> None:
         """The validation layer must still find the line numbers."""
-        from prbot.review.context import hunk_span
+        from prbot.review.context import hunk_spans
         from prbot.security.datamarking import apply_diff_datamarking
 
         patch = "@@ -82,7 +82,4 @@ def handler():\n-a\n+b\n"
-        assert hunk_span(apply_diff_datamarking(patch)) == (82, 85)
+        assert hunk_spans(apply_diff_datamarking(patch)) == [(82, 85)]
