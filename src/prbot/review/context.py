@@ -6,9 +6,9 @@ architecture, testing or maintainability is being made without the thing being
 judged. This is the standard ceiling on diff-only reviewers and the most
 common source of their false positives.
 
-Whether paying for the surrounding lines raises precision enough to justify
-the tokens is a question for measurement, not argument, so context_lines
-defaults to 0 and the capability exists to make the experiment runnable.
+context_lines defaults to 40 (see config.py for why). Each hunk gets its own
+window of that many lines either side, so the cost grows with the size of the
+change rather than with the distance between its first and last hunk.
 """
 
 from __future__ import annotations
