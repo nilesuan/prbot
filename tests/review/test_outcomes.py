@@ -274,6 +274,7 @@ class TestARewordedFindingKeepsItsThread:
     uses for two reports of one check on the same lines being one defect.
     """
 
+    _BOT = "prbot[bot]"
     _BEFORE = _finding(
         check_id="IAC-REPLACE-01",
         title="iam_role_name has no lifecycle protection",
@@ -292,9 +293,15 @@ class TestARewordedFindingKeepsItsThread:
             "resolved": False,
             "path": finding.file_path,
             "line": finding.line_end,
+            "author": self._BOT,
         }
         base.update(overrides)
         return ReviewThread(**base)
+
+    def _reconcile(
+        self, reported: list[ScoredFinding], threads: list[ReviewThread],
+    ) -> Any:
+        return reconcile(reported, threads, bot_user=self._BOT)
 
     def test_the_guard_the_titles_really_fingerprint_differently(self) -> None:
         assert finding_fingerprint(self._BEFORE) != finding_fingerprint(
@@ -303,18 +310,42 @@ class TestARewordedFindingKeepsItsThread:
 
     def test_a_reworded_finding_persists_on_its_open_thread(self) -> None:
         thread = self._thread_from(self._BEFORE)
-        report = reconcile([_scored(self._AFTER)], [thread])
+        report = self._reconcile([_scored(self._AFTER)], [thread])
         assert report.new == []
         assert [t.id for _, t in report.persisting] == ["t1"]
         assert report.fixed == []
 
-    def test_a_reworded_finding_is_not_re_raised_on_a_resolved_thread(
+    def test_a_resolved_thread_is_matched_only_by_its_exact_fingerprint(
         self,
     ) -> None:
+        """SEC-DESIGN-01: a resolution belongs to the finding it was made on.
+
+        File, check and anchor cannot tell a reworded report of the resolved
+        defect from a new defect of the same check on the same line. Taken as
+        the same, the new one was filed as human_resolved and shown to
+        nobody. Re-raising a reworded one is the cheaper mistake, and it is
+        what happened before rewording was handled at all.
+        """
         thread = self._thread_from(self._BEFORE, resolved=True)
-        report = reconcile([_scored(self._AFTER)], [thread])
-        assert report.new == []
-        assert [t.id for t in report.human_resolved] == ["t1"]
+        report = self._reconcile([_scored(self._AFTER)], [thread])
+        assert [sf.finding.title for sf in report.new] == [self._AFTER.title]
+        assert report.human_resolved == []
+
+    def test_rewording_is_matched_only_on_a_thread_prbot_can_prove_it_wrote(
+        self,
+    ) -> None:
+        """SEC-AUTH-01: the check id and anchor are the thread's own text.
+
+        With GITHUB_TOKEN the bot cannot read its own login, so every thread
+        carrying the marker counts as prbot's. Matching a reworded finding on
+        what such a thread says let anyone who can comment write one that
+        takes a real finding, which then got no inline comment. Without an
+        identity, only an exact fingerprint matches.
+        """
+        forged = self._thread_from(self._BEFORE, author="mallory")
+        report = reconcile([_scored(self._AFTER)], [forged], bot_user="")
+        assert [sf.finding.title for sf in report.new] == [self._AFTER.title]
+        assert report.persisting == []
 
     def test_lines_that_miss_the_anchor_are_a_different_defect(self) -> None:
         elsewhere = _finding(
@@ -322,7 +353,7 @@ class TestARewordedFindingKeepsItsThread:
             line_start=200, line_end=210,
         )
         thread = self._thread_from(self._BEFORE)
-        report = reconcile([_scored(elsewhere)], [thread])
+        report = self._reconcile([_scored(elsewhere)], [thread])
         assert len(report.new) == 1
         assert [t.id for t in report.fixed] == ["t1"]
 
@@ -334,7 +365,7 @@ class TestARewordedFindingKeepsItsThread:
             line_start=60, line_end=88,
         )
         thread = self._thread_from(self._BEFORE)
-        report = reconcile([_scored(other)], [thread])
+        report = self._reconcile([_scored(other)], [thread])
         assert len(report.new) == 1
 
     def test_a_different_file_is_a_different_defect(self) -> None:
@@ -343,13 +374,13 @@ class TestARewordedFindingKeepsItsThread:
             file_path="src/other.py", line_start=60, line_end=88,
         )
         thread = self._thread_from(self._BEFORE)
-        report = reconcile([_scored(moved)], [thread])
+        report = self._reconcile([_scored(moved)], [thread])
         assert len(report.new) == 1
 
     def test_an_exact_match_wins_the_thread(self) -> None:
         """A thread is claimed once, and by its own fingerprint first."""
         thread = self._thread_from(self._BEFORE)
-        report = reconcile(
+        report = self._reconcile(
             [_scored(self._AFTER), _scored(self._BEFORE)], [thread],
         )
         assert [sf.finding.title for sf, _ in report.persisting] == [
@@ -360,8 +391,8 @@ class TestARewordedFindingKeepsItsThread:
     def test_a_thread_without_a_check_header_is_matched_exactly_or_not_at_all(
         self,
     ) -> None:
-        thread = _thread("0" * 16, line=70)
-        report = reconcile([_scored(self._AFTER)], [thread])
+        thread = _thread("0" * 16, line=70, author=self._BOT)
+        report = self._reconcile([_scored(self._AFTER)], [thread])
         assert len(report.new) == 1
 
     def test_a_forged_thread_is_not_claimed_by_rewording(self) -> None:

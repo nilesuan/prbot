@@ -72,7 +72,8 @@ def reconcile(
 
     When bot_user is empty the identity could not be established, so the
     marker is used alone rather than discarding all prior state, which would
-    re-post every finding on the pull request.
+    re-post every finding on the pull request. Findings are then matched by
+    exact fingerprint only (SEC-AUTH-01).
     """
     ours: dict[str, ReviewThread] = {}
     ignored = 0
@@ -107,8 +108,13 @@ def reconcile(
             claimed.add(fingerprint)
         matches.append((scored, thread))
 
+    # SEC-AUTH-01: a reworded finding is matched on the check id and line a
+    # thread carries, and whoever wrote the thread chose those. Only a thread
+    # whose author was checked against our own identity is trusted with it.
+    # With GITHUB_TOKEN that identity is unavailable, and a forged thread
+    # naming a finding's check and line would otherwise take the finding.
     for i, (scored, thread) in enumerate(matches):
-        if thread is not None:
+        if thread is not None or not bot_user:
             continue
         fingerprint = _same_defect_thread(scored, ours, claimed)
         if fingerprint is not None:
@@ -156,10 +162,16 @@ def _same_defect_thread(
     the scorer's rule for two reports of one check being one defect, applied
     to a report and a thread. A thread whose code has since moved away from
     its anchor no longer matches, and the finding is posted as new.
+
+    A resolved thread is never taken (SEC-DESIGN-01). File, check and line
+    cannot tell a reworded report of the defect someone resolved from a new
+    defect of the same check on the same line, and taking it would file the
+    new one under their decision without showing it to anyone. Only an exact
+    fingerprint carries a resolution forward.
     """
     finding = scored.finding
     for fingerprint, thread in ours.items():
-        if fingerprint in claimed or thread.line is None:
+        if fingerprint in claimed or thread.resolved or thread.line is None:
             continue
         if thread.path != finding.file_path:
             continue
