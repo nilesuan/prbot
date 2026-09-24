@@ -251,6 +251,11 @@ class PrBotConfig(BaseModel, frozen=True):
     # default, output length is neither reproducible nor visible to the
     # cost estimate.
     max_output_tokens: int = Field(default=8192, gt=0)
+    # Sent to the model only when set. Claude Sonnet 5, the default, rejects
+    # temperature outright, and sending it anyway cost a failed call per
+    # agent per review. Set it for a model that accepts it, where 0 makes
+    # the output more repeatable between runs.
+    temperature: float | None = Field(default=None, ge=0.0, le=1.0)
     # SEC-DESIGN-04: the login prbot posts as, used when the token cannot
     # read it. secrets.GITHUB_TOKEN cannot call GET /user, so without this
     # prbot cannot tell its own threads from anyone else's: reworded findings
@@ -572,7 +577,7 @@ _INT_FIELDS = frozenset({
     "context_lines",
     "min_passing_score",
 })
-_FLOAT_FIELDS = frozenset({"budget_limit_usd"})
+_FLOAT_FIELDS = frozenset({"budget_limit_usd", "temperature"})
 _BOOL_FIELDS = frozenset({"dry_run", "datamark_diff", "force_review"})
 # Pydantic will not coerce a string to list[str], so without this the
 # only way to set a list was a TOML file, and the container workflows

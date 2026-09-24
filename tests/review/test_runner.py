@@ -641,8 +641,17 @@ class TestStructuredOutputIsEnforced:
         captured = self._invoke(max_output_tokens=1234)
         assert captured["inferenceConfig"]["maxTokens"] == 1234
 
-    def test_temperature_is_zero(self) -> None:
+    def test_temperature_is_not_sent_by_default(self) -> None:
+        """The default model rejects it, so sending it cost a failed call.
+
+        Every production run on claude-sonnet-5 made one rejected call per
+        agent before the real one, about 1.3 seconds of each review.
+        """
         captured = self._invoke()
+        assert "temperature" not in captured["inferenceConfig"]
+
+    def test_a_configured_temperature_is_sent(self) -> None:
+        captured = self._invoke(temperature=0.0)
         assert captured["inferenceConfig"]["temperature"] == 0.0
 
 
@@ -843,6 +852,9 @@ class TestModelsThatRejectSamplingParameters:
                 user_prompt="usr",
                 aws_region="ap-southeast-2",
                 max_output_tokens=4096,
+                # Only a configured temperature is ever sent, so only then
+                # can it be rejected.
+                temperature=0.0,
             )
         return calls
 
@@ -851,6 +863,19 @@ class TestModelsThatRejectSamplingParameters:
         assert len(calls) == 2, "should retry once, not give up"
         assert "temperature" in calls[0]["inferenceConfig"]
         assert "temperature" not in calls[1]["inferenceConfig"]
+
+    def test_a_model_that_rejects_it_costs_one_call_by_default(self) -> None:
+        from prbot.review.runner import _invoke_bedrock
+
+        client, calls = self._client_rejecting("temperature")
+        boto3 = MagicMock()
+        boto3.client.return_value = client
+        with patch.dict("sys.modules", {"boto3": boto3}):
+            _invoke_bedrock(
+                model_id="au.anthropic.claude-sonnet-5", system_prompt="s",
+                user_prompt="u", aws_region="ap-southeast-2",
+            )
+        assert len(calls) == 1
 
     def test_the_retry_keeps_max_tokens(self) -> None:
         """maxTokens bounds the spend and must survive the retry."""

@@ -255,6 +255,7 @@ All configuration can be set via `PRBOT_`-prefixed CI/CD variables:
 | `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-5` | Bedrock model ID for security review agent |
 | `PRBOT_MIN_PASSING_SCORE` | `70` | Minimum review score (0-100) required to pass |
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
+| `PRBOT_TEMPERATURE` | unset | Sampling temperature, sent only when set. The default model rejects it; set `0` for a model that accepts it |
 | `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |
 | `PRBOT_ALLOWED_REGIONS` | `ap-southeast-2` | Comma-separated regions the review may run in |
 | `PRBOT_MAX_DIFF_TOKENS` | `100000` | Maximum diff size in tokens before rejection |
