@@ -61,6 +61,12 @@ def _finding(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def _shown(user_prompt: str) -> str:
+    """The part of a prompt that shows the diff, before the list of files
+    the chunk does not show."""
+    return user_prompt.split("## Other files in this pull request")[0]
+
+
 def _is_security(system_prompt: str) -> bool:
     """Which agent the stub is answering for.
 
@@ -702,7 +708,44 @@ class TestExpandedContext:
 
         # Two agents per chunk; four calls means the two files were split.
         assert len(prompts) == 4
-        assert not any("m1/main" in p and "m2/main" in p for p in prompts)
+        shown = [_shown(p) for p in prompts]
+        assert not any("m1/main" in p and "m2/main" in p for p in shown)
+
+    @pytest.mark.asyncio
+    async def test_each_chunk_is_told_about_the_others(self) -> None:
+        from prbot.vcs.models import FileDiff, PRDiff
+
+        head = "abcdef1234567890abcdef1234567890abcdef12"
+        base = "1234567890abcdef1234567890abcdef12345678"
+        patch = "@@ -1,1 +1,2 @@\n a\n+b\n@@ -1990,1 +1991,2 @@\n c\n+d\n"
+        source = "\n".join(f"resource line {i} padding" for i in range(1, 2001))
+        adapter = FakeVCSAdapter(
+            diff=PRDiff(
+                files=[
+                    FileDiff(path="m1/main.tf", status="modified", patch=patch),
+                    FileDiff(path="m2/main.tf", status="modified", patch=patch),
+                ],
+                head_sha=head, base_sha=base,
+            ),
+            file_contents={"m1/main.tf": source, "m2/main.tf": source},
+        )
+        prompts: list[str] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            prompts.append(kwargs["user_prompt"])
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(
+                _config(
+                    context_lines=40, max_diff_tokens=3_000,
+                    budget_limit_usd=100.0,
+                ),
+            )
+
+        assert len(prompts) == 4
+        assert all("reviewed separately" in p for p in prompts)
+        assert all("m1/main.tf" in p and "m2/main.tf" in p for p in prompts)
 
     @pytest.mark.asyncio
     async def test_an_unfetchable_file_does_not_stop_the_review(self) -> None:
@@ -959,7 +1002,7 @@ class TestChunkScopedValidation:
         def bedrock(**kwargs: Any) -> dict[str, Any]:
             # Whichever chunk this is, claim a defect in the OTHER file.
             other = (
-                "src/second.py" if "first.py" in kwargs["user_prompt"]
+                "src/second.py" if "first.py" in _shown(kwargs["user_prompt"])
                 else "src/first.py"
             )
             return _bedrock_response([
@@ -980,7 +1023,7 @@ class TestChunkScopedValidation:
 
         def bedrock(**kwargs: Any) -> dict[str, Any]:
             own = (
-                "src/first.py" if "first.py" in kwargs["user_prompt"]
+                "src/first.py" if "first.py" in _shown(kwargs["user_prompt"])
                 else "src/second.py"
             )
             return _bedrock_response([

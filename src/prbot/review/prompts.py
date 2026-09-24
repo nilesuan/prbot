@@ -174,6 +174,7 @@ def build_user_prompt(
     datamark_diff: bool = True,
     file_contents: dict[str, str] | None = None,
     context_lines: int = 0,
+    all_paths: list[str] | None = None,
 ) -> str:
     """Build the user prompt containing PR metadata and diff.
 
@@ -202,6 +203,24 @@ def build_user_prompt(
     ]
 
     files_text = "\n\n".join(files_section)
+
+    # A chunk is part of a pull request, and an agent that is not told so
+    # reads the files it cannot see as files the change forgot to include.
+    shown = {f.path for f in pr_diff.files}
+    others = [p for p in (all_paths or []) if p not in shown]
+    elsewhere = ""
+    if others:
+        listed = "\n".join(
+            f"- {apply_datamarking(sanitize_path_for_prompt(p))}"
+            for p in others
+        )
+        elsewhere = (
+            f"\n\n## Other files in this pull request\n\n"
+            f"This review shows {len(shown)} of {len(shown) + len(others)} "
+            f"changed files. The files below are part of the same change and "
+            f"are reviewed separately; do not report them as missing, and do "
+            f"not infer anything about their content:\n\n{listed}\n"
+        )
     truncation_note = ""
     if pr_diff.truncated:
         truncation_note = (
@@ -221,6 +240,7 @@ def build_user_prompt(
         f"### Description\n{dm_body}\n\n"
         f"## Changed Files ({len(pr_diff.files)} files)\n\n"
         f"{files_text}"
+        f"{elsewhere}"
         f"{truncation_note}"
     )
 

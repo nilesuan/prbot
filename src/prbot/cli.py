@@ -486,12 +486,14 @@ async def run_pipeline(config: PrBotConfig) -> int:
             file_contents=file_contents,
             context_lines=config.context_lines,
         )
+        all_paths = [f.path for f in filtered_diff.files]
         chunk_texts = [
             build_user_prompt(
                 chunk, metadata,
                 datamark_diff=config.datamark_diff,
                 file_contents=file_contents,
                 context_lines=config.context_lines,
+                all_paths=all_paths,
             )
             for chunk in chunks
         ]
@@ -525,6 +527,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     datamark_diff=config.datamark_diff,
                     file_contents=file_contents,
                     context_lines=config.context_lines,
+                    all_paths=all_paths,
                 ),
             )
 
