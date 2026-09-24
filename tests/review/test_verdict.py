@@ -370,3 +370,59 @@ class TestChunkedOutcomesDoNotOverCap:
             AgentError(agent="security", error_type="x", message="m"),
         ]
         assert agents_without_coverage(outcomes) == {"security"}
+
+
+class TestAFailedChunkIsNeverApproved:
+    """SEC-DESIGN-02: a clean result covers only the files that were reviewed.
+
+    An agent that failed on a chunk never saw that chunk's files, so a review
+    with no findings says nothing about them, and the failed chunk may be the
+    one with the defect. Every agent could fail on one chunk and succeed on
+    another and the pull request was approved with exit 0. Chunking by what
+    is sent makes a large diff several chunks, so this happens more often.
+    """
+
+    _CLEAN = ReviewScore(
+        raw_score=100.0, clamped_score=100, total_deductions=0.0,
+        finding_count=0, critical_override=False,
+    )
+
+    @staticmethod
+    def _failed(agent: str) -> AgentError:
+        return AgentError(agent=agent, error_type="throttled", message="m")
+
+    def test_a_chunk_every_agent_failed_on_is_not_approved(self) -> None:
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentResult(agent="security", findings=[]),
+            self._failed("general"),
+            self._failed("security"),
+        ]
+        assert determine_verdict(
+            outcomes, [], self._CLEAN,
+        ) == ReviewVerdict.COMMENT
+
+    def test_one_agent_failing_on_one_chunk_is_not_approved(self) -> None:
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentResult(agent="security", findings=[]),
+            AgentResult(agent="general", findings=[]),
+            self._failed("security"),
+        ]
+        assert determine_verdict(
+            outcomes, [], self._CLEAN,
+        ) == ReviewVerdict.COMMENT
+
+    def test_a_blocker_from_another_chunk_still_requests_changes(self) -> None:
+        """Holding back approval does not discard what other chunks found."""
+        outcomes = [
+            AgentResult(agent="general", findings=[]),
+            AgentResult(agent="security", findings=[]),
+            self._failed("general"),
+            self._failed("security"),
+        ]
+        blocker = TestChunkedOutcomesDoNotOverCap._blocker()
+        score = TestChunkedOutcomesDoNotOverCap._score()
+        assert determine_verdict(
+            outcomes, blocker, score,
+        ) == ReviewVerdict.REQUEST_CHANGES
