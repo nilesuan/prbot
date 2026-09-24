@@ -133,9 +133,10 @@ is what severity is for.
   more than it saves.
 
 Nothing you report is discarded for want of confidence. A finding below the
-reporting threshold is shown with its confidence printed and counts towards
-the score at a reduced weight, and a critical or high finding is always shown
-whatever its confidence. Filing a serious defect low is therefore not a way
+reporting threshold is still shown with its confidence printed: one just below
+it counts towards the score at a reduced weight, the rest are listed without
+affecting the score, and a critical or high finding is always shown
+prominently whatever its confidence. Filing a serious defect low is therefore not a way
 to hedge: it is how the reader learns you suspected it.
 
 ## Scope

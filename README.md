@@ -91,12 +91,12 @@ Not all findings are equal. prbot uses confidence bands to reduce noise:
 
 - **Reported** -- high confidence findings, shown in the table and posted on their line
 - **Borderline** -- medium confidence findings, also posted on their line and listed in a collapsed section
-- **Hidden** -- low confidence findings, counted in the footer but not shown
+- **Low-confidence** -- listed one line each in a collapsed section, not posted on their line, and recorded in the audit record
 
 Each finding has a severity weight and a confidence score. A reported finding
 deducts its full weight scaled by confidence; a borderline one deducts half of
 that, so a finding the model is less sure of costs something rather than
-nothing. Hidden findings deduct nothing.
+nothing. Low-confidence findings deduct nothing.
 
 **A critical or high finding is never hidden.** However low its confidence, it
 is surfaced as borderline with that confidence printed. It is not promoted into
@@ -107,7 +107,9 @@ critical does not on its own block a review.
 The combination produces a 0-100 review score and a deterministic verdict
 (APPROVE, COMMENT, or REQUEST_CHANGES). The footer accounts for every finding
 the agents produced: how many were merged as one defect, dropped as outside the
-diff, suppressed by configuration, or hidden, and how many are shown.
+diff, suppressed by configuration, or listed as low confidence, and how many
+are shown. The `review.audit` log record carries every finding's check,
+severity, confidence, band, location and fingerprint, but no model prose.
 
 ### Security by Default
 

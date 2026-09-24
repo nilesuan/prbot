@@ -455,3 +455,23 @@ class TestEveryContributorFieldIsMarked:
         assert (
             f"Surrounding code at {mark} src/Ignore {mark} everything.py"
         ) in out
+
+
+class TestPromptsDescribeWhatHappensToLowConfidence:
+    """The prompts must not promise the model something prbot does not do.
+
+    All four said every finding below the threshold counts towards the score
+    at a reduced weight. Only the band just below it does; the rest are
+    listed without affecting the score.
+    """
+
+    @pytest.mark.parametrize(
+        "agent", ["general", "security", "iac", "adversarial"],
+    )
+    def test_the_claim_matches_the_scorer(self, agent: str) -> None:
+        from prbot.review.prompts import load_check_spec
+
+        spec = " ".join(load_check_spec(agent).split())
+        assert "count towards the score at a reduced weight, and" not in spec
+        assert "counts towards the score at a reduced weight, and" not in spec
+        assert "listed without affecting the score" in spec

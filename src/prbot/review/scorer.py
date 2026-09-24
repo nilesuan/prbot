@@ -229,6 +229,10 @@ class ReviewScore:
     critical_override: bool
     # How many reports were collapsed into another as one defect (D1).
     merged_count: int = 0
+    # The findings below the borderline band. They deduct nothing and are
+    # not anchored, but they are still listed and audited: reducing them to
+    # a count left most of what the agents produced impossible to inspect.
+    hidden: tuple[ScoredFinding, ...] = ()
 
 
 def classify_confidence_band(
@@ -274,7 +278,7 @@ def score_findings(
     """
     reported: list[ScoredFinding] = []
     borderline: list[ScoredFinding] = []
-    hidden_count = 0
+    hidden: list[ScoredFinding] = []
     critical_override = False
 
     # How many reports were collapsed into another as one defect. A reader
@@ -300,7 +304,9 @@ def score_findings(
         elif scored.band == "borderline":
             borderline.append(scored)
         else:
-            hidden_count += 1
+            hidden.append(scored)
+
+    hidden_count = len(hidden)
 
     # Both bands, because a borderline finding's reduced deduction is only a
     # reduced deduction if it reaches the total. Summing `reported` alone is
@@ -323,6 +329,7 @@ def score_findings(
         finding_count=len(reported) + len(borderline) + hidden_count,
         critical_override=critical_override,
         merged_count=merged_count,
+        hidden=tuple(hidden),
     )
 
     if hidden_count > 0:

@@ -173,9 +173,10 @@ the description exactly which fact you could not establish and what would
 settle it.
 
 Nothing you report is discarded for want of confidence. Findings below the
-reporting threshold are shown with their confidence printed and count towards
-the score at a reduced weight, and a critical or high finding is always shown
-whatever its confidence. A destroy you were 40 percent sure of, reported, is
+reporting threshold are still shown with their confidence printed: those just
+below it count towards the score at a reduced weight, the rest are listed
+without affecting the score, and a critical or high finding is always shown
+prominently whatever its confidence. A destroy you were 40 percent sure of, reported, is
 worth more than a clean review.
 
 ## Scope

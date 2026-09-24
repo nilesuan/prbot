@@ -238,3 +238,55 @@ class TestAuditRecordCarriesCost:
         )
         assert record.cost_usd == 0.05
         assert asdict(record)["cost_usd"] == 0.05
+
+
+class TestFindingsInTheAuditRecord:
+    """Every finding is in the audit record, whatever band it landed in.
+
+    Only structured fields: G-11 keeps model prose out of the audit trail,
+    and the fingerprint links an entry to the finding in the comment.
+    """
+
+    @staticmethod
+    def _entry(**overrides: object):
+        from prbot.observability.audit import FindingAuditInfo
+
+        base: dict[str, object] = {
+            "fingerprint": "0123456789abcdef",
+            "check_id": "IAC-REPLACE-01",
+            "severity": "high",
+            "confidence": 45,
+            "band": "hidden",
+            "file_path": "main.tf",
+            "line_start": 60,
+            "line_end": 88,
+        }
+        base.update(overrides)
+        return FindingAuditInfo(**base)
+
+    def test_findings_are_recorded(self) -> None:
+        record = _make_audit_record(findings=[self._entry()])
+        assert record.findings[0].band == "hidden"
+        assert record.findings[0].check_id == "IAC-REPLACE-01"
+
+    def test_the_default_is_no_findings(self) -> None:
+        assert _make_audit_record().findings == []
+
+    def test_an_entry_carries_no_prose(self) -> None:
+        from dataclasses import fields
+
+        from prbot.observability.audit import FindingAuditInfo
+
+        names = {f.name for f in fields(FindingAuditInfo)}
+        assert not names & {"title", "description", "suggestion",
+                            "failure_scenario"}
+
+    def test_a_long_path_is_capped(self) -> None:
+        record = _make_audit_record(
+            findings=[self._entry(file_path="d/" * 300 + "x.tf")],
+        )
+        assert len(record.findings[0].file_path) <= 256
+
+    def test_the_record_still_meets_g11(self) -> None:
+        record = _make_audit_record(findings=[self._entry()])
+        assert not _TOKEN_PATTERNS.search(json.dumps(asdict(record)))

@@ -459,3 +459,36 @@ class TestDeduplication:
         assert len(reported) == 1
         assert score.total_deductions == pytest.approx(13.5)
         assert score.clamped_score == 86
+
+
+class TestHiddenFindingsAreKept:
+    """A hidden finding is still a finding; only its prominence changes.
+
+    Hiding one used to reduce it to a count, so its check, file and line
+    reached neither the comment nor the audit record, and 113 of 140
+    production findings could not be inspected at all.
+    """
+
+    def test_the_score_carries_the_hidden_findings(self) -> None:
+        low = _make_finding(severity="low", confidence=20)
+        kept = _make_finding(severity="medium", confidence=90)
+        _, _, hidden_count, score = score_findings(
+            [AgentResult(agent="general", findings=[low, kept])],
+        )
+        assert hidden_count == 1
+        assert [sf.finding.title for sf in score.hidden] == [low.title]
+        assert all(sf.band == "hidden" for sf in score.hidden)
+
+    def test_nothing_hidden_means_an_empty_tuple(self) -> None:
+        _, _, _, score = score_findings(
+            [AgentResult(agent="general", findings=[_make_finding(confidence=90)])],
+        )
+        assert score.hidden == ()
+
+    def test_hidden_findings_still_deduct_nothing(self) -> None:
+        _, _, _, score = score_findings(
+            [AgentResult(agent="general", findings=[
+                _make_finding(severity="low", confidence=20),
+            ])],
+        )
+        assert score.total_deductions == 0.0

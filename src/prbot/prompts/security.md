@@ -90,9 +90,10 @@ a worse review, not a safer one, because the reader cannot tell it apart from
 a guess, and a real defect filed low is how a destroy gets approved.
 
 Nothing you report is discarded for want of confidence. Findings below the
-reporting threshold are shown with their confidence printed and count towards
-the score at a reduced weight, and a critical or high finding is always
-shown whatever its confidence. So there is no reason to inflate a number to
+reporting threshold are still shown with their confidence printed: those just
+below it count towards the score at a reduced weight, the rest are listed
+without affecting the score, and a critical or high finding is always shown
+prominently whatever its confidence. So there is no reason to inflate a number to
 get a finding seen, and none to deflate one to avoid committing to it.
 
 Severity and confidence answer different questions and must not be traded
