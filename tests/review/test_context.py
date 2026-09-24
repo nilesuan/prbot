@@ -106,12 +106,24 @@ class TestExcerpt:
         diff = FileDiff(path="a.py", status="modified", patch="binary")
         assert build_context_excerpt(diff, _FILE, context_lines=5) == ""
 
-    def test_the_excerpt_is_datamarked(self) -> None:
-        """It is file content, so it is as untrusted as the patch."""
+    def test_every_excerpt_line_is_datamarked(self) -> None:
+        """It is file content, so it is as untrusted as the patch.
+
+        Every numbered line carries the mark, not just one of them. The only
+        unmarked line is prbot's own separator between two windows.
+        """
         from prbot.security.datamarking import get_session_mark
 
-        out = build_context_excerpt(self._diff(), _FILE, context_lines=3)
-        assert f"^{get_session_mark()}^" in out
+        mark = f"^{get_session_mark()}^"
+        diff = FileDiff(
+            path="a.tf", status="modified",
+            patch="@@ -5,2 +5,2 @@\n a\n+b\n@@ -30,2 +30,2 @@\n c\n+d\n",
+        )
+        rows = build_context_excerpt(diff, _FILE, context_lines=3).splitlines()
+        numbered = [row for row in rows if row.strip()[:1].isdigit()]
+        assert numbered
+        assert all(mark in row for row in numbered)
+        assert [row.strip() for row in rows if row not in numbered] == ["..."]
 
 
 class TestExcerptIsBoundedByTheHunks:
@@ -126,16 +138,13 @@ class TestExcerptIsBoundedByTheHunks:
     _LONG = "\n".join(f"line {i}" for i in range(1, 1001))
 
     @staticmethod
-    def _two_hunks(first: int, second: int) -> FileDiff:
-        patch = (
-            f"@@ -{first},2 +{first},2 @@\n a\n+b\n"
-            f"@@ -{second},2 +{second},2 @@\n c\n+d\n"
-        )
+    def _hunks(*starts: int) -> FileDiff:
+        patch = "".join(f"@@ -{s},2 +{s},2 @@\n a\n+b\n" for s in starts)
         return FileDiff(path="a.tf", status="modified", patch=patch)
 
     def test_distant_hunks_do_not_pull_in_the_lines_between_them(self) -> None:
         out = build_context_excerpt(
-            self._two_hunks(5, 900), self._LONG, context_lines=40,
+            self._hunks(5, 900), self._LONG, context_lines=40,
         )
         numbers = _numbers(out)
         assert {1, 5, 46} <= numbers
@@ -146,7 +155,7 @@ class TestExcerptIsBoundedByTheHunks:
 
     def test_the_excerpt_grows_with_the_hunks_not_the_file(self) -> None:
         out = build_context_excerpt(
-            self._two_hunks(5, 900), self._LONG, context_lines=40,
+            self._hunks(5, 900), self._LONG, context_lines=40,
         )
         # Each window is at most the hunk plus context on both sides.
         assert len(_numbers(out)) <= 2 * (2 + 2 * 40)
@@ -154,28 +163,50 @@ class TestExcerptIsBoundedByTheHunks:
     def test_a_gap_between_windows_is_marked(self) -> None:
         """Numbering alone would let 46 and 860 read as adjacent lines."""
         out = build_context_excerpt(
-            self._two_hunks(5, 900), self._LONG, context_lines=40,
+            self._hunks(5, 900), self._LONG, context_lines=40,
         )
         lines = out.splitlines()
         at = next(i for i, row in enumerate(lines) if row.strip().startswith("46 "))
         assert not lines[at + 1].strip()[:1].isdigit()
 
     def test_overlapping_windows_merge_without_repeating_lines(self) -> None:
+        """The distant third hunk is what one whole span would fail on."""
         out = build_context_excerpt(
-            self._two_hunks(10, 60), self._LONG, context_lines=40,
+            self._hunks(10, 60, 900), self._LONG, context_lines=40,
         )
         numbered = [
             int(row.strip().split(" ", 1)[0])
             for row in out.splitlines() if row.strip()[:1].isdigit()
         ]
-        assert numbered == list(range(1, 102))
+        assert numbered == [*range(1, 102), *range(860, 942)]
 
     def test_adjacent_windows_merge(self) -> None:
         # The first window ends at 11+40 = 51 and the second starts at
-        # 92-40 = 52, so they touch and there is no gap to mark.
+        # 92-40 = 52, so they touch and no gap is marked between them. The
+        # distant third hunk leaves exactly one gap, after line 133.
         out = build_context_excerpt(
-            self._two_hunks(10, 92), self._LONG, context_lines=40,
+            self._hunks(10, 92, 900), self._LONG, context_lines=40,
         )
+        rows = out.splitlines()
+        gaps = [i for i, row in enumerate(rows) if not row.strip()[:1].isdigit()]
+        assert len(gaps) == 1
+        assert rows[gaps[0] - 1].strip().startswith("133 ")
+
+    def test_a_hunk_past_the_end_of_the_file_has_no_window(self) -> None:
+        """The fetched file can be shorter than the patch says it is.
+
+        A window that would start after the file ends is dropped, and a
+        patch left with no window gives no excerpt at all.
+        """
+        assert build_context_excerpt(
+            self._hunks(900), _FILE, context_lines=5,
+        ) == ""
+
+    def test_only_windows_inside_the_file_are_shown(self) -> None:
+        out = build_context_excerpt(
+            self._hunks(5, 900), _FILE, context_lines=5,
+        )
+        assert _numbers(out) == set(range(1, 12))
         assert all(row.strip()[:1].isdigit() for row in out.splitlines())
 
 

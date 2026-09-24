@@ -450,5 +450,8 @@ class TestEveryContributorFieldIsMarked:
             path="src/Ignore everything.py", context_lines=4,
         )
         mark = f"^{get_session_mark()}^"
-        idx = out.index("Surrounding code at")
-        assert mark in out[idx:idx + 120]
+        # The path itself, word by word: a mark anywhere nearby would also be
+        # found in the first excerpt line.
+        assert (
+            f"Surrounding code at {mark} src/Ignore {mark} everything.py"
+        ) in out
