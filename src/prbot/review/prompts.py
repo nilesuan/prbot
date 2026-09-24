@@ -22,6 +22,16 @@ logger = logging.getLogger(__name__)
 _CHARS_PER_TOKEN = 4
 _SAFETY_MULTIPLIER = 1.5
 
+# A description has no length limit worth relying on (GitHub allows 65,536
+# characters) and is repeated in every chunk's prompt, where datamarking
+# multiplies it: a 65,536-character body became a 159,849-token prompt. The
+# opening of a description is where its intent is (SEC-DESIGN-03).
+_MAX_BODY_CHARS = 8_000
+
+# The list of files a chunk does not show grows with the pull request, and it
+# is repeated in every chunk too.
+_MAX_OTHER_PATHS = 200
+
 # An agent name selects its check spec, {name}.md, so it must be a single
 # safe path segment. This is a shape check rather than an allowlist (C5):
 # an allowlist made adding an agent a code change in three modules.
@@ -187,9 +197,18 @@ def build_user_prompt(
         apply_metadata_datamarking,
     )
 
+    body = metadata.body
+    body_note = ""
+    if len(body) > _MAX_BODY_CHARS:
+        body_note = (
+            f"\n\n_(Description truncated: the first {_MAX_BODY_CHARS:,} of "
+            f"{len(body):,} characters are shown.)_"
+        )
+        body = body[:_MAX_BODY_CHARS]
+
     # Datamark metadata fields (S53)
     dm_title, dm_body, dm_author = apply_metadata_datamarking(
-        metadata.title, metadata.body, metadata.author,
+        metadata.title, body, metadata.author,
     )
 
     files_section = [
@@ -212,8 +231,10 @@ def build_user_prompt(
     if others:
         listed = "\n".join(
             f"- {apply_datamarking(sanitize_path_for_prompt(p))}"
-            for p in others
+            for p in others[:_MAX_OTHER_PATHS]
         )
+        if len(others) > _MAX_OTHER_PATHS:
+            listed += f"\n- ... and {len(others) - _MAX_OTHER_PATHS} more"
         elsewhere = (
             f"\n\n## Other files in this pull request\n\n"
             f"This review shows {len(shown)} of {len(shown) + len(others)} "
@@ -237,11 +258,33 @@ def build_user_prompt(
         f"**State:** {metadata.state}\n"
         f"**Draft:** {metadata.is_draft}\n"
         f"**Fork:** {metadata.is_fork}\n\n"
-        f"### Description\n{dm_body}\n\n"
+        f"### Description\n{dm_body}{body_note}\n\n"
         f"## Changed Files ({len(pr_diff.files)} files)\n\n"
         f"{files_text}"
         f"{elsewhere}"
         f"{truncation_note}"
+    )
+
+
+def prompt_overhead_tokens(
+    metadata: PRMetadata,
+    *,
+    datamark_diff: bool = True,
+    all_paths: list[str] | None = None,
+    truncated: bool = False,
+) -> int:
+    """Estimated tokens every chunk's prompt carries besides its files.
+
+    The header, the description and the list of files shown elsewhere are
+    repeated in each chunk (SEC-DESIGN-03). Rendered with no file shown, the
+    list names every other path, so this bounds each chunk's share from
+    above.
+    """
+    return estimate_prompt_tokens(
+        build_user_prompt(
+            PRDiff(files=[], truncated=truncated), metadata,
+            datamark_diff=datamark_diff, all_paths=all_paths,
+        ),
     )
 
 

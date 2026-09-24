@@ -748,6 +748,65 @@ class TestExpandedContext:
         assert all("m1/main.tf" in p and "m2/main.tf" in p for p in prompts)
 
     @pytest.mark.asyncio
+    async def test_each_prompt_fits_the_limit_with_its_header(self) -> None:
+        """The description every chunk repeats counts towards the limit.
+
+        Two files that fit max_diff_tokens together are split once the
+        header and description each chunk carries are counted
+        (SEC-DESIGN-03).
+        """
+        from prbot.review.chunking import rendered_file_tokens
+        from prbot.review.prompts import (
+            estimate_prompt_tokens,
+            prompt_overhead_tokens,
+        )
+        from prbot.vcs.models import FileDiff, PRDiff, PRMetadata
+
+        head = "abcdef1234567890abcdef1234567890abcdef12"
+        base = "1234567890abcdef1234567890abcdef12345678"
+        patch = "@@ -1,1 +1,200 @@\n" + "\n".join(
+            f"+value_{i} = {i}" for i in range(200)
+        ) + "\n"
+        files = [
+            FileDiff(path=p, status="modified", patch=patch)
+            for p in ("a.tf", "b.tf")
+        ]
+        meta = PRMetadata(
+            title="t",
+            body="\n".join(f"step {i}: explain the change" for i in range(60)),
+            state="open", head_sha=head, base_sha=base,
+            head_ref="f", base_ref="main", author="x", number=42,
+        )
+        paths = [f.path for f in files]
+        one = rendered_file_tokens(
+            files[0], datamark_diff=True, file_contents=None, context_lines=0,
+        )
+        limit = 2 * one + prompt_overhead_tokens(
+            meta, datamark_diff=True, all_paths=paths,
+        ) // 2
+        adapter = FakeVCSAdapter(
+            metadata=meta,
+            diff=PRDiff(files=files, head_sha=head, base_sha=base),
+        )
+        prompts: list[str] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            prompts.append(kwargs["user_prompt"])
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(
+                _config(
+                    context_lines=0, max_diff_tokens=limit,
+                    budget_limit_usd=100.0,
+                ),
+            )
+
+        # Two agents per chunk; four calls means the two files were split.
+        assert len(prompts) == 4
+        assert all(estimate_prompt_tokens(p) <= limit for p in prompts)
+
+    @pytest.mark.asyncio
     async def test_an_unfetchable_file_does_not_stop_the_review(self) -> None:
         adapter = FakeVCSAdapter(file_contents={})
         bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731

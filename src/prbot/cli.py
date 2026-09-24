@@ -477,16 +477,19 @@ async def run_pipeline(config: PrBotConfig) -> int:
                 config.context_lines,
             )
 
-        # Sized by what each file renders to, excerpt and datamarking
-        # included: sizing the raw patch let a diff estimated at 23k tokens
-        # reach the model as 635k.
+        # Sized by what each chunk's prompt will be: every file with its
+        # excerpt and datamarking, plus the header, description and list of
+        # other files each chunk repeats. Sizing the raw patch let a diff
+        # estimated at 23k tokens reach the model as 635k.
+        all_paths = [f.path for f in filtered_diff.files]
         chunks = chunk_for_prompt(
             filtered_diff, config.max_diff_tokens,
             datamark_diff=config.datamark_diff,
             file_contents=file_contents,
             context_lines=config.context_lines,
+            metadata=metadata,
+            all_paths=all_paths,
         )
-        all_paths = [f.path for f in filtered_diff.files]
         chunk_texts = [
             build_user_prompt(
                 chunk, metadata,

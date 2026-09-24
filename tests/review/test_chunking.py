@@ -241,3 +241,96 @@ class TestAChunkKnowsTheRestOfThePullRequest:
         )
         section = out[out.index("reviewed separately"):]
         assert f"^{get_session_mark()}^" in section
+
+    def test_a_long_list_of_other_files_is_capped(self) -> None:
+        """The list is repeated in every chunk and grows with the change."""
+        from prbot.review.prompts import build_user_prompt
+
+        others = [f"mod{i}/main.tf" for i in range(500)]
+        out = build_user_prompt(
+            _diff(_file("a.tf", 5)), self._meta(),
+            all_paths=["a.tf", *others],
+        )
+        section = out[out.index("reviewed separately"):]
+        assert "mod199/main.tf" in section
+        assert "mod200/main.tf" not in section
+        assert "and 300 more" in section
+
+
+class TestEveryChunkPromptFitsTheLimit:
+    """SEC-DESIGN-03: a chunk's prompt is more than its files.
+
+    Every chunk repeats the pull request's header, its description and the
+    list of files shown elsewhere. The chunker counted only the files, so
+    each call could run over max_diff_tokens by all of that.
+    """
+
+    @staticmethod
+    def _meta():
+        from prbot.vcs.models import PRMetadata
+
+        body = "\n".join(f"step {i}: explain the change" for i in range(60))
+        return PRMetadata(
+            title="t", body=body, state="open", head_sha=_HEAD, base_sha=_BASE,
+            head_ref="f", base_ref="main", author="x", number=1,
+        )
+
+    def _setup(self) -> tuple[list[FileDiff], list[str], int]:
+        from prbot.review.chunking import rendered_file_tokens
+        from prbot.review.prompts import prompt_overhead_tokens
+
+        files = [_file("a.py", 200), _file("b.py", 200)]
+        paths = [f.path for f in files]
+        one = rendered_file_tokens(
+            files[0], datamark_diff=True, file_contents=None, context_lines=0,
+        )
+        header = prompt_overhead_tokens(
+            self._meta(), datamark_diff=True, all_paths=paths,
+        )
+        # The two files fit the limit together; with the header they do not.
+        return files, paths, 2 * one + header // 2
+
+    def test_the_files_alone_would_share_an_oversized_chunk(self) -> None:
+        """Guards the test: the split below must come from the header."""
+        from prbot.review.chunking import chunk_for_prompt
+        from prbot.review.prompts import build_user_prompt, estimate_prompt_tokens
+
+        files, paths, limit = self._setup()
+        chunks = chunk_for_prompt(
+            _diff(*files), limit,
+            datamark_diff=True, file_contents=None, context_lines=0,
+        )
+        assert len(chunks) == 1
+        prompt = build_user_prompt(chunks[0], self._meta(), all_paths=paths)
+        assert estimate_prompt_tokens(prompt) > limit
+
+    def test_the_header_and_description_count_towards_the_limit(self) -> None:
+        from prbot.review.chunking import chunk_for_prompt
+        from prbot.review.prompts import build_user_prompt, estimate_prompt_tokens
+
+        files, paths, limit = self._setup()
+        chunks = chunk_for_prompt(
+            _diff(*files), limit,
+            datamark_diff=True, file_contents=None, context_lines=0,
+            metadata=self._meta(), all_paths=paths,
+        )
+        assert len(chunks) == 2
+        for chunk in chunks:
+            prompt = build_user_prompt(chunk, self._meta(), all_paths=paths)
+            assert estimate_prompt_tokens(prompt) <= limit
+
+    def test_a_header_over_the_limit_leaves_one_file_per_chunk(self) -> None:
+        from prbot.review.chunking import chunk_for_prompt
+        from prbot.review.prompts import prompt_overhead_tokens
+
+        files = [_file("a.py", 5), _file("b.py", 5)]
+        paths = [f.path for f in files]
+        header = prompt_overhead_tokens(
+            self._meta(), datamark_diff=True, all_paths=paths,
+        )
+        chunks = chunk_for_prompt(
+            _diff(*files), header // 2,
+            datamark_diff=True, file_contents=None, context_lines=0,
+            metadata=self._meta(), all_paths=paths,
+        )
+        assert [len(c.files) for c in chunks] == [1, 1]
