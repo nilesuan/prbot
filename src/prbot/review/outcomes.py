@@ -25,6 +25,7 @@ from prbot.review.identity import (
 )
 
 if TYPE_CHECKING:
+    from prbot.review.models import Finding
     from prbot.review.scorer import ScoredFinding
     from prbot.vcs.models import ReviewThread
 
@@ -113,13 +114,8 @@ def reconcile(
     # whose author was checked against our own identity is trusted with it.
     # With GITHUB_TOKEN that identity is unavailable, and a forged thread
     # naming a finding's check and line would otherwise take the finding.
-    for i, (scored, thread) in enumerate(matches):
-        if thread is not None or not bot_user:
-            continue
-        fingerprint = _same_defect_thread(scored, ours, claimed)
-        if fingerprint is not None:
-            claimed.add(fingerprint)
-            matches[i] = (scored, ours[fingerprint])
+    if bot_user:
+        _match_reworded(matches, ours, claimed)
 
     for scored, thread in matches:
         if thread is None:
@@ -131,10 +127,19 @@ def reconcile(
         else:
             persisting.append((scored, thread))
 
+    # A thread nothing claimed is fixed, unless a finding of its check still
+    # covers its line. That finding went to a nearer thread, and the defect
+    # this one is about may be the one still being reported. Without an
+    # identity no finding is matched this way, so nothing is held back.
     fixed = [
         thread
         for fingerprint, thread in ours.items()
-        if fingerprint not in claimed and not thread.resolved
+        if fingerprint not in claimed
+        and not thread.resolved
+        and not (
+            bot_user
+            and any(_covers(sf.finding, thread) for sf in reported)
+        )
     ]
 
     report = OutcomeReport(
@@ -147,21 +152,26 @@ def reconcile(
     return report
 
 
-def _same_defect_thread(
-    scored: ScoredFinding,
+def _match_reworded(
+    matches: list[tuple[ScoredFinding, ReviewThread | None]],
     ours: dict[str, ReviewThread],
     claimed: set[str],
-) -> str | None:
-    """An unclaimed thread of ours about this finding's defect, if any.
+) -> None:
+    """Give each unmatched finding the unclaimed open thread nearest it.
 
     The fingerprint hashes the title and the model rewords titles between
     runs, so the same defect on the same lines can arrive under a new
     fingerprint and would otherwise open a second thread. A thread is taken
-    to be about this finding when it is on the same file, names the same
-    check, and the finding's lines cover the line it is anchored on. That is
-    the scorer's rule for two reports of one check being one defect, applied
-    to a report and a thread. A thread whose code has since moved away from
-    its anchor no longer matches, and the finding is posted as new.
+    to be about a finding when _covers says so, which is the scorer's rule
+    for two reports of one check being one defect, applied to a report and a
+    thread. A thread whose code has since moved away from its anchor no
+    longer matches, and the finding is posted as new.
+
+    Pairs are taken nearest first, measured from the finding's last line,
+    where a finding is anchored, then narrowest finding first
+    (SEC-INTEG-01). Taking the first thread that fit made the outcome depend
+    on the order findings and threads arrived in, and let a wide finding
+    take a narrow one's thread.
 
     A resolved thread is never taken (SEC-DESIGN-01). File, check and line
     cannot tell a reworded report of the defect someone resolved from a new
@@ -169,14 +179,36 @@ def _same_defect_thread(
     new one under their decision without showing it to anyone. Only an exact
     fingerprint carries a resolution forward.
     """
-    finding = scored.finding
-    for fingerprint, thread in ours.items():
-        if fingerprint in claimed or thread.resolved or thread.line is None:
-            continue
-        if thread.path != finding.file_path:
-            continue
-        if extract_check_id(thread.body) != finding.check_id:
-            continue
-        if finding.line_start <= thread.line <= finding.line_end:
-            return fingerprint
-    return None
+    pairs = sorted(
+        (
+            abs(scored.finding.line_end - thread.line),
+            scored.finding.line_end - scored.finding.line_start,
+            i,
+            fingerprint,
+        )
+        for i, (scored, matched) in enumerate(matches)
+        if matched is None
+        for fingerprint, thread in ours.items()
+        if fingerprint not in claimed
+        and not thread.resolved
+        and _covers(scored.finding, thread)
+    )
+    for _distance, _width, i, fingerprint in pairs:
+        scored, matched = matches[i]
+        if matched is None and fingerprint not in claimed:
+            claimed.add(fingerprint)
+            matches[i] = (scored, ours[fingerprint])
+
+
+def _covers(finding: Finding, thread: ReviewThread) -> bool:
+    """Whether a finding is about the line a thread of ours is anchored on.
+
+    Same file, the same check named in the thread's posted header, and the
+    finding's lines include the thread's anchor.
+    """
+    return (
+        thread.line is not None
+        and thread.path == finding.file_path
+        and extract_check_id(thread.body) == finding.check_id
+        and finding.line_start <= thread.line <= finding.line_end
+    )

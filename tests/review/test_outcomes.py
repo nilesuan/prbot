@@ -401,3 +401,97 @@ class TestARewordedFindingKeepsItsThread:
             [_scored(self._AFTER)], [thread], bot_user="prbot",
         )
         assert len(report.new) == 1
+
+
+class TestAThreadGoesToTheClosestRewordedFinding:
+    """SEC-INTEG-01: the fallback gave a thread to the first finding it fit.
+
+    Which finding came first was the order the model reported them in, and
+    which thread came first was the order the platform returned them in. A
+    wide finding could take a narrow finding's thread: the narrow one was then
+    posted as new, and its own thread was marked fixed and resolved while its
+    defect was still being reported.
+    """
+
+    _BOT = "prbot[bot]"
+
+    @classmethod
+    def _thread_at(cls, line: int, thread_id: str) -> ReviewThread:
+        posted = _finding(
+            check_id="IAC-REPLACE-01", title=f"original report {thread_id}",
+            line_start=line - 2, line_end=line,
+        )
+        return ReviewThread(
+            id=thread_id, comment_id=line, body=_posted_body(posted),
+            resolved=False, path=posted.file_path, line=line,
+            author=cls._BOT,
+        )
+
+    @staticmethod
+    def _reworded(title: str, start: int, end: int) -> ScoredFinding:
+        return _scored(_finding(
+            check_id="IAC-REPLACE-01", title=title,
+            line_start=start, line_end=end,
+        ))
+
+    def test_the_closest_finding_wins_in_either_order(self) -> None:
+        """A finding is anchored on its last line, so that is what is near.
+
+        The far finding is the narrower one, so nearness decides, not width.
+        """
+        near = self._reworded("role is replaced on rename", 80, 88)
+        far = self._reworded("path override forces replacement", 86, 90)
+        thread = self._thread_at(88, "t88")
+        for order in ([near, far], [far, near]):
+            report = reconcile(order, [thread], bot_user=self._BOT)
+            assert [
+                (sf.finding.title, t.id) for sf, t in report.persisting
+            ] == [(near.finding.title, "t88")]
+            assert [sf.finding.title for sf in report.new] == [
+                far.finding.title,
+            ]
+
+    def test_a_wide_finding_does_not_take_a_narrow_findings_thread(
+        self,
+    ) -> None:
+        wide = self._reworded("module replaces several resources", 10, 60)
+        narrow = self._reworded("bucket name forces replacement", 18, 20)
+        threads = [self._thread_at(20, "t20"), self._thread_at(50, "t50")]
+        report = reconcile([wide, narrow], threads, bot_user=self._BOT)
+        assert sorted(
+            (sf.finding.title, t.id) for sf, t in report.persisting
+        ) == sorted([
+            (narrow.finding.title, "t20"),
+            (wide.finding.title, "t50"),
+        ])
+        assert report.new == []
+        assert report.fixed == []
+
+    def test_a_thread_whose_line_is_still_reported_is_not_fixed(self) -> None:
+        """One finding over two threads' lines takes one of them.
+
+        The other is not closed with a 'no longer reported' reply while a
+        finding of its check still covers its line.
+        """
+        wide = self._reworded("module replaces several resources", 10, 60)
+        threads = [self._thread_at(20, "t20"), self._thread_at(50, "t50")]
+        report = reconcile([wide], threads, bot_user=self._BOT)
+        assert [t.id for _, t in report.persisting] == ["t50"]
+        assert report.fixed == []
+
+    def test_without_an_identity_the_old_thread_is_closed_as_before(
+        self,
+    ) -> None:
+        """No reworded finding is matched, so nothing is held open for one.
+
+        The finding is posted as new and its old thread closed as fixed,
+        which keeps one open discussion per defect, as before rewording was
+        handled.
+        """
+        reworded = self._reworded("module replaces several resources", 10, 60)
+        thread = self._thread_at(50, "t50")
+        report = reconcile([reworded], [thread], bot_user="")
+        assert [sf.finding.title for sf in report.new] == [
+            reworded.finding.title,
+        ]
+        assert [t.id for t in report.fixed] == ["t50"]
