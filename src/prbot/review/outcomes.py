@@ -18,7 +18,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from prbot.review.identity import extract_fingerprint, finding_fingerprint
+from prbot.review.identity import (
+    extract_check_id,
+    extract_fingerprint,
+    finding_fingerprint,
+)
 
 if TYPE_CHECKING:
     from prbot.review.scorer import ScoredFinding
@@ -91,12 +95,27 @@ def reconcile(
     new: list[ScoredFinding] = []
     persisting: list[tuple[ScoredFinding, ReviewThread]] = []
     human_resolved: list[ReviewThread] = []
-    seen: set[str] = set()
+    claimed: set[str] = set()
 
+    # Exact fingerprints first, so a thread goes to the finding it was
+    # written for before any reworded report can take it.
+    matches: list[tuple[ScoredFinding, ReviewThread | None]] = []
     for scored in reported:
         fingerprint = finding_fingerprint(scored.finding)
-        seen.add(fingerprint)
         thread = ours.get(fingerprint)
+        if thread is not None:
+            claimed.add(fingerprint)
+        matches.append((scored, thread))
+
+    for i, (scored, thread) in enumerate(matches):
+        if thread is not None:
+            continue
+        fingerprint = _same_defect_thread(scored, ours, claimed)
+        if fingerprint is not None:
+            claimed.add(fingerprint)
+            matches[i] = (scored, ours[fingerprint])
+
+    for scored, thread in matches:
         if thread is None:
             new.append(scored)
         elif thread.resolved:
@@ -109,7 +128,7 @@ def reconcile(
     fixed = [
         thread
         for fingerprint, thread in ours.items()
-        if fingerprint not in seen and not thread.resolved
+        if fingerprint not in claimed and not thread.resolved
     ]
 
     report = OutcomeReport(
@@ -120,3 +139,32 @@ def reconcile(
     )
     logger.info("outcomes.reconciled %s", report.counts())
     return report
+
+
+def _same_defect_thread(
+    scored: ScoredFinding,
+    ours: dict[str, ReviewThread],
+    claimed: set[str],
+) -> str | None:
+    """An unclaimed thread of ours about this finding's defect, if any.
+
+    The fingerprint hashes the title and the model rewords titles between
+    runs, so the same defect on the same lines can arrive under a new
+    fingerprint and would otherwise open a second thread. A thread is taken
+    to be about this finding when it is on the same file, names the same
+    check, and the finding's lines cover the line it is anchored on. That is
+    the scorer's rule for two reports of one check being one defect, applied
+    to a report and a thread. A thread whose code has since moved away from
+    its anchor no longer matches, and the finding is posted as new.
+    """
+    finding = scored.finding
+    for fingerprint, thread in ours.items():
+        if fingerprint in claimed or thread.line is None:
+            continue
+        if thread.path != finding.file_path:
+            continue
+        if extract_check_id(thread.body) != finding.check_id:
+            continue
+        if finding.line_start <= thread.line <= finding.line_end:
+            return fingerprint
+    return None

@@ -240,3 +240,133 @@ class TestOnlyOurOwnThreadsAreReconciled:
         anon = self._thread(finding_fingerprint(finding), "")
         report = reconcile([_scored(finding)], [anon], bot_user="prbot[bot]")
         assert len(report.new) == 1
+
+
+def _posted_body(finding: Finding) -> str:
+    """The body prbot actually posts for a finding, marker included."""
+    from prbot.review.formatter import _format_issue_block
+
+    return _format_issue_block(_scored(finding), marker=True)
+
+
+class TestCheckIdRoundTrip:
+    def test_the_check_id_is_read_back_from_a_posted_body(self) -> None:
+        from prbot.review.identity import extract_check_id
+
+        body = _posted_body(_finding(check_id="IAC-REPLACE-01"))
+        assert extract_check_id(body) == "IAC-REPLACE-01"
+
+    def test_a_body_without_the_header_yields_nothing(self) -> None:
+        from prbot.review.identity import extract_check_id
+
+        assert extract_check_id("some finding text") is None
+
+
+class TestARewordedFindingKeepsItsThread:
+    """The model rewords its titles between runs; the defect is the same.
+
+    The fingerprint hashes the title, so a reworded title used to orphan the
+    thread: on terraform-modules MR 270 one IAC-REPLACE-01 at main.tf:88 was
+    posted under two fingerprints in three pushes, and each new one was a new
+    blocking discussion. When no fingerprint matches, a thread is still ours
+    if it is on the same file, names the same check, and the finding's lines
+    cover the line the thread is anchored on - the rule the scorer already
+    uses for two reports of one check on the same lines being one defect.
+    """
+
+    _BEFORE = _finding(
+        check_id="IAC-REPLACE-01",
+        title="iam_role_name has no lifecycle protection",
+        line_start=60, line_end=88,
+    )
+    _AFTER = _finding(
+        check_id="IAC-REPLACE-01",
+        title="IAM role name/path override forces replacement of the role",
+        line_start=60, line_end=88,
+    )
+
+    def _thread_from(self, finding: Finding, **overrides: Any) -> ReviewThread:
+        base: dict[str, Any] = {
+            "id": "t1", "comment_id": 101,
+            "body": _posted_body(finding),
+            "resolved": False,
+            "path": finding.file_path,
+            "line": finding.line_end,
+        }
+        base.update(overrides)
+        return ReviewThread(**base)
+
+    def test_the_guard_the_titles_really_fingerprint_differently(self) -> None:
+        assert finding_fingerprint(self._BEFORE) != finding_fingerprint(
+            self._AFTER,
+        )
+
+    def test_a_reworded_finding_persists_on_its_open_thread(self) -> None:
+        thread = self._thread_from(self._BEFORE)
+        report = reconcile([_scored(self._AFTER)], [thread])
+        assert report.new == []
+        assert [t.id for _, t in report.persisting] == ["t1"]
+        assert report.fixed == []
+
+    def test_a_reworded_finding_is_not_re_raised_on_a_resolved_thread(
+        self,
+    ) -> None:
+        thread = self._thread_from(self._BEFORE, resolved=True)
+        report = reconcile([_scored(self._AFTER)], [thread])
+        assert report.new == []
+        assert [t.id for t in report.human_resolved] == ["t1"]
+
+    def test_lines_that_miss_the_anchor_are_a_different_defect(self) -> None:
+        elsewhere = _finding(
+            check_id="IAC-REPLACE-01", title="guardrail name is ForceNew",
+            line_start=200, line_end=210,
+        )
+        thread = self._thread_from(self._BEFORE)
+        report = reconcile([_scored(elsewhere)], [thread])
+        assert len(report.new) == 1
+        assert [t.id for t in report.fixed] == ["t1"]
+
+    def test_a_different_check_on_the_same_lines_is_a_different_defect(
+        self,
+    ) -> None:
+        other = _finding(
+            check_id="S-DATA-01", title="role can read every log",
+            line_start=60, line_end=88,
+        )
+        thread = self._thread_from(self._BEFORE)
+        report = reconcile([_scored(other)], [thread])
+        assert len(report.new) == 1
+
+    def test_a_different_file_is_a_different_defect(self) -> None:
+        moved = _finding(
+            check_id="IAC-REPLACE-01", title="reworded",
+            file_path="src/other.py", line_start=60, line_end=88,
+        )
+        thread = self._thread_from(self._BEFORE)
+        report = reconcile([_scored(moved)], [thread])
+        assert len(report.new) == 1
+
+    def test_an_exact_match_wins_the_thread(self) -> None:
+        """A thread is claimed once, and by its own fingerprint first."""
+        thread = self._thread_from(self._BEFORE)
+        report = reconcile(
+            [_scored(self._AFTER), _scored(self._BEFORE)], [thread],
+        )
+        assert [sf.finding.title for sf, _ in report.persisting] == [
+            self._BEFORE.title,
+        ]
+        assert [sf.finding.title for sf in report.new] == [self._AFTER.title]
+
+    def test_a_thread_without_a_check_header_is_matched_exactly_or_not_at_all(
+        self,
+    ) -> None:
+        thread = _thread("0" * 16, line=70)
+        report = reconcile([_scored(self._AFTER)], [thread])
+        assert len(report.new) == 1
+
+    def test_a_forged_thread_is_not_claimed_by_rewording(self) -> None:
+        thread = self._thread_from(self._BEFORE, author="mallory")
+        report = reconcile(
+            [_scored(self._AFTER)], [thread], bot_user="prbot",
+        )
+        assert len(report.new) == 1
