@@ -162,14 +162,48 @@ class TestEstimatePromptTokens:
         assert estimate_prompt_tokens("") == 0
 
     def test_known_length(self) -> None:
-        # 400 chars / 4 chars_per_token * 1.5 safety = 150
-        text = "x" * 400
-        assert estimate_prompt_tokens(text) == 150
+        # 450 chars / 1.5 chars_per_token * 1.2 safety = 360
+        text = "x" * 450
+        assert estimate_prompt_tokens(text) == 360
 
     def test_proportional(self) -> None:
         short = estimate_prompt_tokens("a" * 100)
         long = estimate_prompt_tokens("a" * 1000)
         assert long > short
+
+
+class TestTheEstimateBoundsWhatIsBilled:
+    """The estimate is used as an upper bound, so it must not undercount.
+
+    A rendered prompt is datamarked: an eight-hex-digit marker sits beside
+    every word, and hex strings tokenise at far fewer characters per token
+    than prose or code. At 4 characters per token the estimate undercounted
+    all 129 measured calls, by a median of 1.69 times and at worst 2.10, so
+    neither the chunk limit nor the budget bound what they claimed to.
+    """
+
+    @staticmethod
+    def _pairs() -> list[list[int]]:
+        import json
+        from pathlib import Path
+
+        path = Path(__file__).parent.parent / "fixtures" / "billed_tokens.json"
+        return json.loads(path.read_text())["pairs"]
+
+    def test_no_measured_call_was_billed_more_than_estimated(self) -> None:
+        under = [
+            (chars, billed) for chars, billed in self._pairs()
+            if estimate_prompt_tokens("x" * chars) < billed
+        ]
+        assert under == []
+
+    def test_the_estimate_is_not_wildly_high_either(self) -> None:
+        """An upper bound that is too loose refuses reviews it should run."""
+        ratios = sorted(
+            estimate_prompt_tokens("x" * chars) / billed
+            for chars, billed in self._pairs()
+        )
+        assert ratios[len(ratios) // 2] < 1.5
 
 
 class TestCheckSpecsExistOnce:
