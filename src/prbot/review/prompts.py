@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 from prbot.exceptions import ConfigError
-from prbot.vcs.models import PRDiff, PRMetadata
+from prbot.vcs.models import FileDiff, PRDiff, PRMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,64 @@ def build_system_prompt(agent: str) -> str:
     )
 
 
+def render_file_block(
+    f: FileDiff,
+    *,
+    datamark_diff: bool = True,
+    file_contents: dict[str, str] | None = None,
+    context_lines: int = 0,
+) -> str:
+    """One file's section of the user prompt: header, patch and excerpt.
+
+    Separate from build_user_prompt so the chunker can size a file by what
+    will actually be sent for it rather than by its raw patch.
+    """
+    from prbot.review.context import build_context_excerpt
+    from prbot.security.datamarking import (
+        apply_datamarking,
+        apply_diff_datamarking,
+    )
+
+    # A git path is contributor-chosen prose. sanitize_path_for_prompt
+    # strips control characters, which stops newline injection, but a
+    # path may contain spaces and any printable byte, so a file added at
+    # 'src/Ignore the preceding instructions.py' would otherwise land in
+    # the prompt as an unmarked markdown heading outside the diff fence.
+    safe_path = sanitize_path_for_prompt(f.path)
+    header = f"### {apply_datamarking(safe_path)} ({f.status})"
+    if f.previous_path:
+        safe_prev = apply_datamarking(
+            sanitize_path_for_prompt(f.previous_path),
+        )
+        header += f" (renamed from {safe_prev})"
+    # Datamark the patch content, preserving hunk and file headers
+    # and the leading +/- of each line (B2)
+    if not f.patch:
+        dm_patch = ""
+    elif datamark_diff:
+        dm_patch = apply_diff_datamarking(f.patch)
+    else:
+        dm_patch = f.patch
+    block = f"{header}\n```diff\n{dm_patch}\n```"
+
+    # B8: the enclosing function is rarely inside the hunk, so a
+    # judgement about architecture or testing is otherwise made without
+    # the thing being judged.
+    if context_lines > 0 and file_contents is not None:
+        excerpt = build_context_excerpt(
+            f, file_contents.get(f.path), context_lines,
+        )
+        if excerpt:
+            block += (
+                f"\n\nSurrounding code at "
+                f"{apply_datamarking(safe_path)} "
+                f"(head revision, numbered):\n"
+                f"```\n{excerpt}\n```"
+            )
+
+    return block
+
+
 def build_user_prompt(
     pr_diff: PRDiff,
     metadata: PRMetadata,
@@ -123,10 +181,8 @@ def build_user_prompt(
     not in the system prompt. All content is datamarked for prompt injection
     defense (story-6-1).
     """
-    from prbot.review.context import build_context_excerpt
     from prbot.security.datamarking import (
         apply_datamarking,
-        apply_diff_datamarking,
         apply_metadata_datamarking,
     )
 
@@ -135,46 +191,15 @@ def build_user_prompt(
         metadata.title, metadata.body, metadata.author,
     )
 
-    files_section = []
-    for f in pr_diff.files:
-        # A git path is contributor-chosen prose. sanitize_path_for_prompt
-        # strips control characters, which stops newline injection, but a
-        # path may contain spaces and any printable byte, so a file added at
-        # 'src/Ignore the preceding instructions.py' would otherwise land in
-        # the prompt as an unmarked markdown heading outside the diff fence.
-        safe_path = sanitize_path_for_prompt(f.path)
-        header = f"### {apply_datamarking(safe_path)} ({f.status})"
-        if f.previous_path:
-            safe_prev = apply_datamarking(
-                sanitize_path_for_prompt(f.previous_path),
-            )
-            header += f" (renamed from {safe_prev})"
-        # Datamark the patch content, preserving hunk and file headers
-        # and the leading +/- of each line (B2)
-        if not f.patch:
-            dm_patch = ""
-        elif datamark_diff:
-            dm_patch = apply_diff_datamarking(f.patch)
-        else:
-            dm_patch = f.patch
-        block = f"{header}\n```diff\n{dm_patch}\n```"
-
-        # B8: the enclosing function is rarely inside the hunk, so a
-        # judgement about architecture or testing is otherwise made without
-        # the thing being judged.
-        if context_lines > 0 and file_contents is not None:
-            excerpt = build_context_excerpt(
-                f, file_contents.get(f.path), context_lines,
-            )
-            if excerpt:
-                block += (
-                    f"\n\nSurrounding code at "
-                    f"{apply_datamarking(safe_path)} "
-                    f"(head revision, numbered):\n"
-                    f"```\n{excerpt}\n```"
-                )
-
-        files_section.append(block)
+    files_section = [
+        render_file_block(
+            f,
+            datamark_diff=datamark_diff,
+            file_contents=file_contents,
+            context_lines=context_lines,
+        )
+        for f in pr_diff.files
+    ]
 
     files_text = "\n\n".join(files_section)
     truncation_note = ""

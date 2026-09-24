@@ -319,7 +319,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
         validate_data_residency,
     )
     from prbot.review.budget import TimeoutBudget, estimate_cost
-    from prbot.review.chunking import chunk_diff
+    from prbot.review.chunking import chunk_for_prompt
     from prbot.review.formatter import (
         build_inline_comments,
         format_review_comment,
@@ -477,7 +477,15 @@ async def run_pipeline(config: PrBotConfig) -> int:
                 config.context_lines,
             )
 
-        chunks = chunk_diff(filtered_diff, config.max_diff_tokens)
+        # Sized by what each file renders to, excerpt and datamarking
+        # included: sizing the raw patch let a diff estimated at 23k tokens
+        # reach the model as 635k.
+        chunks = chunk_for_prompt(
+            filtered_diff, config.max_diff_tokens,
+            datamark_diff=config.datamark_diff,
+            file_contents=file_contents,
+            context_lines=config.context_lines,
+        )
         chunk_texts = [
             build_user_prompt(
                 chunk, metadata,

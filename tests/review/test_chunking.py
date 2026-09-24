@@ -108,3 +108,86 @@ class TestDegenerateInput:
         chunks = chunk_diff(diff, 0)
         assert len(chunks) == 2
         assert all(len(c.files) == 1 for c in chunks)
+
+
+class TestChunksAreSizedByWhatIsSent:
+    """The limit applies to the prompt the model receives, not the raw patch.
+
+    Sizing on the raw patch left out the surrounding-code excerpt and the
+    datamarking, which together made a 44-file diff estimated at about 23k
+    tokens arrive as 635k billed input tokens per agent, in one call, with
+    max_diff_tokens at 100k never tripping.
+    """
+
+    _CONTENT = "\n".join(f"resource line {i}" for i in range(1, 2001))
+
+    @staticmethod
+    def _edited_at_both_ends(path: str) -> FileDiff:
+        return FileDiff(
+            path=path,
+            status="modified",
+            patch=(
+                "@@ -1,1 +1,2 @@\n a\n+b\n"
+                "@@ -1990,1 +1991,2 @@\n c\n+d\n"
+            ),
+        )
+
+    def _files(self) -> list[FileDiff]:
+        return [self._edited_at_both_ends(f"m{i}/main.tf") for i in range(4)]
+
+    def test_the_raw_patch_alone_would_not_split(self) -> None:
+        """Guards the test: the split below must come from what is rendered."""
+        assert len(chunk_diff(_diff(*self._files()), 2_000)) == 1
+
+    def test_surrounding_code_counts_towards_the_limit(self) -> None:
+        from prbot.review.chunking import chunk_for_prompt, rendered_file_tokens
+
+        files = self._files()
+        contents = {f.path: self._CONTENT for f in files}
+        one = rendered_file_tokens(
+            files[0], datamark_diff=True, file_contents=contents,
+            context_lines=40,
+        )
+        limit = one * 2
+        chunks = chunk_for_prompt(
+            _diff(*files), limit,
+            datamark_diff=True, file_contents=contents, context_lines=40,
+        )
+        assert [len(c.files) for c in chunks] == [2, 2]
+
+    def test_datamarking_counts_towards_the_limit(self) -> None:
+        from prbot.review.chunking import rendered_file_tokens
+
+        f = _file("a.py", 200)
+        marked = rendered_file_tokens(
+            f, datamark_diff=True, file_contents=None, context_lines=0,
+        )
+        plain = rendered_file_tokens(
+            f, datamark_diff=False, file_contents=None, context_lines=0,
+        )
+        assert marked > plain
+
+    def test_the_size_is_that_of_the_rendered_block(self) -> None:
+        from prbot.review.chunking import rendered_file_tokens
+        from prbot.review.prompts import estimate_prompt_tokens, render_file_block
+
+        f = self._edited_at_both_ends("a.tf")
+        contents = {"a.tf": self._CONTENT}
+        block = render_file_block(
+            f, datamark_diff=True, file_contents=contents, context_lines=40,
+        )
+        assert rendered_file_tokens(
+            f, datamark_diff=True, file_contents=contents, context_lines=40,
+        ) == estimate_prompt_tokens(block)
+
+    def test_without_context_or_marking_it_matches_the_old_sizing(self) -> None:
+        from prbot.review.chunking import chunk_for_prompt
+
+        files = [_file(f"f{i}.py", 50) for i in range(6)]
+        assert [
+            [x.path for x in c.files]
+            for c in chunk_for_prompt(
+                _diff(*files), 400,
+                datamark_diff=False, file_contents=None, context_lines=0,
+            )
+        ] == [[x.path for x in c.files] for c in chunk_diff(_diff(*files), 400)]

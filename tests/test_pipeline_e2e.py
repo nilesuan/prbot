@@ -664,6 +664,47 @@ class TestExpandedContext:
         assert "Surrounding code" in seen[0]
 
     @pytest.mark.asyncio
+    async def test_the_excerpt_counts_towards_the_chunk_limit(self) -> None:
+        """Two tiny patches in large files are split when their context is.
+
+        The chunker used to size the raw patch only, so any amount of
+        surrounding code rode along in a single call.
+        """
+        from prbot.vcs.models import FileDiff, PRDiff
+
+        head = "abcdef1234567890abcdef1234567890abcdef12"
+        base = "1234567890abcdef1234567890abcdef12345678"
+        patch = "@@ -1,1 +1,2 @@\n a\n+b\n@@ -1990,1 +1991,2 @@\n c\n+d\n"
+        source = "\n".join(f"resource line {i} padding" for i in range(1, 2001))
+        adapter = FakeVCSAdapter(
+            diff=PRDiff(
+                files=[
+                    FileDiff(path="m1/main.tf", status="modified", patch=patch),
+                    FileDiff(path="m2/main.tf", status="modified", patch=patch),
+                ],
+                head_sha=head, base_sha=base,
+            ),
+            file_contents={"m1/main.tf": source, "m2/main.tf": source},
+        )
+        prompts: list[str] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            prompts.append(kwargs["user_prompt"])
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(
+                _config(
+                    context_lines=40, max_diff_tokens=3_000,
+                    budget_limit_usd=100.0,
+                ),
+            )
+
+        # Two agents per chunk; four calls means the two files were split.
+        assert len(prompts) == 4
+        assert not any("m1/main" in p and "m2/main" in p for p in prompts)
+
+    @pytest.mark.asyncio
     async def test_an_unfetchable_file_does_not_stop_the_review(self) -> None:
         adapter = FakeVCSAdapter(file_contents={})
         bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
