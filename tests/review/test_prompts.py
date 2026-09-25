@@ -198,12 +198,40 @@ class TestTheEstimateBoundsWhatIsBilled:
         assert under == []
 
     def test_the_estimate_is_not_wildly_high_either(self) -> None:
-        """An upper bound that is too loose refuses reviews it should run."""
+        """An upper bound that is too loose refuses reviews it should run.
+
+        The median and the worst case are both held (QA-COV-02).
+        """
         ratios = sorted(
             estimate_prompt_tokens("x" * chars) / billed
             for chars, billed in self._pairs()
         )
         assert ratios[len(ratios) // 2] < 1.5
+        assert ratios[-1] < 2.0
+
+    def test_the_largest_measured_call_fits_the_default_budget(self) -> None:
+        """QA-COV-03: the estimate is about twice as strict as it was.
+
+        The largest call measured, 1.2 million characters, sent to both
+        default agents with their whole output allowance, has to stay
+        reviewable at the default budget, or the stricter estimate refuses
+        reviews that ran.
+        """
+        from prbot.config import PrBotConfig
+        from prbot.review.budget import estimate_cost
+
+        defaults = PrBotConfig.model_fields
+        largest = max(chars for chars, _ in self._pairs())
+        estimate = estimate_cost(
+            "x" * largest,
+            [
+                defaults["general_model_id"].default,
+                defaults["security_model_id"].default,
+            ],
+            defaults["budget_limit_usd"].default,
+            estimated_output_tokens=defaults["max_output_tokens"].default,
+        )
+        assert estimate.within_budget
 
 
 class TestCheckSpecsExistOnce:

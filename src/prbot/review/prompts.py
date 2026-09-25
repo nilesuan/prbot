@@ -18,18 +18,15 @@ from prbot.vcs.models import FileDiff, PRDiff, PRMetadata
 
 logger = logging.getLogger(__name__)
 
-# Token estimation (GAP-12). The text estimated is the rendered prompt, and
-# datamarking puts an eight-hex-digit marker beside every word; hex tokenises
-# at far fewer characters per token than prose or code, so the rendered
-# prompt runs at about 1.5 characters per token, not the 4 of plain English.
-# Measured against Bedrock's billed inputTokens on 129 production calls
-# (tests/fixtures/billed_tokens.json): median 1.57, range 1.27-1.91.
-# Calibrated on half the merge requests (median 1.496) and checked on the
-# other half: 1.5 with a 1.2 multiplier, an effective 1.25, undercounted
-# none of the 69 held-out calls. Without the multiplier 1.5 undercounts
-# 53 of 129; at 1.3 the median estimate is 1.25 times what is billed.
-# The multiplier is also what absorbs the per-run spread from the random
-# marker, which bills identical prompts up to about 17% apart.
+# Token estimation (GAP-12). The text estimated is the rendered prompt, where
+# datamarking puts an eight-hex-digit marker beside every word, and hex
+# tokenises at far fewer characters per token than prose: against Bedrock's
+# billed inputTokens the rendered prompt runs at 1.27-1.91 characters per
+# token, median 1.57, over the 126 calls in tests/fixtures/billed_tokens.json.
+# 1.5 with a 1.2 multiplier overestimates every one of them, by a median of
+# 1.26 times and at most 1.53, which the tests hold. The multiplier also
+# absorbs the random marker, which bills identical prompts up to about 17%
+# apart.
 _CHARS_PER_TOKEN = 1.5
 _SAFETY_MULTIPLIER = 1.2
 
