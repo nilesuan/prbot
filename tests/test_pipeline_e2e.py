@@ -40,6 +40,9 @@ def _config(**overrides: Any) -> PrBotConfig:
         "general_model_id": _MODEL,
         "security_model_id": _MODEL,
         "dry_run": False,
+        # Off here so tests about other stages see only the agents' calls;
+        # TestVerificationPass turns it on where it is the subject.
+        "verify": False,
     }
     defaults.update(overrides)
     return PrBotConfig(**defaults)
@@ -1485,3 +1488,196 @@ class TestReadingBeyondTheDiff:
         assert exit_code == EXIT_PASS
         assert len(adapter.posted_comments) == 1
         assert not any(c.get("messages") for c in calls)
+
+
+class TestVerificationPass:
+    """With PRBOT_VERIFY on, a confirmed finding can gain confidence, and
+    no finding loses any."""
+
+    @staticmethod
+    def _stub(finding: dict[str, Any], verdict: str, confidence: int):
+        calls: list[dict[str, Any]] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            tools = (kwargs.get("tool_config") or {}).get("tools") or []
+            if any(t["toolSpec"]["name"] == "report_verdicts" for t in tools):
+                return {
+                    "usage": {"inputTokens": 5000, "outputTokens": 100},
+                    "output": {"message": {"content": [{"toolUse": {
+                        "name": "report_verdicts",
+                        "input": {"verdicts": [{
+                            "index": 1, "verdict": verdict,
+                            "confidence": confidence, "reason": "line 2",
+                        }]},
+                    }}]}},
+                }
+            if _is_security(kwargs["system_prompt"]):
+                return _bedrock_response([])
+            return _bedrock_response([finding])
+
+        return bedrock, calls
+
+    @pytest.mark.asyncio
+    async def test_a_confirmed_finding_is_promoted(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock, _ = self._stub(_finding(confidence=40), "confirmed", 92)
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(verify=True, budget_limit_usd=100.0))
+
+        body = adapter.posted_comments[0]
+        assert "### Issues" in body
+        assert "92%" in body
+        assert "1 confirmed" in body
+
+    @pytest.mark.asyncio
+    async def test_a_refuted_finding_is_recorded_not_demoted(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock, _ = self._stub(_finding(confidence=90), "refuted", 10)
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(verify=True, budget_limit_usd=100.0))
+
+        body = adapter.posted_comments[0]
+        assert "### Issues" in body
+        assert "90%" in body
+        assert "1 refuted" in body
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("verdict", "confidence"), [("confirmed", 50), ("refuted", 10)],
+    )
+    async def test_no_verdict_lifts_a_failing_score(
+        self, verdict: str, confidence: int,
+    ) -> None:
+        """SEC-SUPPRESS-SCORE-01: four medium findings at 95 fail the score.
+        Verdicts at 50 moved them out of the reported band and the review
+        passed, because only critical and high findings had a floor."""
+        findings = [
+            _finding(check_id=check, title=title, confidence=95)
+            for check, title in (
+                ("Q-ERR-01", "Bare except swallows the error"),
+                ("Q-ERR-02", "Retry loop never gives up"),
+                ("Q-MAINT-01", "Timeout is ignored by the caller"),
+                ("Q-API-01", "Log line leaks the request body"),
+            )
+        ]
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            tools = (kwargs.get("tool_config") or {}).get("tools") or []
+            if any(t["toolSpec"]["name"] == "report_verdicts" for t in tools):
+                return {
+                    "usage": {"inputTokens": 5000, "outputTokens": 100},
+                    "output": {"message": {"content": [{"toolUse": {
+                        "name": "report_verdicts",
+                        "input": {"verdicts": [
+                            {"index": i, "verdict": verdict,
+                             "confidence": confidence, "reason": "line 2"}
+                            for i in range(1, len(findings) + 1)
+                        ]},
+                    }}]}},
+                }
+            if _is_security(kwargs["system_prompt"]):
+                return _bedrock_response([])
+            return _bedrock_response(findings)
+
+        codes = []
+        for verify in (False, True):
+            with _pipeline(FakeVCSAdapter(), bedrock):
+                codes.append(await run_pipeline(
+                    _config(verify=verify, budget_limit_usd=100.0),
+                ))
+        assert codes == [EXIT_BLOCKERS, EXIT_BLOCKERS]
+
+    @pytest.mark.asyncio
+    async def test_the_verifier_is_recorded_in_the_audit(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from prbot.observability.logging import configure_logging
+
+        configure_logging("INFO")
+        adapter = FakeVCSAdapter()
+        bedrock, _ = self._stub(_finding(confidence=40), "confirmed", 92)
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(verify=True, budget_limit_usd=100.0))
+
+        audit = next(
+            json.loads(line) for line in capsys.readouterr().out.splitlines()
+            if '"review.audit"' in line
+        )
+        assert "verifier" in [a["name"] for a in audit["agents"]]
+        assert audit["findings"][0]["verification"] == "confirmed"
+        # SEC-LOG-01: what it was before, and what the pass concluded.
+        assert audit["findings"][0]["confidence_before_verification"] == 40
+        assert audit["verification"]["confirmed"] == 1
+        assert audit["verification"]["failed_chunks"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_refuted_critical_still_blocks(self) -> None:
+        """SEC-SUPPRESS-01: one refuted verdict turned a critical finding at
+        95 from exit 1 into exit 0."""
+        adapter = FakeVCSAdapter()
+        bedrock, _ = self._stub(
+            _finding(severity="critical", confidence=95), "refuted", 10,
+        )
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(
+                _config(verify=True, budget_limit_usd=100.0),
+            )
+
+        assert exit_code == EXIT_BLOCKERS
+        assert "1 refuted" in adapter.posted_comments[0]
+
+    @pytest.mark.asyncio
+    async def test_off_means_no_verifier_call(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock, calls = self._stub(_finding(confidence=40), "confirmed", 92)
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(verify=False))
+
+        assert len(calls) == 2
+
+
+class TestVerificationNeverCostsTheReview:
+    @pytest.mark.asyncio
+    async def test_verification_is_dropped_when_it_would_exceed_the_budget(
+        self,
+    ) -> None:
+        """Found live: MR 209 exited 2, unreviewed, over a $0.20 verifier call."""
+        from prbot.review.budget import estimate_cost
+
+        adapter = FakeVCSAdapter()
+        calls: list[dict[str, Any]] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return _bedrock_response([_finding(confidence=40)])
+
+        # Priced as the pipeline prices it: the configured 8192 output tokens
+        # per call dominate, so the prompt's exact size barely moves either
+        # figure and the midpoint sits safely between them.
+        model = "anthropic.claude-sonnet-4-20250514"
+        probe = "x" * 4000
+        two = estimate_cost(
+            probe, [model] * 2, 100.0, estimated_output_tokens=8192,
+        ).estimated_cost_usd
+        three = estimate_cost(
+            probe, [model] * 3, 100.0, estimated_output_tokens=8192,
+        ).estimated_cost_usd
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(
+                _config(verify=True, budget_limit_usd=(two + three) / 2),
+            )
+
+        assert exit_code == EXIT_PASS
+        assert len(adapter.posted_comments) == 1
+        tools = [
+            t["toolSpec"]["name"]
+            for c in calls for t in (c.get("tool_config") or {}).get("tools", [])
+        ]
+        assert "report_verdicts" not in tools

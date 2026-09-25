@@ -132,10 +132,12 @@ def _summarise_agents(
     cycle = [agents[i % len(agents)] for i in range(len(outcomes))]
 
     for a_cfg, outcome in zip(cycle, outcomes, strict=True):
+        # Named by the outcome, not by its position: the verifier's call is
+        # appended after the roster's and belongs to no roster entry.
         if isinstance(outcome, AgentResult):
             agent_infos.append(AgentAuditInfo(
-                name=a_cfg["name"],
-                model_id=a_cfg["model_id"],
+                name=outcome.agent,
+                model_id=outcome.model_id or a_cfg["model_id"],
                 status="success",
                 finding_count=len(outcome.findings),
                 input_tokens=outcome.token_usage.input_tokens,
@@ -145,7 +147,7 @@ def _summarise_agents(
             ))
         else:
             agent_infos.append(AgentAuditInfo(
-                name=a_cfg["name"],
+                name=outcome.agent,
                 model_id=a_cfg["model_id"],
                 status=f"error:{type(outcome).__name__}",
                 finding_count=0,
@@ -185,6 +187,10 @@ def _finding_audit_entries(findings: Any) -> list[Any]:
             file_path=scored.finding.file_path,
             line_start=scored.finding.line_start,
             line_end=scored.finding.line_end,
+            verification=scored.finding.verification,
+            confidence_before_verification=(
+                scored.finding.confidence_before_verification
+            ),
         )
         for scored in findings
     ]
@@ -530,11 +536,16 @@ async def run_pipeline(config: PrBotConfig) -> int:
         # individually would let ten chunks each under the limit cost ten
         # times it.
         tool_turns = config.tool_turns
+        verify = config.verify
 
-        def _estimate(turns: int) -> None:
+        def _estimate(turns: int, with_verifier: bool) -> None:
+            # The verifier is one more call per chunk, on the general model.
+            models = [a["model_id"] for a in agents] + (
+                [config.general_model_id] if with_verifier else []
+            )
             estimate_cost(
                 diff_text,
-                [a["model_id"] for a in agents],
+                models,
                 config.budget_limit_usd,
                 estimated_output_tokens=(
                     config.max_output_tokens * max(len(chunks), 1)
@@ -542,21 +553,29 @@ async def run_pipeline(config: PrBotConfig) -> int:
                 tool_turns=turns,
             )
 
-        if tool_turns > 0:
+        # Optional extras are priced at their worst case. A review that fits
+        # without them is worth more than no review, so they are given up
+        # before the run is: reads first, having shown no benefit when
+        # measured, then verification. Only the plain review can refuse.
+        plans = [(tool_turns, verify), (0, verify), (0, False)]
+        # dict.fromkeys drops repeated plans and keeps their order, so a
+        # review with nothing to give up is estimated once.
+        for turns, with_verifier in dict.fromkeys(plans):
             try:
-                _estimate(tool_turns)
+                _estimate(turns, with_verifier)
             except BudgetExceededError:
-                # Reading is priced at its worst case. A review that fits
-                # without it is worth more than no review, so drop the
-                # reads rather than the run.
+                if (turns, with_verifier) == (0, False):
+                    raise
+                continue
+            if (turns, with_verifier) != (tool_turns, verify):
                 logger.warning(
-                    "budget.tools_dropped turns=%d: the worst case with "
-                    "reads exceeds %.2f USD; reviewing without them",
-                    tool_turns, config.budget_limit_usd,
+                    "budget.extras_dropped reads=%d->%d verify=%s->%s: the "
+                    "worst case exceeds %.2f USD",
+                    tool_turns, turns, verify, with_verifier,
+                    config.budget_limit_usd,
                 )
-                tool_turns = 0
-        if tool_turns == 0:
-            _estimate(0)
+            tool_turns, verify = turns, with_verifier
+            break
         if len(chunks) > 1:
             logger.info(
                 "review.chunked chunks=%d files=%d",
@@ -621,6 +640,42 @@ async def run_pipeline(config: PrBotConfig) -> int:
         suppressed_count = len(suppressed)
         if suppressed_count:
             logger.info("findings.suppressed count=%d", suppressed_count)
+
+        # A second opinion on each finding, against the chunk it was
+        # reported on. A confirmed verdict can raise the agent's own
+        # confidence, which on its own does not separate true findings from
+        # false ones. No verdict lowers it.
+        verification = None
+        if verify and kept:
+            from prbot.review.runner import run_verifier
+            from prbot.review.verifier import verify_findings
+
+            prompts_by_chunk = {id(c): t for c, t in zip(
+                chunks, chunk_texts, strict=True,
+            )}
+            verifier_model = config.general_model_id
+
+            async def _ask(chunk: Any, group: list[Any]) -> dict:
+                verdicts, cost = await run_verifier(
+                    chunk_prompt=prompts_by_chunk[id(chunk)],
+                    findings=group,
+                    model_id=verifier_model,
+                    budget=budget,
+                    aws_region=config.aws_region,
+                    max_output_tokens=config.max_output_tokens,
+                    temperature=config.temperature,
+                )
+                outcomes.append(cost)
+                return verdicts
+
+            kept, verification = await verify_findings(kept, chunks, _ask)
+            logger.info(
+                "verify.done confirmed=%d refuted=%d uncertain=%d "
+                "unverified=%d failed_chunks=%d",
+                verification.confirmed, verification.refuted,
+                verification.uncertain, verification.unverified,
+                verification.failed_chunks,
+            )
 
         # Score findings and determine verdict
         reported, borderline, hidden_count, score = (
@@ -753,6 +808,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
             dropped_count=hallucinations_removed,
             history=state_record.history,
             hidden=list(score.hidden),
+            verification=verification,
         )
         comment, secret_count = redact_secrets(comment)
 
@@ -945,6 +1001,9 @@ async def run_pipeline(config: PrBotConfig) -> int:
             exit_code=exit_code,
             dry_run=config.dry_run,
             cost_usd=total_cost,
+            verification=(
+                dataclasses.asdict(verification) if verification else None
+            ),
             outcome_counts=outcome_counts,
             findings=_finding_audit_entries(
                 (*reported, *borderline, *score.hidden),

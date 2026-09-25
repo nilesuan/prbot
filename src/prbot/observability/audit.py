@@ -53,6 +53,10 @@ class FindingAuditInfo:
     file_path: str
     line_start: int
     line_end: int
+    # The verification verdict, empty when the pass did not run.
+    verification: str = ""
+    # The agent's confidence before a verdict replaced it (SEC-LOG-01).
+    confidence_before_verification: int | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,9 @@ class AuditRecord:
     agents: list[AgentAuditInfo] = field(default_factory=list)
     # Every finding that reached scoring, reported, borderline or hidden.
     findings: list[FindingAuditInfo] = field(default_factory=list)
+    # What the verification pass concluded, failed chunks included; empty
+    # when it did not run (SEC-LOG-01).
+    verification: dict[str, int] = field(default_factory=dict)
 
 
 def compute_diff_hash(diff_text: str) -> str:
@@ -164,6 +171,7 @@ def build_audit_record(
     cost_usd: float = 0.0,
     outcome_counts: dict[str, int] | None = None,
     findings: list[FindingAuditInfo] | None = None,
+    verification: dict[str, int] | None = None,
 ) -> AuditRecord:
     """Build a complete audit record from pipeline state."""
     outcomes = outcome_counts or {}
@@ -177,6 +185,7 @@ def build_audit_record(
     ]
     return AuditRecord(
         findings=capped,
+        verification=dict(verification or {}),
         findings_new=outcomes.get("findings_new", 0),
         findings_persisting=outcomes.get("findings_persisting", 0),
         findings_fixed=outcomes.get("findings_fixed", 0),

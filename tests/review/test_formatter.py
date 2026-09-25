@@ -788,3 +788,29 @@ class TestNoIssuesIsNotClaimedOverAList:
         assert "No issues found." not in out
         assert "No issues above the reporting threshold." in out
         assert "1 low-confidence finding(s) listed below." in out
+
+
+class TestTheFooterStatesTheLowConfidenceCountOnce:
+    """CR-LOGIC-01: the verification line was put between `if
+    reconciliation:` and its `elif`, which re-attached the elif to it."""
+
+    def test_reconciliation_already_states_it(self) -> None:
+        from prbot.review.formatter import _format_footer
+
+        out = _format_footer(3, "", reconciliation="_3 low-confidence._")
+        assert "low-confidence findings listed, not scored" not in out
+
+    def test_without_reconciliation_it_is_stated_once(self) -> None:
+        from prbot.review.formatter import _format_footer
+
+        out = _format_footer(3, "")
+        assert out.count("low-confidence findings listed, not scored") == 1
+
+    def test_verification_is_stated_with_either(self) -> None:
+        from prbot.review.formatter import _format_footer
+
+        line = "_Verification: 1 confirmed._"
+        assert line in _format_footer(3, "", verification=line)
+        assert line in _format_footer(
+            3, "", reconciliation="_r._", verification=line,
+        )

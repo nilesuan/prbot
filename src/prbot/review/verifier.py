@@ -1,0 +1,269 @@
+"""Verification pass: re-check each finding against the code before scoring.
+
+A single call's confidence does not separate true findings from false ones.
+Two identical runs on infrastructure-core MR 209 scored 87 and 96, and one
+finding came back high in one and medium in the other. The self-reported
+number sits at 30-60 for findings a verified review confirmed at 85-97.
+
+This pass shows the verifier the same datamarked diff an agent saw and the
+findings reported against it, and asks for a verdict on each: confirmed,
+refuted or uncertain, with a confidence and a reason. A confirmed verdict can
+raise a finding's confidence to the verifier's, and nothing lowers one.
+Lowering let a verdict pass a review that should have failed: one refuted
+critical finding stopped blocking (SEC-SUPPRESS-01), and medium findings
+moved out of the reported band lifted a failing score (SEC-SUPPRESS-SCORE-01).
+A refuted or uncertain verdict is recorded and changes nothing, since a
+refutation at 50 would otherwise raise a finding the agent put lower. A
+finding the verifier gives no verdict on, or one whose chunk could not be
+verified, is left exactly as the agent reported it.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
+
+from prbot.review.models import Finding
+from prbot.vcs.models import PRDiff
+
+logger = logging.getLogger(__name__)
+
+VERIFY_TOOL_NAME = "report_verdicts"
+
+_VERDICTS = ("confirmed", "refuted", "uncertain")
+
+VERDICT_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["verdicts"],
+    "additionalProperties": False,
+    "properties": {
+        "verdicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["index", "verdict", "confidence", "reason"],
+                "additionalProperties": False,
+                "properties": {
+                    "index": {"type": "integer", "minimum": 1},
+                    "verdict": {"type": "string", "enum": list(_VERDICTS)},
+                    "confidence": {
+                        "type": "integer", "minimum": 0, "maximum": 100,
+                    },
+                    "reason": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+VERIFIER_SYSTEM_SPEC = """\
+You verify code review findings. Each finding below was reported by another
+reviewer against the diff in this message. For every finding, decide from the
+diff and the surrounding code shown whether the claim is true: that the code
+does what the finding says, and that the stated consequence follows.
+
+- confirmed: the code shows the claim is true.
+- refuted: the code shows the claim is false, or the cited lines do not
+  contain what the finding describes.
+- uncertain: the deciding fact is not in what you were shown.
+
+confidence is your probability that the finding is real, 0-100, after
+checking. It may replace the reviewer's own number, so do not copy it: a claim
+you confirmed by reading the lines should be high, one you could not check
+should sit near the middle, and one you refuted should be low. Give a short
+reason naming the line that decided it. Return a verdict for every finding
+index, through the report_verdicts tool.
+"""
+
+
+@dataclass(frozen=True)
+class VerificationStats:
+    """What the pass concluded, for the comment and the audit record."""
+
+    confirmed: int = 0
+    refuted: int = 0
+    uncertain: int = 0
+    unverified: int = 0
+    failed_chunks: int = 0
+
+
+def verify_tool_config() -> dict[str, Any]:
+    """Force the verifier to answer through the verdict schema."""
+    return {
+        "tools": [{
+            "toolSpec": {
+                "name": VERIFY_TOOL_NAME,
+                "description": "Report a verdict for every finding index.",
+                "inputSchema": {"json": VERDICT_JSON_SCHEMA},
+            },
+        }],
+        "toolChoice": {"tool": {"name": VERIFY_TOOL_NAME}},
+    }
+
+
+def build_verifier_system_prompt() -> str:
+    """The verifier's system prompt: its task and the datamarking rule."""
+    from prbot.security.datamarking import build_datamarking_instruction
+
+    return (
+        f"{VERIFIER_SYSTEM_SPEC}\n"
+        f"{build_datamarking_instruction()}\n"
+    )
+
+
+def build_verification_prompt(user_prompt: str, findings: list[Finding]) -> str:
+    """The chunk's own prompt followed by the numbered findings to check.
+
+    The findings are model output about untrusted content, so they are
+    datamarked like the diff: a finding can quote the diff, and the diff can
+    carry instructions.
+    """
+    from prbot.review.prompts import sanitize_path_for_prompt
+    from prbot.security.datamarking import apply_datamarking
+
+    blocks = []
+    for i, f in enumerate(findings, start=1):
+        # SEC-INJECT-01: the path is chosen by the contributor and marked
+        # word by word in the agents' prompt, so it is marked here too.
+        location = apply_datamarking(sanitize_path_for_prompt(f.file_path))
+        blocks.append(
+            f"[{i}] {apply_datamarking(f.check_id)} · {f.severity} · "
+            f"{location}:{f.line_start}-{f.line_end}\n"
+            f"Title: {apply_datamarking(f.title)}\n"
+            f"Claim: {apply_datamarking(f.description)}\n"
+            f"Consequence: {apply_datamarking(f.failure_scenario or '-')}"
+        )
+    return (
+        f"{user_prompt}\n\n## Findings to verify ({len(findings)})\n\n"
+        + "\n\n".join(blocks)
+    )
+
+
+def parse_verdicts(
+    response: dict[str, Any], count: int,
+) -> dict[int, tuple[str, int]]:
+    """Index to (verdict, confidence), keeping only well-formed entries.
+
+    SEC-VERIFY-01: a boolean is not a confidence, though Python counts it as
+    an int; the first verdict for an index stands; and a verdict its own
+    confidence contradicts, confirmed below 50 or refuted above it, is not
+    a verdict at all.
+    """
+    content = (
+        ((response.get("output") or {}).get("message") or {}).get("content")
+        or []
+    )
+    data: dict[str, Any] | None = None
+    for block in content:
+        use = block.get("toolUse") if isinstance(block, dict) else None
+        if isinstance(use, dict) and isinstance(use.get("input"), dict):
+            data = use["input"]
+            break
+    if data is None:
+        return {}
+
+    out: dict[int, tuple[str, int]] = {}
+    for item in data.get("verdicts") or []:
+        if not isinstance(item, dict):
+            continue
+        index, verdict = item.get("index"), item.get("verdict")
+        confidence = item.get("confidence")
+        if not isinstance(index, int) or not 1 <= index <= count:
+            continue
+        if index in out or verdict not in _VERDICTS:
+            continue
+        if not isinstance(confidence, int) or isinstance(confidence, bool):
+            continue
+        confidence = max(0, min(100, confidence))
+        if (verdict == "confirmed" and confidence < 50) or (
+            verdict == "refuted" and confidence > 50
+        ):
+            continue
+        out[index] = (verdict, confidence)
+    return out
+
+
+def apply_verdicts(
+    findings: list[Finding], verdicts: dict[int, tuple[str, int]],
+) -> tuple[list[Finding], VerificationStats]:
+    """Raise each confirmed finding's confidence to the verifier's, if higher.
+
+    No verdict lowers a finding, and a refuted or uncertain one changes
+    nothing (module docstring). The confidence before verification is kept
+    on every finding with a verdict (SEC-LOG-01).
+    """
+    out: list[Finding] = []
+    counts = {v: 0 for v in _VERDICTS}
+    unverified = 0
+    for i, f in enumerate(findings, start=1):
+        if i not in verdicts:
+            unverified += 1
+            out.append(f)
+            continue
+        verdict, confidence = verdicts[i]
+        counts[verdict] += 1
+        if verdict == "confirmed":
+            confidence = max(confidence, f.confidence)
+        else:
+            confidence = f.confidence
+        out.append(dataclasses.replace(
+            f, confidence=confidence, verification=verdict,
+            confidence_before_verification=f.confidence,
+        ))
+    return out, VerificationStats(
+        confirmed=counts["confirmed"],
+        refuted=counts["refuted"],
+        uncertain=counts["uncertain"],
+        unverified=unverified,
+    )
+
+
+async def verify_findings(
+    findings: list[Finding],
+    chunks: list[PRDiff],
+    ask: Callable[[PRDiff, list[Finding]], Awaitable[dict[int, tuple[str, int]]]],
+) -> tuple[list[Finding], VerificationStats]:
+    """Verify each chunk's findings with one call, keeping the input order.
+
+    A finding is verified against the chunk that holds its file, because
+    that is the diff it was reported against.
+    """
+    by_chunk: dict[int, list[int]] = {}
+    for i, f in enumerate(findings):
+        for c, chunk in enumerate(chunks):
+            if any(fd.path == f.file_path for fd in chunk.files):
+                by_chunk.setdefault(c, []).append(i)
+                break
+
+    result = list(findings)
+    total = VerificationStats()
+    failed = 0
+    placed = set()
+    for c, indices in by_chunk.items():
+        placed.update(indices)
+        group = [findings[i] for i in indices]
+        try:
+            verdicts = await ask(chunks[c], group)
+        except Exception as e:  # a failed check must not fail the review
+            logger.warning("verify.failed chunk=%d: %s", c, e)
+            failed += 1
+            verdicts = {}
+        updated, stats = apply_verdicts(group, verdicts)
+        for i, f in zip(indices, updated, strict=True):
+            result[i] = f
+        total = VerificationStats(
+            confirmed=total.confirmed + stats.confirmed,
+            refuted=total.refuted + stats.refuted,
+            uncertain=total.uncertain + stats.uncertain,
+            unverified=total.unverified + stats.unverified,
+        )
+
+    unplaced = len(findings) - len(placed)
+    return result, dataclasses.replace(
+        total,
+        unverified=total.unverified + unplaced,
+        failed_chunks=failed,
+    )

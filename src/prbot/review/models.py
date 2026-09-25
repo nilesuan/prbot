@@ -49,6 +49,13 @@ class Finding:
     # finding independently is evidence, and it is the only way to tell a
     # merged finding from a single-agent one after deduplication (B1).
     reported_by: tuple[str, ...] = ()
+    # What the verification pass concluded: "confirmed", "refuted",
+    # "uncertain", or empty when it did not run or gave no verdict.
+    verification: str = ""
+    # The confidence a finding had when the verifier saw it, after the
+    # hallucination check and de-duplication. Kept on every finding with a
+    # verdict, so the audit shows whether it moved (SEC-LOG-01).
+    confidence_before_verification: int | None = None
 
 
 @dataclass(frozen=True)

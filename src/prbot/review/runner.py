@@ -459,6 +459,51 @@ async def _converse_with_retry(
     raise BedrockError(f"Agent {agent_name} failed after {_MAX_RETRIES} retries")
 
 
+async def run_verifier(
+    *,
+    chunk_prompt: str,
+    findings: list[Finding],
+    model_id: str,
+    budget: TimeoutBudget,
+    aws_region: str,
+    max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
+    temperature: float | None = None,
+) -> tuple[dict[int, tuple[str, int]], AgentResult]:
+    """Ask for a verdict on each finding against its chunk's own prompt.
+
+    Returns the verdicts and an AgentResult carrying what the call cost, so
+    the verifier appears in agent status and the audit record like any other
+    call that was paid for.
+    """
+    from prbot.review.verifier import (
+        build_verification_prompt,
+        build_verifier_system_prompt,
+        parse_verdicts,
+        verify_tool_config,
+    )
+
+    start = time.monotonic()
+    response = await _converse_with_retry(
+        "verifier",
+        budget,
+        model_id=model_id,
+        system_prompt=build_verifier_system_prompt(),
+        user_prompt=build_verification_prompt(chunk_prompt, findings),
+        aws_region=aws_region,
+        max_output_tokens=max_output_tokens,
+        temperature=temperature,
+        tool_config=verify_tool_config(),
+    )
+    verdicts = parse_verdicts(response, len(findings))
+    return verdicts, AgentResult(
+        agent="verifier",
+        findings=[],
+        token_usage=_extract_token_usage(response, model_id),
+        latency_ms=int((time.monotonic() - start) * 1000),
+        model_id=model_id,
+    )
+
+
 def _add_usage(a: TokenUsage, b: TokenUsage) -> TokenUsage:
     return TokenUsage(
         input_tokens=a.input_tokens + b.input_tokens,
