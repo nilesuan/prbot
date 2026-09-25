@@ -1379,3 +1379,109 @@ class TestHiddenFindingsReachTheReader:
         assert entry["confidence"] == 20
         assert len(entry["fingerprint"]) == 16
         assert "title" not in entry
+
+
+class TestReadingBeyondTheDiff:
+    """The agents may read other files of the repository."""
+
+    @staticmethod
+    def _stub(read_path: str):
+        calls: list[dict[str, Any]] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            if kwargs.get("messages") and len(kwargs["messages"]) == 1:
+                return {
+                    "usage": {"inputTokens": 1000, "outputTokens": 20},
+                    "output": {"message": {"content": [{"toolUse": {
+                        "toolUseId": "r1", "name": "read_file",
+                        "input": {"path": read_path},
+                    }}]}},
+                }
+            return _bedrock_response([])
+
+        return bedrock, calls
+
+    @pytest.mark.asyncio
+    async def test_a_read_is_answered_from_the_head_revision(self) -> None:
+        adapter = FakeVCSAdapter(
+            file_contents={"src/other.py": "SETTING = 42\n"},
+        )
+        bedrock, calls = self._stub("src/other.py")
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(
+                _config(tool_turns=2, budget_limit_usd=100.0),
+            )
+
+        assert exit_code == EXIT_PASS
+        results = [
+            block["toolResult"]["content"][0]["text"]
+            for c in calls if c.get("messages")
+            for m in c["messages"] if m["role"] == "user"
+            for block in m["content"] if "toolResult" in block
+        ]
+        assert results and all("SETTING" in r for r in results)
+
+    @pytest.mark.asyncio
+    async def test_an_excluded_file_cannot_be_read(self) -> None:
+        adapter = FakeVCSAdapter(
+            file_contents={"secrets/prod.env": "TOKEN=abc\n"},
+        )
+        bedrock, calls = self._stub("secrets/prod.env")
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(
+                _config(
+                    tool_turns=2, excluded_patterns=["secrets/"],
+                    budget_limit_usd=100.0,
+                ),
+            )
+
+        texts = [
+            block["toolResult"]["content"][0]["text"]
+            for c in calls if c.get("messages")
+            for m in c["messages"] if m["role"] == "user"
+            for block in m["content"] if "toolResult" in block
+        ]
+        assert texts and all("Refused" in t for t in texts)
+        assert not any("TOKEN" in t for t in texts)
+
+    @pytest.mark.asyncio
+    async def test_zero_turns_is_a_single_call_per_agent(self) -> None:
+        adapter = FakeVCSAdapter()
+        bedrock, calls = self._stub("src/other.py")
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(tool_turns=0))
+
+        assert len(calls) == 2
+        assert not any(c.get("messages") for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_tools_are_dropped_rather_than_the_review(self) -> None:
+        """A budget that fits one call per agent but not the reads still reviews."""
+        from prbot.review.budget import estimate_cost
+
+        adapter = FakeVCSAdapter()
+        bedrock, calls = self._stub("src/other.py")
+        # Between the no-tools estimate and the with-tools estimate for this
+        # diff, whatever the fake adapter's prompt comes to.
+        probe = "x" * 4000
+        single = estimate_cost(
+            probe, ["anthropic.claude-sonnet-4-20250514"] * 2, 100.0,
+        ).estimated_cost_usd
+        with_tools = estimate_cost(
+            probe, ["anthropic.claude-sonnet-4-20250514"] * 2, 100.0,
+            tool_turns=3,
+        ).estimated_cost_usd
+        assert with_tools > single
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(
+                _config(tool_turns=3, budget_limit_usd=(single + with_tools) / 2),
+            )
+
+        assert exit_code == EXIT_PASS
+        assert len(adapter.posted_comments) == 1
+        assert not any(c.get("messages") for c in calls)

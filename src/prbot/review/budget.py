@@ -79,11 +79,18 @@ class CostEstimate:
     within_budget: bool
 
 
+# A line returned by read_file is numbered and datamarked. A 40-character
+# source line becomes about 92 once marked (datamarking measured 2.31 times
+# longer on a real Terraform diff), plus its number: 100 is the round figure.
+_RENDERED_CHARS_PER_READ_LINE = 100
+
+
 def estimate_cost(
     diff_text: str,
     model_ids: list[str],
     budget_limit_usd: float,
     estimated_output_tokens: int = 4096,
+    tool_turns: int = 0,
 ) -> CostEstimate:
     """Estimate cost before running review (S14).
 
@@ -92,6 +99,10 @@ def estimate_cost(
         model_ids: Models that will be used (cost summed).
         budget_limit_usd: Maximum allowed cost.
         estimated_output_tokens: Expected output tokens per agent.
+        tool_turns: read_file turns each agent may take. Priced as the
+            worst case, every turn used: the prompt written to the cache
+            once and read back on each later turn, the whole read budget
+            re-sent uncached on every turn, and a full response per turn.
 
     Returns:
         CostEstimate with within_budget flag.
@@ -102,12 +113,29 @@ def estimate_cost(
     input_tokens = estimate_prompt_tokens(diff_text)
     total_cost = 0.0
 
+    if tool_turns > 0:
+        from prbot.review.runner import (
+            CACHE_READ_MULTIPLIER,
+            CACHE_WRITE_MULTIPLIER,
+        )
+        from prbot.review.tools import MAX_LINES_TOTAL
+
+        billed_prompt = input_tokens * (
+            CACHE_WRITE_MULTIPLIER + CACHE_READ_MULTIPLIER * tool_turns
+        )
+        read_tokens = estimate_prompt_tokens(
+            "x" * (MAX_LINES_TOTAL * _RENDERED_CHARS_PER_READ_LINE),
+        )
+        billed_input = billed_prompt + read_tokens * tool_turns
+        output_tokens = estimated_output_tokens * (tool_turns + 1)
+    else:
+        billed_input = input_tokens
+        output_tokens = estimated_output_tokens
+
     for model_id in model_ids:
         pricing = get_model_pricing(model_id)
-        input_cost = (input_tokens / 1_000_000) * pricing["input"]
-        output_cost = (
-            estimated_output_tokens / 1_000_000
-        ) * pricing["output"]
+        input_cost = (billed_input / 1_000_000) * pricing["input"]
+        output_cost = (output_tokens / 1_000_000) * pricing["output"]
         total_cost += input_cost + output_cost
 
     within_budget = total_cost <= budget_limit_usd

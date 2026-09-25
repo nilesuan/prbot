@@ -256,6 +256,14 @@ class PrBotConfig(BaseModel, frozen=True):
     # agent per review. Set it for a model that accepts it, where 0 makes
     # the output more repeatable between runs.
     temperature: float | None = Field(default=None, ge=0.0, le=1.0)
+    # How many read_file turns an agent may take before it must report. 0,
+    # the default, keeps the single forced call. Off by default on
+    # measurement, not caution: on terraform-modules MR 269 agents given 3
+    # turns read 129-286 lines each, including files outside the diff, and
+    # found nothing a run without reads missed, at 61% more cost ($1.02
+    # against $0.63). Each turn is bounded by the reader's line budget
+    # (review/tools.py) and priced into the pre-flight estimate.
+    tool_turns: int = Field(default=0, ge=0, le=10)
     # SEC-DESIGN-04: the login prbot posts as, used when the token cannot
     # read it. secrets.GITHUB_TOKEN cannot call GET /user, so without this
     # prbot cannot tell its own threads from anyone else's: reworded findings
@@ -576,6 +584,7 @@ _INT_FIELDS = frozenset({
     "max_diff_tokens", "max_output_tokens", "timeout_seconds",
     "context_lines",
     "min_passing_score",
+    "tool_turns",
 })
 _FLOAT_FIELDS = frozenset({"budget_limit_usd", "temperature"})
 _BOOL_FIELDS = frozenset({"dry_run", "datamark_diff", "force_review"})

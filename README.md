@@ -111,6 +111,22 @@ diff, suppressed by configuration, or listed as low confidence, and how many
 are shown. The `review.audit` log record carries every finding's check,
 severity, confidence, band, location and fingerprint, but no model prose.
 
+### Reading Beyond the Diff (optional)
+
+With `PRBOT_TOOL_TURNS` above 0, each agent may call `read_file` to read other
+files of the repository at the head revision before it reports: a definition
+the diff references, or the CI file that decides whether a changed test runs.
+Reads go through the same VCS API as the diff, refuse binary, generated and
+excluded paths, return datamarked numbered lines, and are capped at 200 lines
+per read and 600 per agent. The system prompt and diff are sent as a Bedrock
+cache prefix, so later turns pay the cache-read rate for them. The pre-flight
+budget check prices every turn being used, and a review whose reads would
+exceed the budget runs without them rather than not at all.
+
+It is off by default because the first measurement did not justify it: on a
+six-file Terraform change the agents used their reads but found nothing a run
+without reads missed, at 61% more cost.
+
 ### Security by Default
 
 - **5-layer prompt injection defense** -- system/user message separation, Microsoft Spotlighting datamarking (structure-preserving, so hunk headers and line prefixes survive), hallucination validation against actual diff content, output redaction, and sanitisation of everything the model writes into the posted comment
@@ -525,6 +541,7 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_MAX_DIFF_TOKENS` | `100000` | Tokens per review call; a larger diff is reviewed in several passes |
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
 | `PRBOT_TEMPERATURE` | unset | Sampling temperature, sent only when set. The default model rejects it; set `0` for a model that accepts it |
+| `PRBOT_TOOL_TURNS` | `0` | Turns an agent may spend reading other files of the repository (`read_file`) before it must report. Off by default: measured so far to add cost without adding findings |
 | `PRBOT_BOT_LOGIN` | unset | The login prbot posts as, used when the token cannot read it. Set `github-actions[bot]` with `GITHUB_TOKEN`, or prbot cannot tell its own threads from anyone else's. Never a person's login |
 | `PRBOT_CONTEXT_LINES` | `40` | Lines of surrounding code fetched by API and included around each hunk; `0` disables |
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Max estimated cost per review |

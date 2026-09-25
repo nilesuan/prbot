@@ -374,6 +374,22 @@ class TestBuildConfig:
         )
         assert config.pr_number == 42
 
+    def test_reading_beyond_the_diff_is_off_by_default(self) -> None:
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "config": None},
+            env_vars={"PRBOT_PR_NUMBER": "1"},
+            toml_config={},
+        )
+        assert config.tool_turns == 0
+
+    def test_env_tool_turns_parsing(self) -> None:
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "config": None},
+            env_vars={"PRBOT_PR_NUMBER": "1", "PRBOT_TOOL_TURNS": "3"},
+            toml_config={},
+        )
+        assert config.tool_turns == 3
+
     def test_temperature_is_unset_by_default(self) -> None:
         config = build_config(
             cli_args={"platform": "github", "repo": "o/r", "config": None},

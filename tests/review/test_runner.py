@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -960,3 +960,245 @@ class TestAgentFailuresSayWhy:
             "that it failed"
         )
         assert "general" in caplog.text
+
+
+class TestReadingBeyondTheDiff:
+    """With a reader, an agent may read files before it reports."""
+
+    _AGENT: ClassVar[list[dict[str, str]]] = [{
+        "name": "iac",
+        "model_id": "au.anthropic.claude-sonnet-5",
+        "check_prefix": "IAC-",
+    }]
+
+    @staticmethod
+    def _tool_call(name: str, payload: dict[str, Any], tid: str = "t1"):
+        return {
+            "output": {"message": {"role": "assistant", "content": [
+                {"toolUse": {"toolUseId": tid, "name": name, "input": payload}},
+            ]}},
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 100, "outputTokens": 20,
+                      "cacheReadInputTokens": 0,
+                      "cacheWriteInputTokens": 5000},
+        }
+
+    def _report(self, findings: list[dict[str, Any]]):
+        r = self._tool_call("report_findings", {"findings": findings}, "t9")
+        r["usage"] = {"inputTokens": 200, "outputTokens": 50,
+                      "cacheReadInputTokens": 5000,
+                      "cacheWriteInputTokens": 0}
+        return r
+
+    @staticmethod
+    def _factory(files: dict[str, str]):
+        from prbot.review.tools import FileReader
+
+        read: list[str] = []
+
+        async def fetch(path: str) -> str | None:
+            read.append(path)
+            return files.get(path)
+
+        return (lambda: FileReader(fetch)), read
+
+    async def _run(self, responses: list[dict[str, Any]], factory, turns=3):
+        calls: list[dict[str, Any]] = []
+
+        def invoke(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return responses[min(len(calls), len(responses)) - 1]
+
+        with patch("prbot.review.runner._invoke_bedrock", side_effect=invoke):
+            outcomes = await run_review(
+                _make_diff(), _make_metadata(), self._AGENT,
+                TimeoutBudget(300.0), "ap-southeast-2",
+                reader_factory=factory, tool_turns=turns,
+            )
+        return outcomes, calls
+
+    @pytest.mark.asyncio
+    async def test_a_read_is_answered_and_the_review_continues(self) -> None:
+        factory, read = self._factory({"routes.tf": "route {\n  cidr = x\n}"})
+        outcomes, calls = await self._run(
+            [
+                self._tool_call("read_file", {"path": "routes.tf"}),
+                self._report([_make_finding_dict(check_id="IAC-SCOPE-01")]),
+            ],
+            factory,
+        )
+        assert read == ["routes.tf"]
+        assert len(calls) == 2
+        [result] = outcomes
+        assert isinstance(result, AgentResult)
+        assert [f.check_id for f in result.findings] == ["IAC-SCOPE-01"]
+        # The second call carries the model's request and the file back.
+        second = calls[1]["messages"]
+        assert "toolUse" in second[1]["content"][0]
+        tool_result = second[2]["content"][0]["toolResult"]
+        assert tool_result["toolUseId"] == "t1"
+        assert "cidr" in tool_result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_a_read_request_is_never_parsed_as_findings(self) -> None:
+        factory, _ = self._factory({"a.tf": "x"})
+        outcomes, _ = await self._run(
+            [self._tool_call("read_file", {"path": "a.tf"}),
+             self._report([])],
+            factory,
+        )
+        assert outcomes[0].findings == []
+
+    @pytest.mark.asyncio
+    async def test_the_last_turn_forces_a_report(self) -> None:
+        factory, _ = self._factory({"a.tf": "x"})
+        _, calls = await self._run(
+            [self._tool_call("read_file", {"path": "a.tf"})] * 5
+            + [self._report([])],
+            factory, turns=2,
+        )
+        assert len(calls) == 3
+        assert calls[0]["tool_config"]["toolChoice"] == {"any": {}}
+        assert calls[-1]["tool_config"]["toolChoice"] == {
+            "tool": {"name": "report_findings"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_both_tools_are_offered(self) -> None:
+        factory, _ = self._factory({})
+        _, calls = await self._run([self._report([])], factory)
+        names = {
+            t["toolSpec"]["name"] for t in calls[0]["tool_config"]["tools"]
+        }
+        assert names == {"report_findings", "read_file"}
+
+    @pytest.mark.asyncio
+    async def test_the_prompt_is_cached_across_turns(self) -> None:
+        factory, _ = self._factory({})
+        _, calls = await self._run([self._report([])], factory)
+        assert calls[0]["cache"] is True
+
+    @pytest.mark.asyncio
+    async def test_usage_is_summed_across_turns_cache_included(self) -> None:
+        factory, _ = self._factory({"a.tf": "x"})
+        outcomes, _ = await self._run(
+            [self._tool_call("read_file", {"path": "a.tf"}),
+             self._report([])],
+            factory,
+        )
+        usage = outcomes[0].token_usage
+        # 100 + 5000 written, then 200 + 5000 read.
+        assert usage.input_tokens == 100 + 5000 + 200 + 5000
+        assert usage.output_tokens == 70
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_tool_gets_an_error_result(self) -> None:
+        factory, _ = self._factory({})
+        _, calls = await self._run(
+            [self._tool_call("delete_repo", {}), self._report([])],
+            factory,
+        )
+        result = calls[1]["messages"][2]["content"][0]["toolResult"]
+        assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_without_a_reader_it_is_one_forced_call(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def invoke(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return self._report([])
+
+        with patch("prbot.review.runner._invoke_bedrock", side_effect=invoke):
+            await run_review(
+                _make_diff(), _make_metadata(), self._AGENT,
+                TimeoutBudget(300.0), "ap-southeast-2",
+            )
+        assert len(calls) == 1
+        assert not calls[0].get("messages")
+        assert not calls[0].get("cache")
+
+    @pytest.mark.asyncio
+    async def test_zero_turns_is_the_same_as_no_reader(self) -> None:
+        factory, read = self._factory({"a.tf": "x"})
+        _, calls = await self._run([self._report([])], factory, turns=0)
+        assert len(calls) == 1
+        assert not calls[0].get("messages")
+        assert read == []
+
+    @pytest.mark.asyncio
+    async def test_each_agent_gets_its_own_budget(self) -> None:
+        made: list[object] = []
+        from prbot.review.tools import FileReader
+
+        async def fetch(path: str) -> str | None:
+            return "x"
+
+        def factory():
+            r = FileReader(fetch)
+            made.append(r)
+            return r
+
+        agents = [
+            {"name": "general", "model_id": "m", "check_prefix": "Q-"},
+            {"name": "iac", "model_id": "m", "check_prefix": "IAC-"},
+        ]
+
+        def invoke(**kwargs: Any) -> dict[str, Any]:
+            return self._report([])
+
+        with patch("prbot.review.runner._invoke_bedrock", side_effect=invoke):
+            await run_review(
+                _make_diff(), _make_metadata(), agents,
+                TimeoutBudget(300.0), "ap-southeast-2",
+                reader_factory=factory, tool_turns=2,
+            )
+        assert len(made) == 2
+        assert made[0] is not made[1]
+
+
+class TestCachedTokensAreCounted:
+    """With a cache point, inputTokens alone leaves most of the prompt out."""
+
+    def test_cached_tokens_count_towards_the_total(self) -> None:
+        from prbot.review.runner import _extract_token_usage
+
+        usage = _extract_token_usage(
+            {"usage": {"inputTokens": 100, "outputTokens": 10,
+                       "cacheReadInputTokens": 4000,
+                       "cacheWriteInputTokens": 1000}},
+            "au.anthropic.claude-sonnet-5",
+        )
+        assert usage.input_tokens == 5100
+
+    def test_cached_tokens_are_priced_at_their_own_rates(self) -> None:
+        from prbot.review.budget import get_model_pricing
+        from prbot.review.runner import (
+            CACHE_READ_MULTIPLIER,
+            CACHE_WRITE_MULTIPLIER,
+            _extract_token_usage,
+        )
+
+        model = "au.anthropic.claude-sonnet-5"
+        price = get_model_pricing(model)
+        usage = _extract_token_usage(
+            {"usage": {"inputTokens": 100, "outputTokens": 10,
+                       "cacheReadInputTokens": 4000,
+                       "cacheWriteInputTokens": 1000}},
+            model,
+        )
+        expected = (
+            (100 + 1000 * CACHE_WRITE_MULTIPLIER + 4000 * CACHE_READ_MULTIPLIER)
+            / 1e6 * price["input"]
+            + 10 / 1e6 * price["output"]
+        )
+        assert usage.estimated_cost_usd == pytest.approx(expected)
+
+    def test_without_cache_fields_nothing_changes(self) -> None:
+        from prbot.review.runner import _extract_token_usage
+
+        usage = _extract_token_usage(
+            {"usage": {"inputTokens": 100, "outputTokens": 10}},
+            "au.anthropic.claude-sonnet-5",
+        )
+        assert usage.input_tokens == 100

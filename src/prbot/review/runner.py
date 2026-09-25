@@ -12,7 +12,8 @@ import logging
 import random
 import re
 import time
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from prbot.exceptions import BedrockError
 from prbot.review.budget import TimeoutBudget, get_model_pricing
@@ -27,6 +28,9 @@ from prbot.review.models import (
 from prbot.review.prompts import build_system_prompt, build_user_prompt
 from prbot.vcs.models import PRDiff, PRMetadata
 
+if TYPE_CHECKING:
+    from prbot.review.tools import FileReader
+
 logger = logging.getLogger(__name__)
 
 # A check id is a short code from a check spec, such as IAC-REPLACE-01.
@@ -35,6 +39,13 @@ _CHECK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 # Default cap on a single agent response. Explicit so that output length
 # is a decision rather than a Bedrock default the cost estimate cannot see.
 _DEFAULT_MAX_OUTPUT_TOKENS = 8192
+
+# Prompt caching prices, as multiples of the model's input price: writing a
+# five-minute cache entry costs 1.25 times the input rate and reading one
+# 0.1 times. These are Anthropic's published ratios for Claude, which
+# Bedrock's per-model cache pricing follows; they are not read from any API.
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.1
 
 # Retry config for throttled requests
 _MAX_RETRIES = 3
@@ -72,6 +83,8 @@ async def run_review(
     context_lines: int = 0,
     all_paths: list[str] | None = None,
     temperature: float | None = None,
+    reader_factory: Callable[[], FileReader] | None = None,
+    tool_turns: int = 0,
 ) -> list[AgentOutcome]:
     """Run review agents concurrently (S1, S88).
 
@@ -103,6 +116,14 @@ async def run_review(
             aws_region=aws_region,
             max_output_tokens=max_output_tokens,
             temperature=temperature,
+            # Each agent its own reader, so one agent's reading cannot
+            # spend another's budget.
+            reader=(
+                reader_factory()
+                if reader_factory is not None and tool_turns > 0
+                else None
+            ),
+            tool_turns=tool_turns,
         )
         for agent in agents
     ]
@@ -157,11 +178,22 @@ async def _run_single_agent(
     aws_region: str,
     max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
     temperature: float | None = None,
+    reader: FileReader | None = None,
+    tool_turns: int = 0,
 ) -> AgentOutcome:
     """Run a single review agent with retry and timeout (S20, S48).
 
     Retries throttling errors up to 3 times with exponential backoff.
     """
+    if reader is not None and tool_turns > 0:
+        return await _run_agent_with_tools(
+            agent_name=agent_name, model_id=model_id,
+            check_prefix=check_prefix, user_prompt=user_prompt,
+            budget=budget, aws_region=aws_region,
+            max_output_tokens=max_output_tokens, temperature=temperature,
+            reader=reader, tool_turns=tool_turns,
+        )
+
     system_prompt = build_system_prompt(agent_name)
     start_time = time.monotonic()
 
@@ -236,6 +268,184 @@ async def _run_single_agent(
     )
 
 
+async def _run_agent_with_tools(
+    *,
+    agent_name: str,
+    model_id: str,
+    check_prefix: str,
+    user_prompt: str,
+    budget: TimeoutBudget,
+    aws_region: str,
+    max_output_tokens: int,
+    temperature: float | None,
+    reader: FileReader,
+    tool_turns: int,
+) -> AgentOutcome:
+    """Review with read_file available for up to tool_turns turns.
+
+    Every turn re-sends the whole conversation, so the system prompt and the
+    diff are marked as a cache prefix: the first call writes them and each
+    later turn reads them at a fraction of the input price. The final turn
+    forces report_findings, so a model that keeps reading still reports.
+    """
+    from prbot.review.tools import READ_FILE_TOOL_NAME
+
+    system_prompt = build_system_prompt(agent_name, tools_enabled=True)
+    start_time = time.monotonic()
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": [
+            {"text": user_prompt}, {"cachePoint": {"type": "default"}},
+        ]},
+    ]
+    usage = TokenUsage(0, 0, 0.0)
+
+    try:
+        for turn in range(tool_turns + 1):
+            final = turn == tool_turns
+            response = await _converse_with_retry(
+                agent_name,
+                budget,
+                model_id=model_id,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                aws_region=aws_region,
+                max_output_tokens=max_output_tokens,
+                temperature=temperature,
+                messages=messages,
+                tool_config=_review_tool_config(read_allowed=not final),
+                cache=True,
+            )
+            usage = _add_usage(usage, _extract_token_usage(response, model_id))
+            message = (response.get("output") or {}).get("message") or {}
+            blocks = [
+                b for b in message.get("content") or [] if isinstance(b, dict)
+            ]
+            uses = [b["toolUse"] for b in blocks if isinstance(
+                b.get("toolUse"), dict,
+            )]
+
+            report = next(
+                (u for u in uses if u.get("name") == FINDINGS_TOOL_NAME),
+                None,
+            )
+            if report is not None or not uses:
+                # A report, or an answer with no tool call at all, which the
+                # text fallback in _parse_findings still understands.
+                parsed_from = (
+                    {"output": {"message": {"content": [{"toolUse": report}]}}}
+                    if report is not None else response
+                )
+                findings = _parse_findings(
+                    parsed_from, agent_name, check_prefix,
+                )
+                logger.info(
+                    "agent.tools name=%s turns=%d lines_read=%d",
+                    agent_name, turn + 1, reader.lines_read,
+                )
+                return AgentResult(
+                    agent=agent_name,
+                    findings=findings,
+                    token_usage=usage,
+                    latency_ms=int((time.monotonic() - start_time) * 1000),
+                    model_id=model_id,
+                )
+
+            results = []
+            for use in uses:
+                results.append(await _answer_tool_use(
+                    use, reader, READ_FILE_TOOL_NAME,
+                ))
+            messages.append({"role": "assistant", "content": blocks})
+            messages.append({"role": "user", "content": results})
+
+    except ValueError as e:
+        logger.error(str(e))
+        return _fail(agent_name, "invalid_response", str(e))
+    except TimeoutError:
+        return _fail(
+            agent_name, "timeout",
+            f"Agent {agent_name} timed out after "
+            f"{time.monotonic() - start_time:.1f}s",
+        )
+    except BedrockError as e:
+        error_type = _classify_error(e)
+        return _fail(
+            agent_name, error_type, str(e),
+            retryable=_is_retryable(error_type),
+        )
+    except Exception as e:
+        return _fail(agent_name, "unhandled", f"{type(e).__name__}: {e}")
+
+    # The final turn forces report_findings, so this is unreachable unless
+    # the model ignores toolChoice.
+    return _fail(
+        agent_name, "invalid_response",
+        f"Agent {agent_name} did not report after {tool_turns + 1} turns",
+    )
+
+
+async def _answer_tool_use(
+    use: dict[str, Any],
+    reader: FileReader,
+    read_tool_name: str,
+) -> dict[str, Any]:
+    """A toolResult block answering one toolUse request."""
+    tool_use_id = use.get("toolUseId", "")
+    args = use.get("input") if isinstance(use.get("input"), dict) else {}
+    if use.get("name") != read_tool_name:
+        return {"toolResult": {
+            "toolUseId": tool_use_id,
+            "content": [{"text": f"Unknown tool {use.get('name')!r}."}],
+            "status": "error",
+        }}
+
+    def _int(value: Any) -> int | None:
+        return value if isinstance(value, int) else None
+
+    text = await reader.read(
+        str(args.get("path", "")),
+        _int(args.get("start_line")),
+        _int(args.get("end_line")),
+    )
+    return {"toolResult": {
+        "toolUseId": tool_use_id, "content": [{"text": text}],
+    }}
+
+
+async def _converse_with_retry(
+    agent_name: str,
+    budget: TimeoutBudget,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """One Converse call with the same timeout and retry as a single review."""
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(_invoke_bedrock, **kwargs),
+                timeout=budget.allocate(120.0),
+            )
+        except BedrockError as e:
+            error_type = _classify_error(e)
+            if _is_retryable(error_type) and attempt < _MAX_RETRIES:
+                wait = _backoff_seconds(attempt)
+                logger.warning(
+                    "Agent %s got %s (attempt %d/%d), retrying in %.1fs",
+                    agent_name, error_type, attempt + 1, _MAX_RETRIES, wait,
+                )
+                await asyncio.sleep(wait)
+                continue
+            raise
+    raise BedrockError(f"Agent {agent_name} failed after {_MAX_RETRIES} retries")
+
+
+def _add_usage(a: TokenUsage, b: TokenUsage) -> TokenUsage:
+    return TokenUsage(
+        input_tokens=a.input_tokens + b.input_tokens,
+        output_tokens=a.output_tokens + b.output_tokens,
+        estimated_cost_usd=a.estimated_cost_usd + b.estimated_cost_usd,
+    )
+
+
 FINDINGS_TOOL_NAME = "report_findings"
 
 
@@ -264,6 +474,17 @@ def _findings_tool_config() -> dict[str, Any]:
     }
 
 
+def _review_tool_config(*, read_allowed: bool) -> dict[str, Any]:
+    """Both tools, with a free choice while reading is still allowed."""
+    from prbot.review.tools import read_file_tool_spec
+
+    config = _findings_tool_config()
+    config["tools"] = [*config["tools"], read_file_tool_spec()]
+    if read_allowed:
+        config["toolChoice"] = {"any": {}}
+    return config
+
+
 def _rejects_sampling_params(error: Any) -> bool:
     """Does this ValidationException name a sampling parameter?
 
@@ -285,6 +506,9 @@ def _invoke_bedrock(
     aws_region: str,
     max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
     temperature: float | None = None,
+    messages: list[dict[str, Any]] | None = None,
+    tool_config: dict[str, Any] | None = None,
+    cache: bool = False,
 ) -> dict[str, Any]:
     """Invoke Bedrock Converse API synchronously (S16, B5).
 
@@ -301,17 +525,19 @@ def _invoke_bedrock(
 
     client = boto3.client("bedrock-runtime", region_name=aws_region)
 
+    system: list[dict[str, Any]] = [{"text": system_prompt}]
+    if cache:
+        system.append({"cachePoint": {"type": "default"}})
+    conversation = messages or [
+        {"role": "user", "content": [{"text": user_prompt}]},
+    ]
+
     def _call(inference_config: dict[str, Any]) -> dict[str, Any]:
         return client.converse(
             modelId=model_id,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [{"text": user_prompt}],
-                },
-            ],
-            system=[{"text": system_prompt}],
-            toolConfig=_findings_tool_config(),
+            messages=conversation,
+            system=system,
+            toolConfig=tool_config or _findings_tool_config(),
             inferenceConfig=inference_config,
         )
 
@@ -369,17 +595,27 @@ def _extract_token_usage(
         logger.warning("Bedrock response missing 'usage' field")
         return TokenUsage(0, 0, 0.0)
 
-    input_tokens = usage.get("inputTokens", 0)
-    output_tokens = usage.get("outputTokens", 0)
+    def _count(key: str) -> int:
+        value = usage.get(key, 0)
+        return value if isinstance(value, int) else 0
 
-    if not isinstance(input_tokens, int):
-        input_tokens = 0
-    if not isinstance(output_tokens, int):
-        output_tokens = 0
+    # With a cache point, inputTokens counts only what was neither read from
+    # nor written to the cache, so the other two have to be added back for
+    # the total to mean what it meant before caching.
+    uncached = _count("inputTokens")
+    cache_read = _count("cacheReadInputTokens")
+    cache_write = _count("cacheWriteInputTokens")
+    output_tokens = _count("outputTokens")
+    input_tokens = uncached + cache_read + cache_write
 
     pricing = get_model_pricing(model_id)
+    billed_input = (
+        uncached
+        + cache_write * CACHE_WRITE_MULTIPLIER
+        + cache_read * CACHE_READ_MULTIPLIER
+    )
     cost = (
-        (input_tokens / 1_000_000) * pricing["input"]
+        (billed_input / 1_000_000) * pricing["input"]
         + (output_tokens / 1_000_000) * pricing["output"]
     )
 

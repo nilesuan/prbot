@@ -21,7 +21,7 @@ from typing import Any
 
 from prbot import __version__
 from prbot.config import PrBotConfig, build_config
-from prbot.exceptions import ConfigError, PrBotError
+from prbot.exceptions import BudgetExceededError, ConfigError, PrBotError
 
 EXIT_PASS = 0
 EXIT_BLOCKERS = 1
@@ -356,6 +356,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
         deduplicate_findings,
         score_findings,
     )
+    from prbot.review.tools import FileReader
     from prbot.review.verdict import (
         ReviewVerdict,
         determine_verdict,
@@ -526,18 +527,52 @@ async def run_pipeline(config: PrBotConfig) -> int:
         # The budget bounds the whole run, not each chunk. Checking chunks
         # individually would let ten chunks each under the limit cost ten
         # times it.
-        estimate_cost(
-            diff_text,
-            [a["model_id"] for a in agents],
-            config.budget_limit_usd,
-            estimated_output_tokens=(
-                config.max_output_tokens * max(len(chunks), 1)
-            ),
-        )
+        tool_turns = config.tool_turns
+
+        def _estimate(turns: int) -> None:
+            estimate_cost(
+                diff_text,
+                [a["model_id"] for a in agents],
+                config.budget_limit_usd,
+                estimated_output_tokens=(
+                    config.max_output_tokens * max(len(chunks), 1)
+                ),
+                tool_turns=turns,
+            )
+
+        if tool_turns > 0:
+            try:
+                _estimate(tool_turns)
+            except BudgetExceededError:
+                # Reading is priced at its worst case. A review that fits
+                # without it is worth more than no review, so drop the
+                # reads rather than the run.
+                logger.warning(
+                    "budget.tools_dropped turns=%d: the worst case with "
+                    "reads exceeds %.2f USD; reviewing without them",
+                    tool_turns, config.budget_limit_usd,
+                )
+                tool_turns = 0
+        if tool_turns == 0:
+            _estimate(0)
         if len(chunks) > 1:
             logger.info(
                 "review.chunked chunks=%d files=%d",
                 len(chunks), len(filtered_diff.files),
+            )
+
+        # One cache for every agent's reader, seeded with the files already
+        # fetched for context: three agents reading one file is one fetch.
+        read_cache: dict[str, str | None] = dict(file_contents)
+
+        async def _fetch(path: str) -> str | None:
+            return await adapter.get_file_content(path, metadata.head_sha)
+
+        def _reader() -> FileReader:
+            return FileReader(
+                _fetch,
+                exclusion_patterns=config.excluded_patterns,
+                cache=read_cache,
             )
 
         budget = TimeoutBudget(config.timeout_seconds)
@@ -553,6 +588,8 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     context_lines=config.context_lines,
                     all_paths=all_paths,
                     temperature=config.temperature,
+                    reader_factory=_reader,
+                    tool_turns=tool_turns,
                 ),
             )
 

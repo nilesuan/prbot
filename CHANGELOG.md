@@ -94,6 +94,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accepts it. A repository pinned to an older model that relied on
   temperature 0 should set it explicitly.
 
+### Added
+
+- **`read_file`, an opt-in tool for reading beyond the diff
+  (`PRBOT_TOOL_TURNS`, default 0).** An agent may read other files of the
+  repository at the head revision before reporting, bounded to 200 lines per
+  read and 600 per agent, with binary, generated and excluded paths refused
+  and content datamarked. Turns reuse a Bedrock prompt cache, token usage now
+  counts and prices cache reads and writes, and the budget check prices the
+  worst case and drops the reads rather than the review when they do not fit.
+  Off by default: on terraform-modules MR 269 the agents read 129-286 lines
+  each and found nothing a run without reads missed, at 61% more cost.
+
 The evidence is in `research/mrr-comparison-0.6/`.
 
 ## [0.6.0] - 2026-09-16
