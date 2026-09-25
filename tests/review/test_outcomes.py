@@ -472,6 +472,20 @@ class TestAThreadTheBotResolvedIsReopened:
         )
         assert len(report.reopened) == 1
 
+    def test_a_reworded_finding_does_not_reopen_a_thread(self) -> None:
+        """QA-COV-05: reopening acts on a thread, so it needs that thread's
+        own fingerprint. A reworded report is matched to open threads only,
+        so a resolved thread it would otherwise fit is left alone."""
+        reworded = _finding(title="The same defect, described differently")
+        thread = ReviewThread(
+            id="t1", comment_id=1, body=_posted_body(self._FINDING),
+            resolved=True, resolved_by="prbot", author="prbot",
+            path=self._FINDING.file_path, line=self._FINDING.line_end,
+        )
+        report = reconcile([_scored(reworded)], [thread], bot_user="prbot")
+        assert report.reopened == []
+        assert [sf.finding.title for sf in report.new] == [reworded.title]
+
     def test_reopened_is_counted(self) -> None:
         report = reconcile(
             [_scored(self._FINDING)], [self._thread("prbot")],
