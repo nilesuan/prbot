@@ -168,6 +168,26 @@ def _summarise_agents(
     return agent_infos, total_cost
 
 
+def _finding_audit_entries(findings: Any) -> list[Any]:
+    """Every scored finding as a structured audit entry, prose left out."""
+    from prbot.observability.audit import FindingAuditInfo
+    from prbot.review.identity import finding_fingerprint
+
+    return [
+        FindingAuditInfo(
+            fingerprint=finding_fingerprint(scored.finding),
+            check_id=scored.finding.check_id,
+            severity=scored.finding.severity,
+            confidence=scored.finding.confidence,
+            band=scored.band,
+            file_path=scored.finding.file_path,
+            line_start=scored.finding.line_start,
+            line_end=scored.finding.line_end,
+        )
+        for scored in findings
+    ]
+
+
 def _apply_safety(
     outcomes: list[Any],
     chunks: list[Any],
@@ -690,6 +710,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
             produced_count=produced_count,
             dropped_count=hallucinations_removed,
             history=state_record.history,
+            hidden=list(score.hidden),
         )
         comment, secret_count = redact_secrets(comment)
 
@@ -860,6 +881,9 @@ async def run_pipeline(config: PrBotConfig) -> int:
             dry_run=config.dry_run,
             cost_usd=total_cost,
             outcome_counts=outcome_counts,
+            findings=_finding_audit_entries(
+                (*reported, *borderline, *score.hidden),
+            ),
         )
         emit_audit_record(audit)
         emit_metrics(

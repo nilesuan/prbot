@@ -188,13 +188,22 @@ does not learn the behaviour changed.
 
 </details>
 
+<details>
+<summary>Low-confidence findings (3), listed but not scored</summary>
+
+- 🔵 low · `Q-DOC-01` · `README.md:40-44` · 40% confidence · Example uses a removed flag
+- 🔵 low · `Q-TEST-03` · `tests/test_cli.py:88-90` · 35% confidence · Exit code 3 path has no test
+- ⚪ info · `Q-MAINT-01` · `src/prbot/config.py:12-14` · 30% confidence · Constant could live in one place
+
+</details>
+
 ### Agent Status
 
 - **general**: ✅ 4 findings, 12431 tokens, 8204ms
 - **security**: ✅ 2 findings, 9880 tokens, 7110ms
 
 ---
-_3 low-confidence findings hidden._
+_3 low-confidence findings listed, not scored._
 _1 finding(s) suppressed by configuration._
 _2 finding(s) resolved since the last review._
 
@@ -223,9 +232,13 @@ Rules:
   repetition. The section is omitted when every finding was anchored.
 - **Borderline.** Findings scored into the borderline band. One line each, never
   a full block, always inside `<details>`. Omitted when empty.
+- **Low-confidence.** Findings below the borderline band, in the same one-line
+  shape inside `<details>`. They deduct nothing and get no thread, but they are
+  listed rather than reduced to a count, so every finding can be inspected.
+  Omitted when empty.
 - **Agent status.** Aggregated per agent name, not per outcome, so a chunked
   review shows one line per agent with summed figures and a pass count.
-- **Footer.** Hidden, suppressed and resolved counts each appear only when
+- **Footer.** Low-confidence, suppressed and resolved counts each appear only when
   non-zero. The disclaimer is mandatory and survives truncation. The state
   record is always last.
 
@@ -307,11 +320,13 @@ GitLab) is **rebuilt with less in it**, not cut apart as rendered markdown, so
 every attempt is a well-formed comment. Each attempt stops as soon as it fits:
 
 1. Everything.
-2. Without the borderline block, replaced by
+2. Without the low-confidence block, replaced by
+   `_Low-confidence findings truncated for size._`
+3. Also without the borderline block, replaced by
    `_Borderline findings truncated for size._`
-3. Also without the `info` and `low` issue blocks, replaced by
+4. Also without the `info` and `low` issue blocks, replaced by
    `_N low-severity issue detail(s) truncated for size._`
-4. Last resort: a hard cut that preserves the disclaimer and the state record,
+5. Last resort: a hard cut that preserves the disclaimer and the state record,
    marked `_...truncated for size..._`. Without the state record the next run
    cannot find its own comment.
 

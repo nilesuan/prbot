@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from prbot.review.identity import finding_fingerprint, marker_for
 from prbot.review.models import (
@@ -212,6 +212,14 @@ def _format_issue_block(
     return "\n".join(parts)
 
 
+class _Shown(NamedTuple):
+    """What one attempt at an oversize comment keeps."""
+
+    borderline: list[ScoredFinding]
+    detailed: list[ScoredFinding]
+    low_confidence: list[ScoredFinding]
+
+
 def format_review_comment(
     verdict: ReviewVerdict,
     score: ReviewScore,
@@ -229,6 +237,7 @@ def format_review_comment(
     produced_count: int = 0,
     dropped_count: int = 0,
     history: tuple[dict[str, Any], ...] = (),
+    hidden: list[ScoredFinding] | None = None,
 ) -> str:
     """Format the summary comment (G-28, S83, template section 5).
 
@@ -251,9 +260,12 @@ def format_review_comment(
     detailed = list(unanchored or []) if inline_enabled else list(reported)
     limit = _PLATFORM_LIMITS.get(platform, 65536)
 
+    low_confidence = list(hidden or [])
+
     def build(
         shown_borderline: list[ScoredFinding],
         shown_detail: list[ScoredFinding],
+        shown_low: list[ScoredFinding],
     ) -> str:
         detail = _format_detail_section(
             shown_detail, inline_enabled=inline_enabled,
@@ -270,6 +282,10 @@ def format_review_comment(
         if borderline and not shown_borderline:
             collapsed = "_Borderline findings truncated for size._"
 
+        listed = _format_low_confidence_section(shown_low)
+        if low_confidence and not shown_low:
+            listed = "_Low-confidence findings truncated for size._"
+
         sections = [
             _format_header(verdict, score),
             _format_counts(reported),
@@ -278,9 +294,11 @@ def format_review_comment(
                 inline_enabled=inline_enabled,
                 unanchored_count=len(detailed) if inline_enabled else 0,
                 borderline_count=len(shown_borderline),
+                low_confidence_count=len(shown_low),
             ),
             detail,
             collapsed,
+            listed,
             _format_agent_status(outcomes),
             _format_history(history),
             _format_footer(
@@ -298,21 +316,25 @@ def format_review_comment(
         ]
         return "\n\n".join(s for s in sections if s)
 
+    # Least important first: low-confidence findings deduct nothing, so
+    # they are the first thing an oversize comment gives up.
     attempts = (
-        (borderline, detailed),
-        ([], detailed),
-        (
-            [],
-            [
+        _Shown(borderline, detailed, low_confidence),
+        _Shown(borderline, detailed, low_confidence=[]),
+        _Shown(borderline=[], detailed=detailed, low_confidence=[]),
+        _Shown(
+            borderline=[],
+            detailed=[
                 sf for sf in detailed
                 if sf.finding.severity not in _DROPPABLE_DETAIL
             ],
+            low_confidence=[],
         ),
     )
 
     comment = ""
-    for shown_borderline, shown_detail in attempts:
-        comment = build(shown_borderline, shown_detail)
+    for shown in attempts:
+        comment = build(shown.borderline, shown.detailed, shown.low_confidence)
         if len(comment) <= limit:
             return comment
 
@@ -416,6 +438,7 @@ def _format_findings_table(
     inline_enabled: bool = False,
     unanchored_count: int = 0,
     borderline_count: int = 0,
+    low_confidence_count: int = 0,
 ) -> str:
     """The index (template section 5). One row per issue, no detail.
 
@@ -427,10 +450,17 @@ def _format_findings_table(
         # Borderline findings are shown below and count towards the score,
         # so claiming there are no issues directly above a red critical
         # would be a plain contradiction. Say what is true instead.
+        below = []
         if borderline_count:
-            return (
-                f"No issues above the reporting threshold. "
-                f"{borderline_count} borderline finding(s) below."
+            below.append(f"{borderline_count} borderline finding(s) below.")
+        if low_confidence_count:
+            below.append(
+                f"{low_confidence_count} low-confidence finding(s) listed "
+                f"below.",
+            )
+        if below:
+            return " ".join(
+                ["No issues above the reporting threshold.", *below],
             )
         return "No issues found."
 
@@ -500,16 +530,31 @@ def _format_borderline_section(
     threshold and are shown so the reader can see what was weighed, not so
     they can be worked through.
     """
-    if not borderline:
+    return _collapsed_list(
+        f"Borderline findings ({len(borderline)})", borderline,
+    )
+
+
+def _format_low_confidence_section(hidden: list[ScoredFinding]) -> str:
+    """List the findings below the borderline band, collapsed.
+
+    They deduct nothing and get no thread, but they are what the agents
+    reported, and reducing them to a count made most findings impossible to
+    inspect: 113 of 140 across 47 production reviews.
+    """
+    return _collapsed_list(
+        f"Low-confidence findings ({len(hidden)}), listed but not scored",
+        hidden,
+    )
+
+
+def _collapsed_list(summary: str, findings: list[ScoredFinding]) -> str:
+    """One line per finding in a collapsed section, or nothing if none."""
+    if not findings:
         return ""
 
-    lines = [
-        "<details>",
-        f"<summary>Borderline findings ({len(borderline)})</summary>",
-        "",
-    ]
-
-    for scored in _sorted_findings(borderline):
+    lines = ["<details>", f"<summary>{summary}</summary>", ""]
+    for scored in _sorted_findings(findings):
         f = scored.finding
         emoji = _SEVERITY_EMOJI.get(f.severity, "")
         location = _cell(
@@ -520,7 +565,6 @@ def _format_borderline_section(
             f"`{location}` · {f.confidence}% confidence · "
             f"{_cell(f.title, _MAX_TITLE)}",
         )
-
     lines.extend(["", "</details>"])
     return "\n".join(lines)
 
@@ -660,7 +704,7 @@ def _format_reconciliation(
     if suppressed_count:
         parts.append(f"{suppressed_count} suppressed by configuration")
     if hidden_count:
-        parts.append(f"{hidden_count} hidden as low confidence")
+        parts.append(f"{hidden_count} low confidence, listed but not scored")
     parts.append(f"{shown} shown")
     return f"_Findings: {' · '.join(parts)}._"
 
@@ -679,7 +723,7 @@ def _format_footer(
         lines.append(reconciliation)
     elif hidden_count > 0:
         lines.append(
-            f"_{hidden_count} low-confidence findings hidden._",
+            f"_{hidden_count} low-confidence findings listed, not scored._",
         )
 
     if suppressed_count > 0:

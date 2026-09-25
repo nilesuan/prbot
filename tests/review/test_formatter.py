@@ -164,8 +164,7 @@ class TestFormatFooter:
 
     def test_hidden_count_shown(self) -> None:
         footer = _format_footer(5, "")
-        assert "5" in footer
-        assert "hidden" in footer
+        assert "5 low-confidence findings listed, not scored" in footer
 
     def test_state_html_included(self) -> None:
         footer = _format_footer(0, "<!-- state -->")
@@ -664,7 +663,7 @@ class TestFindingsReconcile:
         assert "4 produced" in body
         assert "1 merged" in body
         assert "1 outside the diff" in body
-        assert "1 hidden" in body
+        assert "1 low confidence, listed but not scored" in body
 
     def test_nothing_is_said_when_nothing_was_lost(self) -> None:
         """A clean run must not grow a line of accounting noise."""
@@ -726,3 +725,66 @@ class TestHeaderDoesNotDenyShownFindings:
             [_clean_outcome()],
         )
         assert "No issues found." in body
+
+
+class TestLowConfidenceFindingsAreListed:
+    """Hidden findings are listed, collapsed, so they can be inspected."""
+
+    @staticmethod
+    def _hidden(title: str = "Guard can be bypassed") -> ScoredFinding:
+        finding = _make_finding(
+            severity="low", confidence=20, check_id="IAC-SCOPE-02",
+            title=title,
+        )
+        return ScoredFinding.from_finding(finding, threshold=70)
+
+    def _comment(self, hidden: list[ScoredFinding]) -> str:
+        return format_review_comment(
+            ReviewVerdict.APPROVE, _make_score(100), [], [], len(hidden),
+            [_clean_outcome()], hidden=hidden,
+        )
+
+    def test_a_hidden_finding_is_listed_with_its_confidence(self) -> None:
+        out = self._comment([self._hidden()])
+        assert "Low-confidence findings (1)" in out
+        assert "IAC-SCOPE-02" in out
+        assert "20% confidence" in out
+        assert "Guard can be bypassed" in out
+
+    def test_the_list_is_collapsed(self) -> None:
+        out = self._comment([self._hidden()])
+        at = out.index("Low-confidence findings (1)")
+        assert out.rfind("<details>", 0, at) != -1
+
+    def test_the_list_says_it_does_not_affect_the_score(self) -> None:
+        out = self._comment([self._hidden()])
+        assert "not scored" in out
+
+    def test_no_hidden_findings_means_no_section(self) -> None:
+        assert "Low-confidence findings" not in self._comment([])
+
+    def test_the_footer_no_longer_says_hidden(self) -> None:
+        out = self._comment([self._hidden()])
+        assert "hidden" not in out.lower()
+
+    def test_the_list_is_dropped_before_anything_else_when_oversize(
+        self,
+    ) -> None:
+        many = [self._hidden("x" * 150) for _ in range(600)]
+        out = self._comment(many)
+        assert len(out) <= 65536
+        assert "Low-confidence findings" not in out or "truncated" in out
+
+
+class TestNoIssuesIsNotClaimedOverAList:
+    def test_only_low_confidence_findings_is_not_no_issues(self) -> None:
+        low = ScoredFinding.from_finding(
+            _make_finding(severity="low", confidence=20), threshold=70,
+        )
+        out = format_review_comment(
+            ReviewVerdict.APPROVE, _make_score(100), [], [], 1,
+            [_clean_outcome()], hidden=[low],
+        )
+        assert "No issues found." not in out
+        assert "No issues above the reporting threshold." in out
+        assert "1 low-confidence finding(s) listed below." in out

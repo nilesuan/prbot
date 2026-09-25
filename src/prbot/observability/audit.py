@@ -7,7 +7,7 @@ NO sensitive data in the record (G-11).
 from __future__ import annotations
 
 import hashlib
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 import structlog
 
@@ -28,6 +28,31 @@ class AgentAuditInfo:
     # A8: what this agent actually cost, from the token counts Bedrock
     # returned and the model's pricing. Zero for an agent that errored.
     cost_usd: float = 0.0
+
+
+# G-11 caps every string a finding entry carries. The path is chosen by the
+# contributor and the check id by the model, and neither is otherwise
+# bounded: a 5,010-character check id was logged whole (SEC-LOG-01).
+_MAX_AUDIT_STRING = 256
+
+
+@dataclass(frozen=True)
+class FindingAuditInfo:
+    """One finding, in whatever band it landed (G-11: no prose).
+
+    Titles, descriptions and suggestions are model output about untrusted
+    content, so they stay in the comment. The fingerprint is what ties this
+    entry to the finding shown there.
+    """
+
+    fingerprint: str
+    check_id: str
+    severity: str
+    confidence: int
+    band: str
+    file_path: str
+    line_start: int
+    line_end: int
 
 
 @dataclass(frozen=True)
@@ -92,6 +117,8 @@ class AuditRecord:
 
     # Agents (default last — frozen dataclass ordering)
     agents: list[AgentAuditInfo] = field(default_factory=list)
+    # Every finding that reached scoring, reported, borderline or hidden.
+    findings: list[FindingAuditInfo] = field(default_factory=list)
 
 
 def compute_diff_hash(diff_text: str) -> str:
@@ -135,10 +162,20 @@ def build_audit_record(
     dry_run: bool,
     cost_usd: float = 0.0,
     outcome_counts: dict[str, int] | None = None,
+    findings: list[FindingAuditInfo] | None = None,
 ) -> AuditRecord:
     """Build a complete audit record from pipeline state."""
     outcomes = outcome_counts or {}
+    capped = [
+        replace(f, **{
+            name: value[:_MAX_AUDIT_STRING]
+            for name, value in asdict(f).items()
+            if isinstance(value, str)
+        })
+        for f in (findings or [])
+    ]
     return AuditRecord(
+        findings=capped,
         findings_new=outcomes.get("findings_new", 0),
         findings_persisting=outcomes.get("findings_persisting", 0),
         findings_fixed=outcomes.get("findings_fixed", 0),

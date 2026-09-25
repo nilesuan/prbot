@@ -51,6 +51,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   COMMENT with exit 0 whenever another agent produced no result at all, so
   making one agent fail waved the other's finding through. Incomplete data
   still never approves, but what it found now blocks, with exit 1.
+- **Low-confidence findings are listed and audited, not reduced to a count.**
+  A finding below the borderline band became a number, so 113 of 140
+  production findings could not be inspected. They are now listed one line
+  each in a collapsed "Low-confidence findings, listed but not scored"
+  section, and `review.audit` carries every finding's fingerprint, check,
+  severity, confidence, band and location (no model prose, per G-11). The
+  prompts no longer claim every below-threshold finding counts towards the
+  score.
+- **The audit log's finding entries are redacted and capped.** Log redaction
+  scanned only top-level values, so a token in a finding's check id reached
+  the log, and only the path was capped: a 5,010-character check id was
+  logged whole. The redactor now walks nested values, every string in an
+  entry is capped at 256 characters, and a check id that is not a short code
+  drops its finding.
 
 The evidence is in `research/mrr-comparison-0.6/`.
 

@@ -1302,3 +1302,45 @@ class TestBorderlineFindingsAreAnchored:
             await run_pipeline(_config(review_mode="review"))
 
         assert not adapter.submitted_reviews[-1][2]
+
+
+class TestHiddenFindingsReachTheReader:
+    """A hidden finding is listed in the comment and recorded in the audit."""
+
+    @pytest.mark.asyncio
+    async def test_it_is_listed_and_audited(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from prbot.observability.logging import configure_logging
+
+        configure_logging("INFO")
+        adapter = FakeVCSAdapter()
+        low = _finding(
+            title="Rule keys shift when the list is reordered",
+            severity="low", confidence=20,
+        )
+        bedrock = lambda **_: _bedrock_response([low])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config())
+
+        body = adapter.posted_comments[0]
+        assert "Low-confidence findings (1)" in body
+        assert "Rule keys shift when the list is reordered" in body
+
+        audit = None
+        for line in capsys.readouterr().out.splitlines():
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            if payload.get("event") == "review.audit":
+                audit = payload
+        assert audit is not None
+        assert audit["hidden_count"] == 1
+        [entry] = audit["findings"]
+        assert entry["band"] == "hidden"
+        assert entry["check_id"] == "Q-ERR-01"
+        assert entry["confidence"] == 20
+        assert len(entry["fingerprint"]) == 16
+        assert "title" not in entry
