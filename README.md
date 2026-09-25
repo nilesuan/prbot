@@ -226,6 +226,15 @@ somewhere with `PRBOT_METRICS_FILE` or `PRBOT_METRICS_NAMESPACE`.
 Threads without prbot's fingerprint are ignored entirely. Human review threads
 are none of the bot's business.
 
+The model rewords its titles between runs, so the same defect can arrive under
+a new fingerprint. prbot still keeps it on its open thread when the thread is
+on the same file, names the same check and is anchored on a line the finding
+covers; if two findings fit one thread, the nearer one gets it. It does this
+only for threads it can confirm it wrote, which rules it out under
+`GITHUB_TOKEN`, where prbot cannot read its own login. A resolved thread is
+matched only by its exact fingerprint, so a reworded finding on a line someone
+resolved is raised again rather than filed under their decision.
+
 On GitHub, resolution state and resolving both need GraphQL. If the token
 cannot reach it, prbot falls back to REST: findings are still deduplicated and
 replied to, but a thread a human resolved may be re-reported. It says so in

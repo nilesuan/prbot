@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   characters each, because datamarking made a 65,536-character description a
   159,849-token prompt. Paths shown in a prompt lose Unicode line breaks as
   well as ASCII control characters.
+- **A reworded finding stays on the thread it already has.** The fingerprint
+  includes the title, and the model rewords titles between runs, so one
+  defect was posted as a new blocking discussion each time. With no exact
+  fingerprint match, a thread on the same file naming the same check whose
+  anchored line the finding covers is now taken to be the same defect. Only
+  an open thread prbot can prove it wrote is matched this way. With
+  `GITHUB_TOKEN` prbot cannot read its own login, so matching stays exact
+  there; otherwise anyone could write a thread that takes a real finding. A
+  resolved thread is matched only by its exact fingerprint, so a new defect
+  of the same check on that line is not filed under someone's resolution.
+  When two findings fit one thread the nearer one gets it, and a thread whose
+  line is still reported for its check is not closed as fixed.
 - **A review is not approved when an agent failed on part of the diff.** A
   review with no findings was approved when every agent failed on one chunk
   and succeeded on another, although nobody had reviewed that chunk's files.

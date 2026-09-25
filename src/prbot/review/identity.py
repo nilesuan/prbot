@@ -28,6 +28,9 @@ _MARKER_PATTERN = re.compile(
 
 _TITLE_NOISE = re.compile(r"[^a-z0-9 ]+")
 
+# The header line every posted finding opens with: **`CHECK-ID`** · ...
+_CHECK_HEADER = re.compile(r"\A\s*\*\*`([^`\n]+)`\*\*")
+
 
 def _normalise(text: str) -> str:
     """Reduce a title to comparable words.
@@ -58,4 +61,16 @@ def marker_for(fingerprint: str) -> str:
 def extract_fingerprint(body: str) -> str | None:
     """Read a fingerprint back out of a comment body, if it has one."""
     match = _MARKER_PATTERN.search(body or "")
+    return match.group(1) if match else None
+
+
+def extract_check_id(body: str) -> str | None:
+    """Read the check id back out of a posted finding's header, if present.
+
+    The fingerprint includes the title, and the model rewords titles between
+    runs, so the fingerprint alone cannot recognise a thread it wrote about
+    the same defect. The check id, with the thread's file and anchored line,
+    is what reconciliation falls back on.
+    """
+    match = _CHECK_HEADER.match(body or "")
     return match.group(1) if match else None
