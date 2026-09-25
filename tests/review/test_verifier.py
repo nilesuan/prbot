@@ -303,6 +303,39 @@ class TestGroupingByChunk:
         assert stats.unverified == 1
         assert stats.failed_chunks == 1
 
+    @pytest.mark.asyncio
+    async def test_a_failed_chunk_takes_no_verdict_from_the_one_before(
+        self,
+    ) -> None:
+        """QA-COV-CHUNKFAIL-01: a chunk that verified and one that failed in
+        the same run. The failed chunk's findings stay as they were."""
+        from prbot.exceptions import BedrockError
+        from prbot.review.verifier import verify_findings
+        from prbot.vcs.models import FileDiff, PRDiff
+
+        chunks = [
+            PRDiff(files=[FileDiff(path="b.tf", status="modified", patch="")]),
+            PRDiff(files=[FileDiff(path="a.tf", status="modified", patch="")]),
+        ]
+
+        async def ask(chunk: PRDiff, findings: list[Finding]):
+            if chunk.files[0].path == "a.tf":
+                raise BedrockError("throttled")
+            return {i + 1: ("confirmed", 99) for i in range(len(findings))}
+
+        out, stats = await verify_findings(
+            [
+                _finding(file_path="b.tf"), _finding(file_path="a.tf"),
+                _finding(file_path="a.tf", title="other"),
+            ],
+            chunks, ask,
+        )
+        assert [f.confidence for f in out] == [99, 40, 40]
+        assert [f.verification for f in out] == ["confirmed", "", ""]
+        assert stats.confirmed == 1
+        assert stats.unverified == 2
+        assert stats.failed_chunks == 1
+
 
 class TestAFindingInNoChunk:
     @pytest.mark.asyncio
