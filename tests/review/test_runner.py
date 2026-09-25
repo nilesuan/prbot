@@ -682,6 +682,34 @@ class TestStructuredOutputIsEnforced:
         captured = self._invoke(temperature=0.0)
         assert captured["inferenceConfig"]["temperature"] == 0.0
 
+    def test_a_tool_turn_sends_its_conversation_tools_and_cache_point(
+        self,
+    ) -> None:
+        """QA-NEW-01: every tool-loop test patches this function out, so
+        nothing checked the request a tool turn actually sends."""
+        from prbot.review.runner import _review_tool_config
+
+        messages = [
+            {"role": "user", "content": [{"text": "usr"}]},
+            {"role": "assistant", "content": [{"text": "reading"}]},
+        ]
+        tool_config = _review_tool_config(read_allowed=True)
+        captured = self._invoke(
+            messages=messages, tool_config=tool_config, cache=True,
+        )
+        assert captured["messages"] == messages
+        assert captured["toolConfig"] == tool_config
+        assert captured["system"] == [
+            {"text": "sys"}, {"cachePoint": {"type": "default"}},
+        ]
+
+    def test_a_single_call_sends_no_cache_point(self) -> None:
+        captured = self._invoke()
+        assert captured["system"] == [{"text": "sys"}]
+        assert captured["messages"] == [
+            {"role": "user", "content": [{"text": "usr"}]},
+        ]
+
 
 class TestParseFindingsReadsToolUse:
     """B5: structured output arrives in a toolUse block, not a text block."""
