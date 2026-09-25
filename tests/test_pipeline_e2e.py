@@ -274,6 +274,30 @@ class TestVerdictsReachTheExitCode:
         assert exit_code == EXIT_INFRA_ERROR
 
     @pytest.mark.asyncio
+    async def test_a_blocker_exits_one_though_a_pass_went_unreviewed(
+        self,
+    ) -> None:
+        """XV-OWN-02: a blocker found on one pass still exits 1 when another
+        pass was completed by no agent. Nothing pinned that precedence
+        through the whole exit-code path."""
+        adapter, config = self._two_passes()
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            if "m2/main.tf" in _shown(kwargs["user_prompt"]):
+                raise BedrockError("Bedrock API error (AccessDeniedException)")
+            if _is_security(kwargs["system_prompt"]):
+                return _bedrock_response([])
+            return _bedrock_response([_finding(
+                severity="critical", confidence=95,
+                file_path="m1/main.tf", line_start=1, line_end=2,
+            )])
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(config)
+
+        assert exit_code == EXIT_BLOCKERS
+
+    @pytest.mark.asyncio
     async def test_a_pass_one_agent_completed_still_passes(self) -> None:
         """Every file was read by at least one agent, so it is a COMMENT."""
         adapter, config = self._two_passes()
