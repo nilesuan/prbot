@@ -5,6 +5,38 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The context excerpt is a window per hunk, not the whole span between
+  them.** One range ran from a patch's first hunk to its last, so any file
+  edited near both ends was sent whole. On terraform-modules MR 267 that was
+  8,112 excerpt lines for 843 changed lines. Windows that overlap or touch are
+  merged, and the gap between the rest is marked.
+- **Chunks are sized by the prompt that is sent.** The chunker sized the raw
+  patch, so neither the excerpt nor datamarking counted towards
+  `max_diff_tokens`: MR 267 was estimated at 23,257 tokens, sent in one call,
+  and billed 635k input tokens per agent for an empty review. Above 400k input
+  tokens agents returned nothing on 80% of calls across 47 production runs.
+  Each chunk's prompt now lists the pull request's other changed files as
+  reviewed separately: without it, a chunk holding only `variables.tf` on MR
+  269 reported the NACL resources in the other chunk as missing, at critical
+  and high severity. The header, description and file list every chunk
+  repeats count towards the limit too. In the prompt the description is cut
+  to its first 8,000 characters and the list to 200 paths of at most 300
+  characters each, because datamarking made a 65,536-character description a
+  159,849-token prompt. Paths shown in a prompt lose Unicode line breaks as
+  well as ASCII control characters.
+- **A review is not approved when an agent failed on part of the diff.** A
+  review with no findings was approved when every agent failed on one chunk
+  and succeeded on another, although nobody had reviewed that chunk's files.
+  It is now a COMMENT, and a pass that no agent completed fails the job
+  with exit code 3, as every agent failing does. A blocker found in another
+  chunk still requests changes.
+
+The evidence is in `research/mrr-comparison-0.6/`.
+
 ## [0.6.0] - 2026-09-16
 
 A review-quality release. prbot was running, posting, and finding almost

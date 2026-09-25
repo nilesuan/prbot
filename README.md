@@ -189,7 +189,11 @@ patch, since it is file content from the same pull request.
 A diff larger than `PRBOT_MAX_DIFF_TOKENS` used to be refused outright, so the
 pull requests most worth reviewing got no review. It is now reviewed in
 several passes, packed by file in their original order, and the findings are
-merged and deduplicated as though they came from one pass.
+merged and deduplicated as though they came from one pass. The limit applies
+to each pass's whole prompt: every file with its surrounding code and
+datamarking, plus the header, description and list of other files each pass
+repeats. In the prompt a description is cut to its first 8,000 characters and
+that list to 200 paths of at most 300 characters each.
 
 The cost of the whole run is estimated before any call is made and checked
 against `PRBOT_BUDGET_LIMIT_USD`, so splitting cannot quietly multiply the
@@ -351,14 +355,21 @@ Deductions are weighted by confidence: `weight * (confidence / 100)`. A critical
 
 ## Verdict Logic
 
-| Scenario | Verdict | Exit Code |
-|----------|---------|-----------|
-| No findings, all agents OK | APPROVE | 0 |
-| Findings present, no blocker, score passes | COMMENT | 0 |
-| Critical or high finding at or above `PRBOT_BLOCKER_THRESHOLD` | REQUEST_CHANGES | 1 |
-| Score below `PRBOT_MIN_PASSING_SCORE` | REQUEST_CHANGES | 1 |
-| Any agent failed | COMMENT (never approve/reject with incomplete data) | 0 |
-| Both agents failed | COMMENT with error details | 3 |
+The first row that applies decides the verdict:
+
+| Condition | Verdict |
+|-----------|---------|
+| Every agent failed on every pass | COMMENT, with the errors |
+| An agent failed on every pass | COMMENT (never approve or reject on incomplete data) |
+| Critical or high finding at or above `PRBOT_BLOCKER_THRESHOLD` | REQUEST_CHANGES |
+| Score below `PRBOT_MIN_PASSING_SCORE` | REQUEST_CHANGES |
+| An agent failed on some pass | COMMENT (its files were not reviewed by it) |
+| No findings | APPROVE |
+| Findings, none blocking | COMMENT |
+
+The exit code is 3 when every agent failed; otherwise 1 for REQUEST_CHANGES;
+otherwise 3 when some pass was completed by no agent, since its files were
+reviewed by nobody; otherwise 0.
 
 ## Quick Start
 
@@ -522,7 +533,7 @@ anchored to the repository root (`vendor/**`).
 | 0 | Review passed (APPROVE or COMMENT) |
 | 1 | Review found blockers (REQUEST_CHANGES) |
 | 2 | Configuration error |
-| 3 | Infrastructure error |
+| 3 | Infrastructure error, or a review pass no agent completed |
 
 ## Architecture
 
