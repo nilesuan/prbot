@@ -107,12 +107,17 @@ class TestDetermineVerdict:
         assert verdict == ReviewVerdict.REQUEST_CHANGES
         assert score.critical_override is True
 
-    def test_scenario7_agent_failed_with_findings(self) -> None:
-        """Agent failed + findings → COMMENT (never REQUEST_CHANGES)."""
+    def test_scenario7_a_blocker_blocks_though_an_agent_failed(self) -> None:
+        """Agent failed + a blocker → REQUEST_CHANGES.
+
+        SEC-DESIGN-04: a critical finding the working agent confirmed was
+        downgraded to COMMENT, exit 0, whenever another agent failed. More
+        data could only add findings, so what was found still counts.
+        """
         finding = _make_finding(severity="critical", confidence=90)
         outcomes = [_make_result([finding]), _make_error()]
         verdict, _ = _score_and_verdict(outcomes)
-        assert verdict == ReviewVerdict.COMMENT
+        assert verdict == ReviewVerdict.REQUEST_CHANGES
 
     def test_scenario8_agent_failed_no_findings(self) -> None:
         """Agent failed + no findings → COMMENT."""
@@ -126,12 +131,30 @@ class TestDetermineVerdict:
         verdict, _ = _score_and_verdict(outcomes)
         assert verdict != ReviewVerdict.APPROVE
 
-    def test_never_request_changes_with_errors(self) -> None:
-        """Even with critical findings, error → COMMENT."""
-        finding = _make_finding(severity="critical", confidence=95)
+    def test_a_failing_score_blocks_though_an_agent_failed(self) -> None:
+        """A score below the mark on partial data only falls with more."""
+        findings = [
+            Finding(
+                id=f"test-{i}", category="general", check_id=f"Q-ARCH-0{i}",
+                title=f"Issue {i}", description="d", file_path="src/test.py",
+                line_start=10 * i, line_end=10 * i + 1,
+                severity="high", confidence=75,
+            )
+            for i in range(1, 6)
+        ]
+        outcomes = [_make_result(findings), _make_error()]
+        verdict, score = _score_and_verdict(outcomes)
+        assert score.clamped_score < 70
+        assert not score.critical_override
+        assert verdict == ReviewVerdict.REQUEST_CHANGES
+
+    def test_findings_that_do_not_block_are_a_comment_on_partial_data(
+        self,
+    ) -> None:
+        finding = _make_finding(severity="low", confidence=75)
         outcomes = [_make_result([finding]), _make_error()]
         verdict, _ = _score_and_verdict(outcomes)
-        assert verdict != ReviewVerdict.REQUEST_CHANGES
+        assert verdict == ReviewVerdict.COMMENT
 
 
 class TestHasBlockerFindings:
@@ -319,7 +342,10 @@ class TestChunkedOutcomesDoNotOverCap:
             outcomes, self._blocker(), self._score(),
         ) == ReviewVerdict.REQUEST_CHANGES
 
-    def test_an_agent_failing_in_every_chunk_still_caps(self) -> None:
+    def test_an_agent_failing_in_every_chunk_does_not_hide_a_blocker(
+        self,
+    ) -> None:
+        """SEC-DESIGN-04: the other agent's blocker still blocks."""
         outcomes = [
             AgentResult(agent="general", findings=[]),
             AgentError(agent="security", error_type="throttled", message="m"),
@@ -328,16 +354,17 @@ class TestChunkedOutcomesDoNotOverCap:
         ]
         assert determine_verdict(
             outcomes, self._blocker(), self._score(),
-        ) == ReviewVerdict.COMMENT
+        ) == ReviewVerdict.REQUEST_CHANGES
 
-    def test_the_unchunked_single_failure_still_caps(self) -> None:
-        """One agent, one chunk, failed: that agent has no coverage."""
+    def test_an_agent_failing_in_every_chunk_still_never_approves(
+        self,
+    ) -> None:
         outcomes = [
             AgentResult(agent="general", findings=[]),
-            AgentError(agent="security", error_type="timeout", message="m"),
+            AgentError(agent="security", error_type="throttled", message="m"),
         ]
         assert determine_verdict(
-            outcomes, self._blocker(), self._score(),
+            outcomes, [], self._score(100, False, findings=0),
         ) == ReviewVerdict.COMMENT
 
     def test_every_agent_failing_everywhere_is_still_comment(self) -> None:

@@ -195,7 +195,14 @@ class TestVerdictsReachTheExitCode:
         assert "REQUEST_CHANGES" in adapter.posted_comments[0]
 
     @pytest.mark.asyncio
-    async def test_one_agent_failing_caps_the_verdict(self) -> None:
+    async def test_a_blocker_blocks_though_the_other_agent_failed(
+        self,
+    ) -> None:
+        """SEC-DESIGN-04: this used to be a COMMENT with exit 0.
+
+        Making one agent fail was enough to wave the other agent's critical
+        finding through.
+        """
         adapter = FakeVCSAdapter()
 
         def bedrock(**kwargs: Any) -> dict[str, Any]:
@@ -211,7 +218,25 @@ class TestVerdictsReachTheExitCode:
         with _pipeline(adapter, bedrock):
             exit_code = await run_pipeline(_config(timeout_seconds=5))
 
-        # Never REQUEST_CHANGES on partial data, however bad the finding
+        assert exit_code == EXIT_BLOCKERS
+        assert "REQUEST_CHANGES" in adapter.posted_comments[0]
+
+    @pytest.mark.asyncio
+    async def test_one_agent_failing_on_a_clean_review_is_a_comment(
+        self,
+    ) -> None:
+        adapter = FakeVCSAdapter()
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            if _is_security(kwargs["system_prompt"]):
+                raise BedrockError(
+                    "Bedrock API error (AccessDeniedException)",
+                )
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(_config(timeout_seconds=5))
+
         assert exit_code == EXIT_PASS
         assert "COMMENT" in adapter.posted_comments[0]
 
