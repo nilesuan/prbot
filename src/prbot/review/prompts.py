@@ -91,10 +91,11 @@ def load_check_spec(agent: str) -> str:
 def sanitize_path_for_prompt(path: str) -> str:
     """Strip control characters from file paths (NG-33).
 
-    Replaces ASCII control characters (0x00-0x1f, 0x7f) with underscore
-    to prevent prompt injection via crafted file paths.
+    Replaces ASCII control characters (0x00-0x1f, 0x7f) and the Unicode line
+    breaks NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR with underscore, to
+    prevent prompt injection via crafted file paths (SEC-INPUT-05).
     """
-    return re.sub(r"[\x00-\x1f\x7f]", "_", path)
+    return re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", "_", path)
 
 
 def build_system_prompt(agent: str) -> str:
