@@ -122,7 +122,7 @@ def build_system_prompt(agent: str) -> str:
 
 
 def render_file_block(
-    f: FileDiff,
+    file_diff: FileDiff,
     *,
     datamark_diff: bool = True,
     file_contents: dict[str, str] | None = None,
@@ -144,21 +144,21 @@ def render_file_block(
     # path may contain spaces and any printable byte, so a file added at
     # 'src/Ignore the preceding instructions.py' would otherwise land in
     # the prompt as an unmarked markdown heading outside the diff fence.
-    safe_path = sanitize_path_for_prompt(f.path)
-    header = f"### {apply_datamarking(safe_path)} ({f.status})"
-    if f.previous_path:
+    safe_path = sanitize_path_for_prompt(file_diff.path)
+    header = f"### {apply_datamarking(safe_path)} ({file_diff.status})"
+    if file_diff.previous_path:
         safe_prev = apply_datamarking(
-            sanitize_path_for_prompt(f.previous_path),
+            sanitize_path_for_prompt(file_diff.previous_path),
         )
         header += f" (renamed from {safe_prev})"
     # Datamark the patch content, preserving hunk and file headers
     # and the leading +/- of each line (B2)
-    if not f.patch:
+    if not file_diff.patch:
         dm_patch = ""
     elif datamark_diff:
-        dm_patch = apply_diff_datamarking(f.patch)
+        dm_patch = apply_diff_datamarking(file_diff.patch)
     else:
-        dm_patch = f.patch
+        dm_patch = file_diff.patch
     block = f"{header}\n```diff\n{dm_patch}\n```"
 
     # B8: the enclosing function is rarely inside the hunk, so a
@@ -166,7 +166,7 @@ def render_file_block(
     # the thing being judged.
     if context_lines > 0 and file_contents is not None:
         excerpt = build_context_excerpt(
-            f, file_contents.get(f.path), context_lines,
+            file_diff, file_contents.get(file_diff.path), context_lines,
         )
         if excerpt:
             block += (
