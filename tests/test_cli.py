@@ -139,3 +139,23 @@ class TestExitCodesComeFromTheExceptions:
         assert "InsufficientScopesError" not in source
         assert "except AuthError" not in source
         assert "e.exit_code" in source
+
+
+class TestAFailedAgentsSpendIsCounted:
+    """SEC-LOG-01: an agent that failed after completing read turns had been
+    billed for them, and the audit record showed $0."""
+
+    def test_a_failed_agent_contributes_what_it_spent(self) -> None:
+        from prbot.cli import _summarise_agents
+        from prbot.review.models import AgentError, TokenUsage
+
+        agents = [{"name": "iac", "model_id": "au.anthropic.claude-sonnet-5"}]
+        failed = AgentError(
+            agent="iac", error_type="timeout", message="m",
+            token_usage=TokenUsage(5100, 20, 0.0125),
+        )
+        infos, total = _summarise_agents(agents, [failed], 5.0)
+        assert infos[0].status.startswith("error")
+        assert infos[0].input_tokens == 5100
+        assert infos[0].cost_usd == 0.0125
+        assert total == 0.0125

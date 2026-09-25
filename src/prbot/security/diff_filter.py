@@ -134,7 +134,7 @@ def is_generated_file(path: str) -> bool:
     return _compile(tuple(GENERATED_PATTERNS)).match_file(path)
 
 
-def _matches_exclusion(
+def matches_exclusion(
     path: str,
     exclusion_patterns: list[str],
 ) -> bool:
@@ -169,7 +169,7 @@ def filter_diff(
         if is_generated_file(file_diff.path):
             generated_count += 1
             continue
-        if exclusions and _matches_exclusion(file_diff.path, exclusions):
+        if exclusions and matches_exclusion(file_diff.path, exclusions):
             excluded_count += 1
             continue
         filtered_files.append(file_diff)

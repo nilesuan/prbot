@@ -134,3 +134,30 @@ class TestTimeoutBudget:
         time.sleep(0.01)
         t2 = budget.elapsed_seconds
         assert t2 > t1
+
+
+class TestToolTurnsAreBudgeted:
+    """Each tool turn re-sends the conversation and produces more output."""
+
+    _MODEL = "au.anthropic.claude-sonnet-5"
+
+    def _cost(self, turns: int) -> float:
+        return estimate_cost(
+            diff_text="x" * 400_000, model_ids=[self._MODEL],
+            budget_limit_usd=100.0, tool_turns=turns,
+        ).estimated_cost_usd
+
+    def test_zero_turns_is_the_single_call_estimate(self) -> None:
+        plain = estimate_cost(
+            diff_text="x" * 400_000, model_ids=[self._MODEL],
+            budget_limit_usd=100.0,
+        ).estimated_cost_usd
+        assert self._cost(0) == plain
+
+    def test_turns_raise_the_estimate(self) -> None:
+        assert self._cost(1) > self._cost(0)
+        assert self._cost(3) > self._cost(1)
+
+    def test_caching_keeps_turns_well_below_resending(self) -> None:
+        """Three reads cost far less than four full calls, because of the cache."""
+        assert self._cost(3) < 3 * self._cost(0)

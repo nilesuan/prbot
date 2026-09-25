@@ -374,6 +374,22 @@ class TestBuildConfig:
         )
         assert config.pr_number == 42
 
+    def test_reading_beyond_the_diff_is_off_by_default(self) -> None:
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "config": None},
+            env_vars={"PRBOT_PR_NUMBER": "1"},
+            toml_config={},
+        )
+        assert config.tool_turns == 0
+
+    def test_env_tool_turns_parsing(self) -> None:
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "config": None},
+            env_vars={"PRBOT_PR_NUMBER": "1", "PRBOT_TOOL_TURNS": "3"},
+            toml_config={},
+        )
+        assert config.tool_turns == 3
+
     def test_temperature_is_unset_by_default(self) -> None:
         config = build_config(
             cli_args={"platform": "github", "repo": "o/r", "config": None},
@@ -381,6 +397,16 @@ class TestBuildConfig:
             toml_config={},
         )
         assert config.temperature is None
+
+    @pytest.mark.parametrize("value", ["11", "-1", "abc"])
+    def test_tool_turns_outside_its_bounds_raises(self, value: str) -> None:
+        """SEC-CONFIG-02: the 0-10 bound held, but nothing tested it."""
+        with pytest.raises(ConfigError):
+            build_config(
+                cli_args={"platform": "github", "repo": "o/r", "config": None},
+                env_vars={"PRBOT_PR_NUMBER": "1", "PRBOT_TOOL_TURNS": value},
+                toml_config={},
+            )
 
     def test_env_temperature_parsing(self) -> None:
         config = build_config(

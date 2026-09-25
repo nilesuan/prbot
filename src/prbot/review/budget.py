@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from prbot.exceptions import BudgetExceededError, TimeoutBudgetExhausted
 from prbot.review.prompts import estimate_prompt_tokens
+from prbot.review.tools import MAX_CHARS_TOTAL
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +80,24 @@ class CostEstimate:
     within_budget: bool
 
 
+# Prompt caching prices, as multiples of the model's input price: writing a
+# five-minute cache entry costs 1.25 times the input rate and reading one
+# 0.1 times. These are Anthropic's published ratios for Claude, which
+# Bedrock's per-model cache pricing follows; they are not read from any API.
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.1
+
+# What one agent's reads can add to its prompt: the reader's own character
+# limit, so the estimate is a bound rather than a guess (SEC-DESIGN-04).
+READ_CHARS_PRICED = MAX_CHARS_TOTAL
+
+
 def estimate_cost(
     diff_text: str,
     model_ids: list[str],
     budget_limit_usd: float,
     estimated_output_tokens: int = 4096,
+    tool_turns: int = 0,
 ) -> CostEstimate:
     """Estimate cost before running review (S14).
 
@@ -92,6 +106,10 @@ def estimate_cost(
         model_ids: Models that will be used (cost summed).
         budget_limit_usd: Maximum allowed cost.
         estimated_output_tokens: Expected output tokens per agent.
+        tool_turns: read_file turns each agent may take. Priced as the
+            worst case, every turn used: the prompt written to the cache
+            once and read back on each later turn, the whole read budget
+            re-sent uncached on every turn, and a full response per turn.
 
     Returns:
         CostEstimate with within_budget flag.
@@ -102,12 +120,21 @@ def estimate_cost(
     input_tokens = estimate_prompt_tokens(diff_text)
     total_cost = 0.0
 
+    if tool_turns > 0:
+        billed_prompt = input_tokens * (
+            CACHE_WRITE_MULTIPLIER + CACHE_READ_MULTIPLIER * tool_turns
+        )
+        read_tokens = estimate_prompt_tokens("x" * READ_CHARS_PRICED)
+        billed_input = billed_prompt + read_tokens * tool_turns
+        output_tokens = estimated_output_tokens * (tool_turns + 1)
+    else:
+        billed_input = input_tokens
+        output_tokens = estimated_output_tokens
+
     for model_id in model_ids:
         pricing = get_model_pricing(model_id)
-        input_cost = (input_tokens / 1_000_000) * pricing["input"]
-        output_cost = (
-            estimated_output_tokens / 1_000_000
-        ) * pricing["output"]
+        input_cost = (billed_input / 1_000_000) * pricing["input"]
+        output_cost = (output_tokens / 1_000_000) * pricing["output"]
         total_cost += input_cost + output_cost
 
     within_budget = total_cost <= budget_limit_usd
