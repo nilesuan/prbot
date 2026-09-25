@@ -466,6 +466,45 @@ class TestReopeningAThread:
 
     @respx.mock
     @pytest.mark.asyncio
+    async def test_github_reopens_a_prrt_node_id(self) -> None:
+        """Review thread node ids are PRRT_ as well as T_ (QA-COV-04)."""
+        route = respx.post(_GQL).mock(
+            return_value=httpx.Response(
+                200,
+                json={"data": {"unresolveReviewThread": {
+                    "thread": {"id": "PRRT_kwDO1"},
+                }}},
+            ),
+        )
+        adapter = _github()
+        try:
+            assert await adapter.unresolve_thread(
+                ReviewThread(id="PRRT_kwDO1", comment_id=11, body="b"),
+            )
+        finally:
+            await adapter.close()
+        payload = json.loads(route.calls[0].request.content)
+        assert payload["variables"]["threadId"] == "PRRT_kwDO1"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_failed_github_reopen_is_reported_not_raised(self) -> None:
+        respx.post(_GQL).mock(
+            return_value=httpx.Response(
+                200,
+                json={"errors": [{"message": "Resource not accessible"}]},
+            ),
+        )
+        adapter = _github()
+        try:
+            assert not await adapter.unresolve_thread(
+                ReviewThread(id="PRRT_kwDO1", comment_id=11, body="b"),
+            )
+        finally:
+            await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
     async def test_gitlab_sets_resolved_false(self) -> None:
         route = respx.put(f"{_GL}/discussions/d1").mock(
             return_value=httpx.Response(200, json={}),

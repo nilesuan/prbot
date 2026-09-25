@@ -520,26 +520,26 @@ class GitHubAdapter:
 
     async def resolve_thread(self, thread: ReviewThread) -> bool:
         """Resolve a review thread via GraphQL."""
-        if not thread.id.startswith("T_") and not thread.id.startswith("PRRT"):
-            # A REST fallback id is not a GraphQL node id.
-            logger.info("Cannot resolve thread %s: no node id", thread.id)
-            return False
-        try:
-            await self._graphql(_RESOLVE_MUTATION, {"threadId": thread.id})
-        except VCSError as e:
-            logger.warning("Could not resolve thread %s: %s", thread.id, e)
-            return False
-        return True
+        return await self._set_resolution(thread, _RESOLVE_MUTATION, "resolve")
 
     async def unresolve_thread(self, thread: ReviewThread) -> bool:
         """Reopen a review thread via GraphQL."""
-        if not thread.id.startswith("T_") and not thread.id.startswith("PRRT"):
-            logger.info("Cannot reopen thread %s: no node id", thread.id)
+        return await self._set_resolution(
+            thread, _UNRESOLVE_MUTATION, "reopen",
+        )
+
+    async def _set_resolution(
+        self, thread: ReviewThread, mutation: str, verb: str,
+    ) -> bool:
+        """Run a resolve or reopen mutation, reporting failure, not raising."""
+        if not thread.id.startswith(("T_", "PRRT")):
+            # A REST fallback id is not a GraphQL node id.
+            logger.info("Cannot %s thread %s: no node id", verb, thread.id)
             return False
         try:
-            await self._graphql(_UNRESOLVE_MUTATION, {"threadId": thread.id})
+            await self._graphql(mutation, {"threadId": thread.id})
         except VCSError as e:
-            logger.warning("Could not reopen thread %s: %s", thread.id, e)
+            logger.warning("Could not %s thread %s: %s", verb, thread.id, e)
             return False
         return True
 
