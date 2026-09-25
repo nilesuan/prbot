@@ -168,23 +168,23 @@ def _summarise_agents(
     return agent_infos, total_cost
 
 
-def _finding_audit_entries(scored: Any) -> list[Any]:
+def _finding_audit_entries(findings: Any) -> list[Any]:
     """Every scored finding as a structured audit entry, prose left out."""
     from prbot.observability.audit import FindingAuditInfo
     from prbot.review.identity import finding_fingerprint
 
     return [
         FindingAuditInfo(
-            fingerprint=finding_fingerprint(sf.finding),
-            check_id=sf.finding.check_id,
-            severity=sf.finding.severity,
-            confidence=sf.finding.confidence,
-            band=sf.band,
-            file_path=sf.finding.file_path,
-            line_start=sf.finding.line_start,
-            line_end=sf.finding.line_end,
+            fingerprint=finding_fingerprint(scored.finding),
+            check_id=scored.finding.check_id,
+            severity=scored.finding.severity,
+            confidence=scored.finding.confidence,
+            band=scored.band,
+            file_path=scored.finding.file_path,
+            line_start=scored.finding.line_start,
+            line_end=scored.finding.line_end,
         )
-        for sf in scored
+        for scored in findings
     ]
 
 

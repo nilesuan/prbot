@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from prbot.review.identity import finding_fingerprint, marker_for
 from prbot.review.models import (
@@ -212,6 +212,14 @@ def _format_issue_block(
     return "\n".join(parts)
 
 
+class _Shown(NamedTuple):
+    """What one attempt at an oversize comment keeps."""
+
+    borderline: list[ScoredFinding]
+    detailed: list[ScoredFinding]
+    low_confidence: list[ScoredFinding]
+
+
 def format_review_comment(
     verdict: ReviewVerdict,
     score: ReviewScore,
@@ -311,22 +319,22 @@ def format_review_comment(
     # Least important first: low-confidence findings deduct nothing, so
     # they are the first thing an oversize comment gives up.
     attempts = (
-        (borderline, detailed, low_confidence),
-        (borderline, detailed, []),
-        ([], detailed, []),
-        (
-            [],
-            [
+        _Shown(borderline, detailed, low_confidence),
+        _Shown(borderline, detailed, low_confidence=[]),
+        _Shown(borderline=[], detailed=detailed, low_confidence=[]),
+        _Shown(
+            borderline=[],
+            detailed=[
                 sf for sf in detailed
                 if sf.finding.severity not in _DROPPABLE_DETAIL
             ],
-            [],
+            low_confidence=[],
         ),
     )
 
     comment = ""
-    for shown_borderline, shown_detail, shown_low in attempts:
-        comment = build(shown_borderline, shown_detail, shown_low)
+    for shown in attempts:
+        comment = build(shown.borderline, shown.detailed, shown.low_confidence)
         if len(comment) <= limit:
             return comment
 
@@ -522,29 +530,9 @@ def _format_borderline_section(
     threshold and are shown so the reader can see what was weighed, not so
     they can be worked through.
     """
-    if not borderline:
-        return ""
-
-    lines = [
-        "<details>",
-        f"<summary>Borderline findings ({len(borderline)})</summary>",
-        "",
-    ]
-
-    for scored in _sorted_findings(borderline):
-        f = scored.finding
-        emoji = _SEVERITY_EMOJI.get(f.severity, "")
-        location = _cell(
-            f"{f.file_path}:{f.line_start}-{f.line_end}", _MAX_PATH,
-        )
-        lines.append(
-            f"- {emoji} {f.severity} · `{_cell(f.check_id, 64)}` · "
-            f"`{location}` · {f.confidence}% confidence · "
-            f"{_cell(f.title, _MAX_TITLE)}",
-        )
-
-    lines.extend(["", "</details>"])
-    return "\n".join(lines)
+    return _collapsed_list(
+        f"Borderline findings ({len(borderline)})", borderline,
+    )
 
 
 def _format_low_confidence_section(hidden: list[ScoredFinding]) -> str:
@@ -554,16 +542,19 @@ def _format_low_confidence_section(hidden: list[ScoredFinding]) -> str:
     reported, and reducing them to a count made most findings impossible to
     inspect: 113 of 140 across 47 production reviews.
     """
-    if not hidden:
+    return _collapsed_list(
+        f"Low-confidence findings ({len(hidden)}), listed but not scored",
+        hidden,
+    )
+
+
+def _collapsed_list(summary: str, findings: list[ScoredFinding]) -> str:
+    """One line per finding in a collapsed section, or nothing if none."""
+    if not findings:
         return ""
 
-    lines = [
-        "<details>",
-        f"<summary>Low-confidence findings ({len(hidden)}), "
-        f"listed but not scored</summary>",
-        "",
-    ]
-    for scored in _sorted_findings(hidden):
+    lines = ["<details>", f"<summary>{summary}</summary>", ""]
+    for scored in _sorted_findings(findings):
         f = scored.finding
         emoji = _SEVERITY_EMOJI.get(f.severity, "")
         location = _cell(
