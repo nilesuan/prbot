@@ -115,13 +115,19 @@ severity, confidence, band, location and fingerprint, but no model prose.
 
 An agent's own confidence does not separate true findings from false ones: two
 identical runs on one merge request scored 87 and 96. With `PRBOT_VERIFY` on,
-one further call per chunk shows a verifier the same datamarked
-diff and the findings reported against it, and asks for a verdict on each -
-confirmed, refuted or uncertain - with a confidence and a reason. The verdict's
-confidence replaces the agent's. Nothing is deleted: a refuted finding stays at
-its new, low confidence, so it is listed rather than reported, and a critical
-or high one stays visible. The footer says what the pass concluded, and each
-finding's verdict is in the audit record.
+one further call per chunk shows a verifier the same datamarked diff and the
+findings reported against it, and asks for a verdict on each - confirmed,
+refuted or uncertain - with a confidence and a reason. A confirmed or refuted
+verdict's confidence replaces the agent's; an uncertain one changes nothing. A
+critical or high finding's confidence can rise but never fall, so one verdict
+cannot turn a blocking finding into a pass. Nothing is deleted: a refuted
+finding stays at its new, low confidence, so it is listed rather than
+reported. The footer says what the pass concluded, and the audit record has
+each finding's verdict, its confidence before the verdict, and the pass's
+totals.
+
+It is off by default until a labelled evaluation shows its verdicts are
+right.
 
 On a six-file Terraform change it moved the finding behind a verified review's
 high from 45% to 75%, into the reported band, for 38% more cost. When the
@@ -561,7 +567,7 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
 | `PRBOT_TEMPERATURE` | unset | Sampling temperature, sent only when set. The default model rejects it; set `0` for a model that accepts it |
 | `PRBOT_TOOL_TURNS` | `0` | Turns an agent may spend reading other files of the repository (`read_file`) before it must report. Off by default: measured so far to add cost without adding findings |
-| `PRBOT_VERIFY` | `false` | A second call per chunk that checks each finding against the code and replaces its confidence with the verdict's. Given up before the review when the budget cannot cover it |
+| `PRBOT_VERIFY` | `false` | A second call per chunk that checks each finding against the code. A confirmed or refuted verdict replaces the finding's confidence, except that a critical or high finding's can only rise. Given up before the review when the budget cannot cover it |
 | `PRBOT_BOT_LOGIN` | unset | The login prbot posts as, used when the token cannot read it. Set `github-actions[bot]` with `GITHUB_TOKEN`, or prbot cannot tell its own threads from anyone else's. Never a person's login |
 | `PRBOT_CONTEXT_LINES` | `40` | Lines of surrounding code fetched by API and included around each hunk; `0` disables |
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Max estimated cost per review |

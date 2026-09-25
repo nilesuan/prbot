@@ -97,12 +97,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **A verification pass, off by default (`PRBOT_VERIFY`).** One further call
-  per chunk checks each finding against the code and replaces its confidence
-  with the verdict's; refuted findings are demoted, not deleted, and the
-  footer and audit record say what was concluded. On terraform-modules MR 269
-  it moved a true finding from 45% to 75%, into the reported band, for 38%
-  more cost. When the worst case exceeds the budget it is dropped, after
-  reads and before the review.
+  per chunk checks each finding against the code, and a confirmed or refuted
+  verdict replaces the finding's confidence. A critical or high finding's
+  confidence can rise but never fall, so one verdict cannot turn a blocking
+  finding into a pass; an uncertain verdict changes nothing; refuted findings
+  are demoted, not deleted. The footer and the audit record say what was
+  concluded, including each finding's confidence before its verdict, and the
+  verifier's prompt datamarks the paths and check ids it quotes. On
+  terraform-modules MR 269 it moved a true finding from 45% to 75%, into the
+  reported band, for 38% more cost. Two merge requests are not an
+  evaluation, so it stays off until a labelled one exists. When the worst
+  case exceeds the budget it is dropped, after reads and before the review.
 - **`read_file`, an opt-in tool for reading beyond the diff
   (`PRBOT_TOOL_TURNS`, default 0).** An agent may read other files of the
   repository at the head revision before reporting, bounded to 200 lines and
