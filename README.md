@@ -122,7 +122,7 @@ severity, confidence, band, location and fingerprint, but no model prose.
 - **Path traversal rejection** -- findings with `..` or absolute paths in `file_path` are dropped
 - **PII redaction** -- personal data patterns removed from review comments before posting
 - **Secret redaction** -- GitHub PATs, GitLab PATs, AWS long-lived and temporary keys, Bearer tokens caught and replaced, with the label kept so the reader can see what was found
-- **Structured output** -- findings come back through a forced tool carrying a JSON schema, at temperature 0, with an explicit output token cap
+- **Structured output** -- findings come back through a forced tool carrying a JSON schema, with an explicit output token cap. Temperature is sent only when `PRBOT_TEMPERATURE` is set; it is unset by default because the default model rejects it
 
 ### Completeness Checks
 
@@ -524,6 +524,7 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-5` | Security review model |
 | `PRBOT_MAX_DIFF_TOKENS` | `100000` | Tokens per review call; a larger diff is reviewed in several passes |
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
+| `PRBOT_TEMPERATURE` | unset | Sampling temperature, sent only when set. The default model rejects it; set `0` for a model that accepts it |
 | `PRBOT_BOT_LOGIN` | unset | The login prbot posts as, used when the token cannot read it. Set `github-actions[bot]` with `GITHUB_TOKEN`, or prbot cannot tell its own threads from anyone else's. Never a person's login |
 | `PRBOT_CONTEXT_LINES` | `40` | Lines of surrounding code fetched by API and included around each hunk; `0` disables |
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Max estimated cost per review |

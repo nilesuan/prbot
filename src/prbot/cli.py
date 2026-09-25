@@ -552,6 +552,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     file_contents=file_contents,
                     context_lines=config.context_lines,
                     all_paths=all_paths,
+                    temperature=config.temperature,
                 ),
             )
 

@@ -374,6 +374,22 @@ class TestBuildConfig:
         )
         assert config.pr_number == 42
 
+    def test_temperature_is_unset_by_default(self) -> None:
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "config": None},
+            env_vars={"PRBOT_PR_NUMBER": "1"},
+            toml_config={},
+        )
+        assert config.temperature is None
+
+    def test_env_temperature_parsing(self) -> None:
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "config": None},
+            env_vars={"PRBOT_PR_NUMBER": "1", "PRBOT_TEMPERATURE": "0"},
+            toml_config={},
+        )
+        assert config.temperature == 0.0
+
     def test_bot_login_is_unset_by_default(self) -> None:
         config = build_config(
             cli_args={"platform": "github", "repo": "o/r", "config": None},
@@ -401,6 +417,14 @@ class TestBuildConfig:
                     "PRBOT_PR_NUMBER": "1",
                     "PRBOT_BOT_LOGIN": "github actions bot",
                 },
+                toml_config={},
+            )
+
+    def test_temperature_out_of_range_raises(self) -> None:
+        with pytest.raises(ConfigError, match="temperature"):
+            build_config(
+                cli_args={"platform": "github", "repo": "o/r", "config": None},
+                env_vars={"PRBOT_PR_NUMBER": "1", "PRBOT_TEMPERATURE": "3"},
                 toml_config={},
             )
 

@@ -71,6 +71,7 @@ async def run_review(
     file_contents: dict[str, str] | None = None,
     context_lines: int = 0,
     all_paths: list[str] | None = None,
+    temperature: float | None = None,
 ) -> list[AgentOutcome]:
     """Run review agents concurrently (S1, S88).
 
@@ -101,6 +102,7 @@ async def run_review(
             budget=budget,
             aws_region=aws_region,
             max_output_tokens=max_output_tokens,
+            temperature=temperature,
         )
         for agent in agents
     ]
@@ -154,6 +156,7 @@ async def _run_single_agent(
     budget: TimeoutBudget,
     aws_region: str,
     max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
+    temperature: float | None = None,
 ) -> AgentOutcome:
     """Run a single review agent with retry and timeout (S20, S48).
 
@@ -174,6 +177,7 @@ async def _run_single_agent(
                     user_prompt=user_prompt,
                     aws_region=aws_region,
                     max_output_tokens=max_output_tokens,
+                    temperature=temperature,
                 ),
                 timeout=timeout,
             )
@@ -280,14 +284,17 @@ def _invoke_bedrock(
     user_prompt: str,
     aws_region: str,
     max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
+    temperature: float | None = None,
 ) -> dict[str, Any]:
     """Invoke Bedrock Converse API synchronously (S16, B5).
 
     Called via asyncio.to_thread to avoid blocking the event loop.
 
-    maxTokens and temperature are explicit. Left unset they are whatever
-    Bedrock defaults to for the model, which is neither reproducible nor
-    something the cost estimate can rely on.
+    maxTokens is always explicit: left unset it is whatever Bedrock defaults
+    to for the model, which the cost estimate cannot rely on. temperature is
+    sent only when configured. The default model, Claude Sonnet 5, rejects
+    it outright, so sending it by default cost every agent a failed call
+    before the real one on every review.
     """
     import boto3
     from botocore.exceptions import ClientError
@@ -308,8 +315,17 @@ def _invoke_bedrock(
             inferenceConfig=inference_config,
         )
 
+    if temperature is None:
+        try:
+            return _call({"maxTokens": max_output_tokens})
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            raise BedrockError(f"Bedrock API error ({code}): {e}") from e
+
     try:
-        return _call({"maxTokens": max_output_tokens, "temperature": 0.0})
+        return _call(
+            {"maxTokens": max_output_tokens, "temperature": temperature},
+        )
     except ClientError as e:
         if not _rejects_sampling_params(e):
             code = e.response.get("Error", {}).get("Code", "")
@@ -322,9 +338,10 @@ def _invoke_bedrock(
         # determinism temperature bought is not available to trade for.
         # maxTokens and the forced tool both stay: one bounds the spend, the
         # other is what keeps the reply parseable.
-        logger.info(
-            "Model %s rejects sampling parameters; retrying with maxTokens "
-            "only", model_id,
+        logger.warning(
+            "Model %s rejects the configured temperature; retrying without "
+            "it. Unset PRBOT_TEMPERATURE for this model to save the call.",
+            model_id,
         )
         try:
             return _call({"maxTokens": max_output_tokens})
