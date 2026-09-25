@@ -76,6 +76,7 @@ def create_vcs_adapter(config: PrBotConfig, token: TokenResult) -> VCSAdapter:
             repo=config.repo,
             pr_number=config.pr_number,
             base_url=base_url,
+            bot_login=config.bot_login,
         )
 
     if config.platform == "gitlab":

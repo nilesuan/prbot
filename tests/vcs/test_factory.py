@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
+import respx
 
 from prbot.auth.token import TokenResult
 from prbot.config import PrBotConfig
@@ -43,6 +45,24 @@ class TestAdapterSelection:
     def test_gitlab_platform_gets_the_gitlab_adapter(self) -> None:
         adapter = create_vcs_adapter(_config(platform="gitlab"), _token())
         assert isinstance(adapter, GitLabAdapter)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_the_configured_bot_login_reaches_the_github_adapter(
+        self,
+    ) -> None:
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(403, json={"message": "nope"}),
+        )
+        adapter = create_vcs_adapter(
+            _config(bot_login="github-actions[bot]"), _token(),
+        )
+        try:
+            assert await adapter.get_authenticated_user() == (
+                "github-actions[bot]"
+            )
+        finally:
+            await adapter.close()
 
     def test_both_adapters_satisfy_the_protocol(self) -> None:
         from prbot.vcs.protocol import VCSAdapter

@@ -66,10 +66,12 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         nodes {
           id
           isResolved
-          resolvedBy { login }
+          resolvedBy { login __typename }
           path
           line
-          comments(first: 1) { nodes { databaseId body author { login } } }
+          comments(first: 1) {
+            nodes { databaseId body author { login __typename } }
+          }
         }
       }
     }
@@ -90,6 +92,24 @@ mutation($threadId: ID!) {
 """
 
 
+def _actor_login(actor: dict[str, Any] | None) -> str:
+    """An actor's login in the form REST and GET /user use.
+
+    GraphQL leaves the [bot] suffix off a Bot's login, so one app read as two
+    authors: a live thread's author came back 'coderabbitai' and its resolver
+    'coderabbitai[bot]' (SEC-DESIGN-04). The suffix is added by actor type,
+    never by name, so a person called 'prbot' is not taken for 'prbot[bot]'.
+    """
+    login = (actor or {}).get("login", "")
+    if (
+        login
+        and (actor or {}).get("__typename") == "Bot"
+        and not login.endswith("[bot]")
+    ):
+        return f"{login}[bot]"
+    return login
+
+
 class GitHubAdapter:
     """GitHub REST API adapter implementing VCSAdapter protocol."""
 
@@ -99,10 +119,12 @@ class GitHubAdapter:
         repo: str,
         pr_number: int,
         base_url: str = "https://api.github.com",
+        bot_login: str = "",
     ) -> None:
         self._repo = repo
         self._pr_number = pr_number
         self._base_url = base_url.rstrip("/")
+        self._bot_login = bot_login
         self._authenticated_user: str | None = None
         # GEN-ARCH-03: get_pr_metadata and get_diff both need the PR
         # payload and both used to fetch it, so every run paid for two
@@ -248,6 +270,9 @@ class GitHubAdapter:
         all. A 401 still raises: that means the credential is bad, not that
         the endpoint is the wrong one. A throttled 403 still raises too,
         since _request classifies it as VCSRateLimitError.
+
+        SEC-DESIGN-04: an installation token's login is fixed and known in
+        advance, so a configured bot_login stands in for it on that 403.
         """
         if self._authenticated_user is None:
             try:
@@ -255,12 +280,21 @@ class GitHubAdapter:
             except VCSAuthError as e:
                 if e.status_code != 403:
                     raise
-                logger.warning(
-                    "Could not read the authenticated user: GET /user is not "
-                    "available to an installation token. Thread ownership "
-                    "will be matched on the prbot marker alone.",
-                )
-                self._authenticated_user = ""
+                if self._bot_login:
+                    logger.info(
+                        "GET /user is not available to an installation "
+                        "token; using the configured bot login %s",
+                        self._bot_login,
+                    )
+                else:
+                    logger.warning(
+                        "Could not read the authenticated user: GET /user "
+                        "is not available to an installation token. Thread "
+                        "ownership will be matched on the prbot marker "
+                        "alone. Set PRBOT_BOT_LOGIN to the login prbot "
+                        "posts as.",
+                    )
+                self._authenticated_user = self._bot_login
             else:
                 self._authenticated_user = data.get("login", "")
         return self._authenticated_user
@@ -425,9 +459,6 @@ class GitHubAdapter:
                     comments = (item.get("comments") or {}).get("nodes") or []
                     if not comments:
                         continue
-                    author = (comments[0].get("author") or {}).get(
-                        "login", "",
-                    )
                     threads.append(ReviewThread(
                         id=item["id"],
                         comment_id=comments[0].get("databaseId", 0),
@@ -435,10 +466,8 @@ class GitHubAdapter:
                         resolved=bool(item.get("isResolved")),
                         path=item.get("path"),
                         line=item.get("line"),
-                        author=author,
-                        resolved_by=(item.get("resolvedBy") or {}).get(
-                            "login", "",
-                        ),
+                        author=_actor_login(comments[0].get("author")),
+                        resolved_by=_actor_login(item.get("resolvedBy")),
                     ))
                 page = node.get("pageInfo") or {}
                 if not page.get("hasNextPage"):

@@ -94,5 +94,6 @@ jobs:
             -e PRBOT_PLATFORM=github \
             -e PRBOT_REPO="${{ github.repository }}" \
             -e PRBOT_PR_NUMBER="${{ github.event.pull_request.number }}" \
+            -e PRBOT_BOT_LOGIN='github-actions[bot]' \
             -e PRBOT_AWS_REGION="${{ vars.PRBOT_AWS_REGION || 'ap-southeast-2' }}" \
             "${{ steps.image.outputs.ref }}"

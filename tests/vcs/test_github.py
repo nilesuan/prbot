@@ -12,10 +12,13 @@ from prbot.auth.token import TokenResult
 from prbot.vcs.github import GitHubAdapter
 
 
-def _make_adapter(base_url: str = "https://api.github.com") -> GitHubAdapter:
+def _make_adapter(
+    base_url: str = "https://api.github.com", bot_login: str = "",
+) -> GitHubAdapter:
     token = TokenResult(value="ghp_testtoken", source="test")
     return GitHubAdapter(
         token=token, repo="owner/repo", pr_number=42, base_url=base_url,
+        bot_login=bot_login,
     )
 
 
@@ -441,6 +444,37 @@ class TestAuthenticatedUserUnderAnInstallationToken:
         )
         adapter = _make_adapter()
         assert await adapter.get_authenticated_user() == ""
+        await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_403_uses_the_configured_login(self) -> None:
+        """SEC-DESIGN-04: the Actions identity is fixed and known in advance.
+
+        Without one, prbot could not tell its own threads from anyone else's,
+        so a reworded finding was never matched to its thread and a thread
+        prbot resolved was never reopened.
+        """
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(
+                403,
+                json={"message": "Resource not accessible by integration"},
+            ),
+        )
+        adapter = _make_adapter(bot_login="github-actions[bot]")
+        assert await adapter.get_authenticated_user() == "github-actions[bot]"
+        await adapter.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_readable_identity_wins_over_the_configured_login(
+        self,
+    ) -> None:
+        respx.get("https://api.github.com/user").mock(
+            return_value=httpx.Response(200, json={"login": "prbot-app[bot]"}),
+        )
+        adapter = _make_adapter(bot_login="github-actions[bot]")
+        assert await adapter.get_authenticated_user() == "prbot-app[bot]"
         await adapter.close()
 
     @respx.mock

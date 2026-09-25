@@ -339,6 +339,54 @@ class TestWhoResolvedAThread:
 
     @respx.mock
     @pytest.mark.asyncio
+    async def test_a_bot_author_reads_the_same_as_its_resolver(self) -> None:
+        """SEC-DESIGN-04: GraphQL leaves the [bot] suffix off a Bot author.
+
+        On a live pull request an app's thread author came back as
+        'coderabbitai' and its resolver as 'coderabbitai[bot]', so no single
+        identity matched both. A Bot actor is given the form REST uses.
+        """
+        node = _node("T_kw1", "finding", resolved=True)
+        node["comments"]["nodes"][0]["author"] = {
+            "login": "github-actions", "__typename": "Bot",
+        }
+        node["resolvedBy"] = {
+            "login": "github-actions[bot]", "__typename": "User",
+        }
+        route = respx.post(_GQL).mock(
+            return_value=httpx.Response(200, json=_gql_threads(node)),
+        )
+        adapter = _github()
+        try:
+            [thread] = await adapter.list_review_threads()
+        finally:
+            await adapter.close()
+        assert thread.author == "github-actions[bot]"
+        assert thread.resolved_by == "github-actions[bot]"
+        query = json.loads(route.calls[0].request.content)["query"]
+        assert query.count("__typename") == 2
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_person_named_like_a_bot_gets_no_suffix(self) -> None:
+        """Only the actor type adds it, so a user called 'prbot' is not the
+        app whose bot login is 'prbot[bot]'."""
+        node = _node("T_kw1", "finding")
+        node["comments"]["nodes"][0]["author"] = {
+            "login": "prbot", "__typename": "User",
+        }
+        respx.post(_GQL).mock(
+            return_value=httpx.Response(200, json=_gql_threads(node)),
+        )
+        adapter = _github()
+        try:
+            [thread] = await adapter.list_review_threads()
+        finally:
+            await adapter.close()
+        assert thread.author == "prbot"
+
+    @respx.mock
+    @pytest.mark.asyncio
     async def test_gitlab_reports_the_resolver(self) -> None:
         respx.get(f"{_GL}/discussions").mock(
             return_value=httpx.Response(
