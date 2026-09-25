@@ -287,8 +287,9 @@ async def _run_preflight(
         return EXIT_PASS, None
 
     # Already reviewed at this commit (C3). The state record is advisory,
-    # not authenticated, but it is read only from a comment authored by this
-    # bot, so forging it means already holding write access to that comment.
+    # not authenticated: it is read only from a comment posted under this
+    # bot's login, so forging it means posting as that login. Under
+    # GITHUB_TOKEN every workflow in the repository posts as it.
     existing = await adapter.find_bot_comment()
     previous = (
         ReviewStateRecord.from_html_comment(existing[1]) if existing else None

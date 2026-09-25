@@ -59,6 +59,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   severity, confidence, band and location (no model prose, per G-11). The
   prompts no longer claim every below-threshold finding counts towards the
   score.
+- **A thread prbot resolved is reopened when its finding comes back.** One run
+  missing a finding resolved its thread, and the finding returning was then
+  counted as a human decision and never raised again. Threads now carry who
+  resolved them; one resolved by prbot itself is reopened with a reply, and
+  counted as `findings_reopened`. A thread a person resolved is left alone.
+  Telling the two apart needs prbot's own login, which `GITHUB_TOKEN` cannot
+  read: set the new `PRBOT_BOT_LOGIN` to `github-actions[bot]` there, as this
+  repository's workflows and the setup guide now do. GraphQL also gave an
+  app's login without the `[bot]` suffix as a thread's author and with it as
+  the resolver, so one app read as two people; a Bot's login now carries the
+  suffix everywhere.
 - **The audit log's finding entries are redacted and capped.** Log redaction
   scanned only top-level values, so a token in a finding's check id reached
   the log, and only the path was capped: a 5,010-character check id was
