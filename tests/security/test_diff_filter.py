@@ -6,10 +6,10 @@ import pytest
 
 from prbot.security.diff_filter import (
     _compile,
-    _matches_exclusion,
     filter_diff,
     is_binary_file,
     is_generated_file,
+    matches_exclusion,
 )
 from prbot.vcs.models import FileDiff, PRDiff
 
@@ -89,17 +89,17 @@ class TestMatchesExclusion:
     """Tests for user exclusion pattern matching (G4-08)."""
 
     def test_vendor_glob(self) -> None:
-        assert _matches_exclusion(
+        assert matches_exclusion(
             "src/vendor/lodash.js", ["**/vendor/**"],
         )
 
     def test_no_match(self) -> None:
-        assert not _matches_exclusion(
+        assert not matches_exclusion(
             "src/app.py", ["vendor/**"],
         )
 
     def test_specific_file(self) -> None:
-        assert _matches_exclusion(
+        assert matches_exclusion(
             "config/settings.json", ["**/*.json"],
         )
 
@@ -189,19 +189,19 @@ class TestGlobSemantics:
         assert not is_generated_file("src/app.py")
 
     def test_user_anchored_pattern_matches_subtree(self) -> None:
-        assert _matches_exclusion("vendor/lib/x.go", ["vendor/**"])
-        assert _matches_exclusion("vendor/a/b/c/x.go", ["vendor/**"])
+        assert matches_exclusion("vendor/lib/x.go", ["vendor/**"])
+        assert matches_exclusion("vendor/a/b/c/x.go", ["vendor/**"])
 
     def test_user_recursive_pattern_matches_at_any_depth(self) -> None:
-        assert _matches_exclusion("a/vendor/lib/x.go", ["**/vendor/**"])
-        assert _matches_exclusion("vendor/lib/x.go", ["**/vendor/**"])
+        assert matches_exclusion("a/vendor/lib/x.go", ["**/vendor/**"])
+        assert matches_exclusion("vendor/lib/x.go", ["**/vendor/**"])
 
     def test_user_suffix_pattern_matches_at_any_depth(self) -> None:
-        assert _matches_exclusion("poetry.lock", ["*.lock"])
-        assert _matches_exclusion("sub/dir/poetry.lock", ["*.lock"])
+        assert matches_exclusion("poetry.lock", ["*.lock"])
+        assert matches_exclusion("sub/dir/poetry.lock", ["*.lock"])
 
     def test_user_pattern_does_not_match_unrelated_file(self) -> None:
-        assert not _matches_exclusion("src/app.py", ["vendor/**", "*.lock"])
+        assert not matches_exclusion("src/app.py", ["vendor/**", "*.lock"])
 
     def test_invalid_pattern_is_reported_not_swallowed(self) -> None:
         """A pattern that cannot compile must not silently match nothing.
@@ -213,7 +213,7 @@ class TestGlobSemantics:
         from prbot.exceptions import ConfigError
 
         with pytest.raises(ConfigError, match="Invalid exclusion pattern"):
-            _matches_exclusion("src/app.py", ["!"])
+            matches_exclusion("src/app.py", ["!"])
 
 
 class TestShippedConfigPatterns:
@@ -229,14 +229,14 @@ class TestShippedConfigPatterns:
             return tomllib.load(handle)["prbot"]["excluded_patterns"]
 
     def test_vendor_pattern_excludes_vendored_code(self) -> None:
-        assert _matches_exclusion("vendor/github.com/x/y.go", self._shipped())
+        assert matches_exclusion("vendor/github.com/x/y.go", self._shipped())
 
     def test_node_modules_pattern_excludes_dependencies(self) -> None:
-        assert _matches_exclusion("node_modules/left-pad/index.js", self._shipped())
-        assert _matches_exclusion("web/node_modules/left-pad/index.js", self._shipped())
+        assert matches_exclusion("node_modules/left-pad/index.js", self._shipped())
+        assert matches_exclusion("web/node_modules/left-pad/index.js", self._shipped())
 
     def test_shipped_patterns_leave_source_alone(self) -> None:
-        assert not _matches_exclusion("src/prbot/cli.py", self._shipped())
+        assert not matches_exclusion("src/prbot/cli.py", self._shipped())
 
 
 class TestPathspecPatternFactory:

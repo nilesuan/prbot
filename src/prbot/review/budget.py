@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from prbot.exceptions import BudgetExceededError, TimeoutBudgetExhausted
 from prbot.review.prompts import estimate_prompt_tokens
+from prbot.review.tools import MAX_CHARS_TOTAL
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +80,16 @@ class CostEstimate:
     within_budget: bool
 
 
-# A line returned by read_file is numbered and datamarked. A 40-character
-# source line becomes about 92 once marked (datamarking measured 2.31 times
-# longer on a real Terraform diff), plus its number: 100 is the round figure.
-_RENDERED_CHARS_PER_READ_LINE = 100
+# Prompt caching prices, as multiples of the model's input price: writing a
+# five-minute cache entry costs 1.25 times the input rate and reading one
+# 0.1 times. These are Anthropic's published ratios for Claude, which
+# Bedrock's per-model cache pricing follows; they are not read from any API.
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.1
+
+# What one agent's reads can add to its prompt: the reader's own character
+# limit, so the estimate is a bound rather than a guess (SEC-DESIGN-04).
+READ_CHARS_PRICED = MAX_CHARS_TOTAL
 
 
 def estimate_cost(
@@ -114,18 +121,10 @@ def estimate_cost(
     total_cost = 0.0
 
     if tool_turns > 0:
-        from prbot.review.runner import (
-            CACHE_READ_MULTIPLIER,
-            CACHE_WRITE_MULTIPLIER,
-        )
-        from prbot.review.tools import MAX_LINES_TOTAL
-
         billed_prompt = input_tokens * (
             CACHE_WRITE_MULTIPLIER + CACHE_READ_MULTIPLIER * tool_turns
         )
-        read_tokens = estimate_prompt_tokens(
-            "x" * (MAX_LINES_TOTAL * _RENDERED_CHARS_PER_READ_LINE),
-        )
+        read_tokens = estimate_prompt_tokens("x" * READ_CHARS_PRICED)
         billed_input = billed_prompt + read_tokens * tool_turns
         output_tokens = estimated_output_tokens * (tool_turns + 1)
     else:

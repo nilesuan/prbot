@@ -24,6 +24,13 @@ import re
 from collections.abc import Awaitable, Callable
 from pathlib import PurePosixPath
 
+from prbot.security.datamarking import apply_datamarking
+from prbot.security.diff_filter import (
+    BINARY_EXTENSIONS,
+    is_generated_file,
+    matches_exclusion,
+)
+
 READ_FILE_TOOL_NAME = "read_file"
 
 # One read: comfortably more than a resource block or a CI job, well short
@@ -31,6 +38,15 @@ READ_FILE_TOOL_NAME = "read_file"
 MAX_LINES_PER_READ = 200
 # Everything one agent may read across its turns. Three full reads.
 MAX_LINES_TOTAL = 600
+# SEC-DESIGN-04: a line can be megabytes, so a read is bounded in characters
+# too. A 40-character source line is about 100 once numbered and datamarked,
+# which is what the pre-flight estimate prices per line, so these limits are
+# exactly what it prices.
+RENDERED_CHARS_PER_LINE = 100
+MAX_CHARS_PER_READ = MAX_LINES_PER_READ * RENDERED_CHARS_PER_LINE
+MAX_CHARS_TOTAL = MAX_LINES_TOTAL * RENDERED_CHARS_PER_LINE
+# One line is cut here, so it cannot take a whole read.
+_MAX_ROW_CHARS = 1_000
 # Longer than any real repository path; a longer one is not a path.
 _MAX_PATH_LENGTH = 512
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -74,9 +90,11 @@ class FileReader:
         fetch: Callable[[str], Awaitable[str | None]],
         *,
         exclusion_patterns: list[str] | None = None,
-        cache: dict[str, str | None] | None = None,
+        cache: dict[str, str] | None = None,
         max_lines_per_read: int = MAX_LINES_PER_READ,
         max_lines_total: int = MAX_LINES_TOTAL,
+        max_chars_per_read: int = MAX_CHARS_PER_READ,
+        max_chars_total: int = MAX_CHARS_TOTAL,
     ) -> None:
         self._fetch = fetch
         self._exclusions = list(exclusion_patterns or [])
@@ -85,6 +103,8 @@ class FileReader:
         self._cache = cache if cache is not None else {}
         self._per_read = max_lines_per_read
         self._remaining = max_lines_total
+        self._chars_per_read = max_chars_per_read
+        self._chars_remaining = max_chars_total
         self.lines_read = 0
 
     async def read(
@@ -98,17 +118,24 @@ class FileReader:
         if refusal:
             return f"Refused: {refusal}"
 
-        if self._remaining <= 0:
+        if self._remaining <= 0 or self._chars_remaining <= 0:
             return (
                 "Refused: the read budget for this review is used up. "
                 "Report your findings with what you have."
             )
 
-        if path not in self._cache:
-            self._cache[path] = await self._fetch(path)
-        content = self._cache[path]
+        content = self._cache.get(path)
         if content is None:
-            return f"Not found: {path} does not exist at the head revision."
+            content = await self._fetch(path)
+            if content is None:
+                # SEC-INTEG-02: the fetch answers None for a failed request as
+                # well as a missing file, so this is neither cached nor
+                # reported as the file not existing.
+                return (
+                    f"Unavailable: {path} could not be read at the head "
+                    f"revision. It may not exist."
+                )
+            self._cache[path] = content
 
         lines = content.split("\n")
         total = len(lines)
@@ -119,36 +146,51 @@ class FileReader:
         last = min(last, total, first + self._per_read - 1,
                    first + self._remaining - 1)
 
-        from prbot.security.datamarking import apply_datamarking
-
         width = len(str(last))
-        body = "\n".join(
-            f"{n:>{width}} {apply_datamarking(lines[n - 1])}"
-            for n in range(first, last + 1)
+        allowed = min(self._chars_per_read, self._chars_remaining)
+        rows: list[str] = []
+        used = 0
+        for n in range(first, last + 1):
+            row = f"{n:>{width}} {apply_datamarking(lines[n - 1])}"
+            if len(row) > _MAX_ROW_CHARS:
+                row = row[:_MAX_ROW_CHARS] + " [line cut]"
+            if rows and used + len(row) + 1 > allowed:
+                break
+            # The first row always shows, cut to what is left if need be.
+            rows.append(row[:allowed])
+            used += len(rows[-1]) + 1
+        shown = first + len(rows) - 1
+        self._remaining -= len(rows)
+        self._chars_remaining -= used
+        self.lines_read += len(rows)
+        note = (
+            f"\n(Stopped after line {shown}: a read returns at most "
+            f"{allowed:,} characters.)"
+            if shown < last else ""
         )
-        count = last - first + 1
-        self._remaining -= count
-        self.lines_read += count
-        return f"{path} lines {first}-{last} of {total}:\n{body}"
+        body = "\n".join(rows)
+        return f"{path} lines {first}-{shown} of {total}:\n{body}{note}"
 
     def _refusal(self, path: str) -> str | None:
         """Why `path` may not be read, or None if it may."""
-        from prbot.security.diff_filter import (
-            BINARY_EXTENSIONS,
-            _matches_exclusion,
-            is_generated_file,
-        )
-
         if not path or len(path) > _MAX_PATH_LENGTH or _CONTROL.search(path):
             return "not a usable repository path."
         if path.startswith("/") or "\\" in path:
             return "paths are repository-relative."
         if ".." in PurePosixPath(path).parts:
             return "paths may not leave the repository."
+        # SEC-AUTHZ-01: exclusions match the path as written, and the host
+        # resolves ./ and // before fetching, so config/./prod.env read an
+        # excluded config/prod.env. Only the canonical spelling is read.
+        if str(PurePosixPath(path)) != path:
+            return (
+                "write the path in canonical form, without ./, // or a "
+                "trailing slash."
+            )
         if PurePosixPath(path).suffix.lower() in BINARY_EXTENSIONS:
             return "binary files are not reviewed."
         if is_generated_file(path):
             return "generated files are not reviewed."
-        if self._exclusions and _matches_exclusion(path, self._exclusions):
+        if self._exclusions and matches_exclusion(path, self._exclusions):
             return "this path is excluded from review by configuration."
         return None

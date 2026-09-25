@@ -80,7 +80,34 @@ class TestReading:
     async def test_a_missing_file_says_so(self) -> None:
         reader, _ = _reader()
         out = await reader.read("nope.tf")
-        assert "not found" in out.lower()
+        assert "could not be read" in out
+
+    @pytest.mark.asyncio
+    async def test_a_failed_fetch_is_not_remembered_as_absence(self) -> None:
+        """SEC-INTEG-02: the fetch answers None for a failed request as well
+        as for a missing file. Cached, a rate-limited read became a permanent
+        'does not exist' for every agent; now neither is cached, and neither
+        is reported as the file not existing."""
+        calls: list[str] = []
+        answers: list[str | None] = [None, "found = true"]
+
+        async def fetch(path: str) -> str | None:
+            calls.append(path)
+            return answers[len(calls) - 1]
+
+        reader = FileReader(fetch)
+        first = await reader.read("flaky.tf")
+        second = await reader.read("flaky.tf")
+        assert "could not be read" in first
+        assert "found" in second
+        assert calls == ["flaky.tf", "flaky.tf"]
+
+    @pytest.mark.asyncio
+    async def test_a_start_past_the_end_says_so(self) -> None:
+        reader, _ = _reader()
+        out = await reader.read("routes.tf", 2000)
+        assert "past the end" in out
+        assert reader.lines_read == 0
 
     @pytest.mark.asyncio
     async def test_a_file_is_fetched_once(self) -> None:
@@ -121,13 +148,61 @@ class TestTheBudget:
         assert reader.lines_read == 7
 
 
+class TestReadsAreBoundedBySize:
+    """SEC-DESIGN-04: lines were counted, but a line can be megabytes.
+
+    One single-line read of a 2 MiB line returned 13.6 million characters,
+    227 times what the pre-flight estimate priced for the agent's whole read
+    budget. What a read returns is now capped in characters too, at exactly
+    what the estimate prices.
+    """
+
+    @pytest.mark.asyncio
+    async def test_one_huge_line_is_cut_to_the_read_limit(self) -> None:
+        from prbot.review.tools import MAX_CHARS_PER_READ
+
+        reader, _ = _reader({"big.tf": "a " * 1_000_000})
+        out = await reader.read("big.tf", 1, 1)
+        assert len(out) <= MAX_CHARS_PER_READ + 200
+
+    @pytest.mark.asyncio
+    async def test_an_agent_reads_no_more_characters_than_are_priced(
+        self,
+    ) -> None:
+        from prbot.review.tools import MAX_CHARS_TOTAL
+
+        wide = "\n".join("w " * 400 for _ in range(1000))
+        reader, _ = _reader({"wide.tf": wide})
+        total = 0
+        for start in range(1, 1000, 200):
+            total += len(await reader.read("wide.tf", start, start + 199))
+        assert total <= MAX_CHARS_TOTAL + 5 * 200
+
+    @pytest.mark.asyncio
+    async def test_a_cut_read_says_where_it_stopped(self) -> None:
+        wide = "\n".join("w " * 400 for _ in range(300))
+        reader, _ = _reader({"wide.tf": wide})
+        out = await reader.read("wide.tf", 1, 200)
+        shown = _numbers(out)
+        assert shown
+        assert shown[-1] < 200
+        assert f"lines 1-{shown[-1]} of 300" in out
+        assert reader.lines_read == len(shown)
+
+    def test_the_estimate_prices_the_character_limit(self) -> None:
+        from prbot.review import budget
+        from prbot.review.tools import MAX_CHARS_TOTAL
+
+        assert budget.READ_CHARS_PRICED == MAX_CHARS_TOTAL
+
+
 class TestRefusals:
     """The reader is read-only and bounded to what review may see."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("path", [
         "/etc/passwd", "../outside.tf", "a/../../b.tf", "", "a\x00b.tf",
-        "a\nb.tf", "x" * 600,
+        "a\nb.tf", "x" * 600, "a\\b.tf",
     ])
     async def test_unsafe_paths_are_refused_without_fetching(
         self, path: str,
@@ -145,6 +220,25 @@ class TestRefusals:
             exclusion_patterns=["secrets/"],
         )
         out = await reader.read("secrets/prod.tfvars")
+        assert "refused" in out.lower()
+        assert fetched == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", [
+        "config/./prod.env", "./config/prod.env", "config//prod.env",
+        "config/prod.env/",
+    ])
+    async def test_a_non_canonical_spelling_is_refused(
+        self, path: str,
+    ) -> None:
+        """SEC-AUTHZ-01: exclusions matched the path as written, and the
+        host resolved it, so config/./prod.env read an excluded
+        config/prod.env. Only the canonical spelling is read."""
+        reader, fetched = _reader(
+            {"config/prod.env": "DB_PASSWORD=x", path: "DB_PASSWORD=x"},
+            exclusion_patterns=["config/prod.env"],
+        )
+        out = await reader.read(path)
         assert "refused" in out.lower()
         assert fetched == []
 
