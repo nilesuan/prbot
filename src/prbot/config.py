@@ -262,7 +262,8 @@ class PrBotConfig(BaseModel, frozen=True):
     # turns read 129-286 lines each, including files outside the diff, and
     # found nothing a run without reads missed, at 61% more cost ($1.02
     # against $0.63). Each turn is bounded by the reader's line budget
-    # (review/tools.py) and priced into the pre-flight estimate.
+    # (review/tools.py) and priced into the pre-flight estimate. Whether
+    # the tool stays, and at what default, is decided in issue #48.
     tool_turns: int = Field(default=0, ge=0, le=10)
     # SEC-DESIGN-04: the login prbot posts as, used when the token cannot
     # read it. secrets.GITHUB_TOKEN cannot call GET /user, so without this
