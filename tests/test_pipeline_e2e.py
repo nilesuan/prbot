@@ -997,6 +997,41 @@ class TestFindingOutcomes:
         assert adapter.resolved == ["T_Q-ERR-01"]
 
     @pytest.mark.asyncio
+    async def test_a_thread_the_bot_resolved_is_reopened_when_the_finding_returns(
+        self,
+    ) -> None:
+        adapter = FakeVCSAdapter(
+            review_threads=[
+                self._thread_for(resolved=True, resolved_by="prbot[bot]"),
+            ],
+        )
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        assert adapter.unresolved == ["T_Q-ERR-01"]
+        assert len(adapter.replies) == 1
+        assert "Reported again" in adapter.replies[0][1]
+        _, _, inline = adapter.submitted_reviews[0]
+        assert inline == []
+
+    @pytest.mark.asyncio
+    async def test_a_thread_a_person_resolved_is_not_reopened(self) -> None:
+        adapter = FakeVCSAdapter(
+            review_threads=[
+                self._thread_for(resolved=True, resolved_by="alice"),
+            ],
+        )
+        bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(_config(review_mode="review"))
+
+        assert adapter.unresolved == []
+        assert adapter.replies == []
+
+    @pytest.mark.asyncio
     async def test_a_thread_a_human_resolved_is_left_alone(self) -> None:
         adapter = FakeVCSAdapter(
             review_threads=[self._thread_for(resolved=True)],

@@ -287,8 +287,9 @@ async def _run_preflight(
         return EXIT_PASS, None
 
     # Already reviewed at this commit (C3). The state record is advisory,
-    # not authenticated, but it is read only from a comment authored by this
-    # bot, so forging it means already holding write access to that comment.
+    # not authenticated: it is read only from a comment posted under this
+    # bot's login, so forging it means posting as that login. Under
+    # GITHUB_TOKEN every workflow in the repository posts as it.
     existing = await adapter.find_bot_comment()
     previous = (
         ReviewStateRecord.from_html_comment(existing[1]) if existing else None
@@ -654,11 +655,12 @@ async def run_pipeline(config: PrBotConfig) -> int:
             ]
             logger.info(
                 "review.inline new=%d persisting=%d fixed=%d resolved=%d "
-                "anchored=%d unanchored=%d",
+                "reopened=%d anchored=%d unanchored=%d",
                 len(outcomes_report.new),
                 len(outcomes_report.persisting),
                 len(outcomes_report.fixed),
                 len(outcomes_report.human_resolved),
+                len(outcomes_report.reopened),
                 len(inline),
                 len(unanchored),
             )
@@ -794,6 +796,29 @@ async def run_pipeline(config: PrBotConfig) -> int:
                             "review.threads_unresolved count=%d of=%d",
                             unresolved, len(outcomes_report.fixed),
                         )
+
+                    # A thread prbot closed because one run missed the
+                    # finding. The finding is back, so the closure was a
+                    # guess, and leaving it closed would discard a real
+                    # defect on the strength of one unlucky run.
+                    for _, thread in outcomes_report.reopened:
+                        try:
+                            if await adapter.unresolve_thread(thread):
+                                await adapter.reply_to_thread(
+                                    thread,
+                                    "Reported again as of "
+                                    f"`{metadata.head_sha[:8]}`. Reopening.",
+                                )
+                            else:
+                                logger.warning(
+                                    "Thread %s could not be reopened",
+                                    thread.id,
+                                )
+                        except PrBotError as e:
+                            logger.warning(
+                                "Could not reopen thread %s: %s",
+                                thread.id, e,
+                            )
 
             # One summary comment, found and rewritten in place, in both
             # modes. It carries the state record, so this is also what makes

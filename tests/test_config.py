@@ -374,6 +374,36 @@ class TestBuildConfig:
         )
         assert config.pr_number == 42
 
+    def test_bot_login_is_unset_by_default(self) -> None:
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "config": None},
+            env_vars={"PRBOT_PR_NUMBER": "1"},
+            toml_config={},
+        )
+        assert config.bot_login == ""
+
+    def test_env_bot_login(self) -> None:
+        config = build_config(
+            cli_args={"platform": "github", "repo": "o/r", "config": None},
+            env_vars={
+                "PRBOT_PR_NUMBER": "1",
+                "PRBOT_BOT_LOGIN": "github-actions[bot]",
+            },
+            toml_config={},
+        )
+        assert config.bot_login == "github-actions[bot]"
+
+    def test_a_bot_login_that_is_not_a_login_raises(self) -> None:
+        with pytest.raises(ConfigError, match="bot_login"):
+            build_config(
+                cli_args={"platform": "github", "repo": "o/r", "config": None},
+                env_vars={
+                    "PRBOT_PR_NUMBER": "1",
+                    "PRBOT_BOT_LOGIN": "github actions bot",
+                },
+                toml_config={},
+            )
+
     def test_env_invalid_int_raises(self) -> None:
         with pytest.raises(ConfigError, match="Invalid integer"):
             build_config(

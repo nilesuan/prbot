@@ -117,6 +117,10 @@ class ReviewThread:
     # Who wrote the first comment. The finding marker alone is not identity:
     # anyone who can comment can paste it (SEC-AUTH-02).
     author: str = ""
+    # Who resolved it, empty when open or unknown. A thread prbot resolved
+    # itself is reopened if the finding comes back; one a person resolved
+    # is left alone.
+    resolved_by: str = ""
 
 
 @dataclass(frozen=True)

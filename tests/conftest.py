@@ -111,6 +111,7 @@ class FakeVCSAdapter:
         self.submitted_reviews: list[tuple[str, str, list[object]]] = []
         self.replies: list[tuple[str, str]] = []
         self.resolved: list[str] = []
+        self.unresolved: list[str] = []
         self._next_comment_id = 100
 
     async def get_pr_metadata(self) -> PRMetadata:
@@ -163,6 +164,11 @@ class FakeVCSAdapter:
     async def resolve_thread(self, thread: object) -> bool:
         self.calls.append("resolve_thread")
         self.resolved.append(getattr(thread, "id", ""))
+        return True
+
+    async def unresolve_thread(self, thread: object) -> bool:
+        self.calls.append("unresolve_thread")
+        self.unresolved.append(getattr(thread, "id", ""))
         return True
 
     async def submit_review(

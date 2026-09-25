@@ -251,6 +251,16 @@ class PrBotConfig(BaseModel, frozen=True):
     # default, output length is neither reproducible nor visible to the
     # cost estimate.
     max_output_tokens: int = Field(default=8192, gt=0)
+    # SEC-DESIGN-04: the login prbot posts as, used when the token cannot
+    # read it. secrets.GITHUB_TOKEN cannot call GET /user, so without this
+    # prbot cannot tell its own threads from anyone else's: reworded findings
+    # are not matched to their threads and its own resolutions are never
+    # reopened. With GITHUB_TOKEN it is `github-actions[bot]`. Setting it to
+    # a person's login makes that person's threads count as prbot's.
+    bot_login: str = Field(
+        default="", max_length=100,
+        pattern=r"^([A-Za-z0-9][A-Za-z0-9._-]*(\[bot\])?)?$",
+    )
     # B8: lines of the head revision fetched either side of a hunk and given to
     # the agents. Retrieval is by API (`get_file_content`), so this needs no
     # checkout and does not weaken the GIT_STRATEGY: none boundary.

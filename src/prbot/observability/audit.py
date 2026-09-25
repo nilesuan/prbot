@@ -114,6 +114,7 @@ class AuditRecord:
     findings_persisting: int = 0
     findings_fixed: int = 0
     findings_human_resolved: int = 0
+    findings_reopened: int = 0
 
     # Agents (default last — frozen dataclass ordering)
     agents: list[AgentAuditInfo] = field(default_factory=list)
@@ -182,6 +183,7 @@ def build_audit_record(
         findings_human_resolved=outcomes.get(
             "findings_human_resolved", 0,
         ),
+        findings_reopened=outcomes.get("findings_reopened", 0),
         review_id=review_id,
         repo=repo,
         pr_number=pr_number,

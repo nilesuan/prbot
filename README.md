@@ -216,6 +216,7 @@ On the next review prbot reads back the threads it wrote and sorts them:
 | Still reported | Leaves the thread alone | Not acted on yet |
 | No longer reported | Replies "No longer reported as of `abc1234`" and resolves the thread | The author fixed it |
 | Resolved by a human | Leaves it alone, never re-raises it | Someone decided it is settled |
+| Resolved by prbot, reported again | Reopens it with a reply | One run missed it; it was not fixed |
 
 That makes the pull request itself the store. Nothing else has to hold state,
 and the record of what happened sits where the people who did it are looking.
@@ -232,10 +233,20 @@ The model rewords its titles between runs, so the same defect can arrive under
 a new fingerprint. prbot still keeps it on its open thread when the thread is
 on the same file, names the same check and is anchored on a line the finding
 covers; if two findings fit one thread, the nearer one gets it. It does this
-only for threads it can confirm it wrote, which rules it out under
-`GITHUB_TOKEN`, where prbot cannot read its own login. A resolved thread is
-matched only by its exact fingerprint, so a reworded finding on a line someone
-resolved is raised again rather than filed under their decision.
+only for threads it can confirm it wrote. A resolved thread is matched only by
+its exact fingerprint, so a reworded finding on a line someone resolved is
+raised again rather than filed under their decision.
+
+prbot knows which threads it wrote, and which ones it resolved, by its token's
+login. `GITHUB_TOKEN` cannot read its own, so set `PRBOT_BOT_LOGIN` to
+`github-actions[bot]`: without it, matching stays exact and a thread prbot
+resolved is never reopened. Every workflow that uses `GITHUB_TOKEN` posts as
+that login, and prbot reads which commit it last reviewed from a comment
+posted under it: a workflow that comments text a pull request controls, such
+as test output, could make prbot skip a commit as already reviewed and pass
+it. With a personal token the login is a person's, so that person's threads
+count as prbot's and the ones they resolve are reopened when their finding
+comes back. Use a bot or app token.
 
 On GitHub, resolution state and resolving both need GraphQL. If the token
 cannot reach it, prbot falls back to REST: findings are still deduplicated and
@@ -513,6 +524,7 @@ All settings can be set via environment variables (`PRBOT_` prefix), `.prbot.tom
 | `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-5` | Security review model |
 | `PRBOT_MAX_DIFF_TOKENS` | `100000` | Tokens per review call; a larger diff is reviewed in several passes |
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
+| `PRBOT_BOT_LOGIN` | unset | The login prbot posts as, used when the token cannot read it. Set `github-actions[bot]` with `GITHUB_TOKEN`, or prbot cannot tell its own threads from anyone else's. Never a person's login |
 | `PRBOT_CONTEXT_LINES` | `40` | Lines of surrounding code fetched by API and included around each hunk; `0` disables |
 | `PRBOT_BUDGET_LIMIT_USD` | `5.00` | Max estimated cost per review |
 | `PRBOT_TIMEOUT_SECONDS` | `300` | Review timeout |

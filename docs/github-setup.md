@@ -143,6 +143,7 @@ jobs:
             -e PRBOT_PLATFORM=github \
             -e PRBOT_REPO="${{ github.repository }}" \
             -e PRBOT_PR_NUMBER="${{ github.event.pull_request.number }}" \
+            -e PRBOT_BOT_LOGIN='github-actions[bot]' \
             "${{ steps.image.outputs.ref }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -218,6 +219,7 @@ jobs:
             -e PRBOT_PLATFORM=github \
             -e PRBOT_REPO="${{ github.repository }}" \
             -e PRBOT_PR_NUMBER="${{ github.event.pull_request.number }}" \
+            -e PRBOT_BOT_LOGIN='github-actions[bot]' \
             "${{ steps.image.outputs.ref }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -253,6 +255,7 @@ All configuration can be set via `PRBOT_`-prefixed environment variables in the 
 | `PRBOT_SECURITY_MODEL_ID` | `au.anthropic.claude-sonnet-5` | Bedrock model ID for security review agent |
 | `PRBOT_MIN_PASSING_SCORE` | `70` | Minimum review score (0-100) required to pass |
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
+| `PRBOT_BOT_LOGIN` | unset | The login prbot posts as, used when the token cannot read it. Set `github-actions[bot]` with `GITHUB_TOKEN`, or prbot cannot tell its own threads from anyone else's. Never a person's login |
 | `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |
 | `PRBOT_ALLOWED_REGIONS` | `ap-southeast-2` | Comma-separated regions the review may run in |
 | `PRBOT_MAX_DIFF_TOKENS` | `100000` | Maximum diff size in tokens before rejection |
@@ -324,6 +327,7 @@ To make blocker findings non-blocking (advisory mode), wrap the run step:
             -e PRBOT_PLATFORM=github \
             -e PRBOT_REPO="${{ github.repository }}" \
             -e PRBOT_PR_NUMBER="${{ github.event.pull_request.number }}" \
+            -e PRBOT_BOT_LOGIN='github-actions[bot]' \
             "${{ steps.image.outputs.ref }}"
         env:
           # ...
