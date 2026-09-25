@@ -290,3 +290,21 @@ class TestFindingsInTheAuditRecord:
     def test_the_record_still_meets_g11(self) -> None:
         record = _make_audit_record(findings=[self._entry()])
         assert not _TOKEN_PATTERNS.search(json.dumps(asdict(record)))
+
+    def test_every_string_in_an_entry_is_capped(self) -> None:
+        """SEC-LOG-01: only the path was capped.
+
+        A 5,010-character check id was logged whole.
+        """
+        from dataclasses import fields
+
+        long = "x" * 5_010
+        record = _make_audit_record(findings=[self._entry(
+            fingerprint=long, check_id=long, severity=long, band=long,
+            file_path=long,
+        )])
+        entry = record.findings[0]
+        for f in fields(entry):
+            value = getattr(entry, f.name)
+            if isinstance(value, str):
+                assert len(value) <= 256, f.name

@@ -29,6 +29,9 @@ from prbot.vcs.models import PRDiff, PRMetadata
 
 logger = logging.getLogger(__name__)
 
+# A check id is a short code from a check spec, such as IAC-REPLACE-01.
+_CHECK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
 # Default cap on a single agent response. Explicit so that output length
 # is a decision rather than a Bedrock default the cost estimate cannot see.
 _DEFAULT_MAX_OUTPUT_TOKENS = 8192
@@ -455,12 +458,16 @@ def _parse_findings(
             )
             continue
 
-        # G-08: Validate check_id prefix
+        # G-08: Validate check_id prefix. SEC-LOG-01: and its shape, since it
+        # is echoed into the posted header, read back out of it, and written
+        # to the audit log.
         check_id = f.get("check_id", "")
-        if not check_id.startswith(check_prefix):
+        if not check_id.startswith(check_prefix) or not _CHECK_ID.fullmatch(
+            check_id,
+        ):
             logger.warning(
                 "Dropping finding with unknown check_id: %s",
-                check_id,
+                check_id[:64],
             )
             continue
 

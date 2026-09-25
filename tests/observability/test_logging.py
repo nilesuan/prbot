@@ -45,6 +45,22 @@ class TestRedactProcessor:
         assert result["msg"] == "hello world"
         assert result["count"] == 42
 
+    def test_redacts_inside_nested_values(self) -> None:
+        """SEC-LOG-01: the audit record's findings are a list of dicts.
+
+        Only top-level strings were scanned, so a token inside a finding
+        entry reached the log as it was.
+        """
+        token = "ghp_abc123def456ghi789jkl012mno345pqr678"
+        event = {
+            "findings": [{"check_id": token, "line_start": 3}],
+            "meta": {"pair": (token, 1)},
+        }
+        result = _redact_processor(None, "", event)
+        assert token not in str(result)
+        assert result["findings"][0]["line_start"] == 3
+        assert result["meta"]["pair"][1] == 1
+
 
 class TestConfigureLogging:
     """Tests for logging configuration."""

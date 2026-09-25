@@ -30,8 +30,9 @@ class AgentAuditInfo:
     cost_usd: float = 0.0
 
 
-# G-11 caps every string in the record; a path is contributor-chosen and
-# otherwise unbounded.
+# G-11 caps every string a finding entry carries. The path is chosen by the
+# contributor and the check id by the model, and neither is otherwise
+# bounded: a 5,010-character check id was logged whole (SEC-LOG-01).
 _MAX_AUDIT_STRING = 256
 
 
@@ -166,7 +167,11 @@ def build_audit_record(
     """Build a complete audit record from pipeline state."""
     outcomes = outcome_counts or {}
     capped = [
-        replace(f, file_path=f.file_path[:_MAX_AUDIT_STRING])
+        replace(f, **{
+            name: value[:_MAX_AUDIT_STRING]
+            for name, value in asdict(f).items()
+            if isinstance(value, str)
+        })
         for f in (findings or [])
     ]
     return AuditRecord(

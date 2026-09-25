@@ -402,6 +402,20 @@ class TestParseFindings:
         findings = _parse_findings(response, "general")
         assert len(findings) == 0
 
+    def test_rejects_a_check_id_that_is_not_a_short_code(self) -> None:
+        """SEC-LOG-01: the check id is echoed into the posted header, read
+        back out of it, and written to the audit log. A long or free-text one
+        is dropped like an unknown prefix."""
+        for check_id in (
+            "Q-ARCH-01 `injected`",
+            "Q-" + "A" * 80,
+            "Q-ERR-01\nnext",
+            "Q-ERR-01\n",
+        ):
+            finding = _make_finding_dict(check_id=check_id)
+            response = _make_bedrock_response([finding])
+            assert _parse_findings(response, "general") == [], check_id
+
     def test_accepts_security_prefix_for_security_agent(self) -> None:
         finding = _make_finding_dict(check_id="S-INPUT-01")
         response = _make_bedrock_response([finding])

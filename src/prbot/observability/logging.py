@@ -39,15 +39,29 @@ def redact_secrets_in_text(text: str) -> str:
     return redact_secrets(text)[0]
 
 
+def _redact_value(value: Any) -> Any:
+    """Redact credential patterns in a string, or in every string inside."""
+    if isinstance(value, str):
+        return redact_secrets_in_text(value)
+    if isinstance(value, dict):
+        return {k: _redact_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_redact_value(v) for v in value)
+    return value
+
+
 def _redact_processor(
     _logger: object,
     _method_name: str,
     event_dict: dict[str, Any],
 ) -> dict[str, Any]:
-    """Scan string values and redact credential patterns."""
+    """Scan values and redact credential patterns.
+
+    Nested values too (SEC-LOG-01): the audit record's findings arrive as a
+    list of dicts, and a top-level scan passed them through as they were.
+    """
     for key, value in event_dict.items():
-        if isinstance(value, str):
-            event_dict[key] = redact_secrets_in_text(value)
+        event_dict[key] = _redact_value(value)
     return event_dict
 
 
