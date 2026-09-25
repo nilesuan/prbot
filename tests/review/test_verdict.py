@@ -59,7 +59,8 @@ def _score_and_verdict(outcomes, blocker_threshold=80):
 
 
 class TestDetermineVerdict:
-    """Tests for 8-scenario verdict decision table."""
+    """Tests for the verdict decision table, named after the story's
+    original eight scenarios."""
 
     def test_scenario1_clean_approve(self) -> None:
         """No findings, all agents OK → APPROVE."""
@@ -107,12 +108,12 @@ class TestDetermineVerdict:
         assert verdict == ReviewVerdict.REQUEST_CHANGES
         assert score.critical_override is True
 
-    def test_scenario7_a_blocker_blocks_though_an_agent_failed(self) -> None:
+    def test_a_blocker_blocks_though_an_agent_failed(self) -> None:
         """Agent failed + a blocker → REQUEST_CHANGES.
 
         SEC-DESIGN-04: a critical finding the working agent confirmed was
-        downgraded to COMMENT, exit 0, whenever another agent failed. More
-        data could only add findings, so what was found still counts.
+        downgraded to COMMENT, exit 0, whenever another agent failed. What
+        was found still counts.
         """
         finding = _make_finding(severity="critical", confidence=90)
         outcomes = [_make_result([finding]), _make_error()]
@@ -214,6 +215,23 @@ class TestVerdictScalesAreSeparate:
             [AgentResult(agent="general", findings=[])],
             reported,
             self._score(99),
+            blocker_confidence=80,
+            min_passing_score=70,
+        )
+        assert verdict == ReviewVerdict.REQUEST_CHANGES
+
+    def test_a_high_blocker_blocks_though_an_agent_failed(self) -> None:
+        """QA-COV-01: a high finding, not only a critical override, blocks
+        when another agent produced nothing; the score alone would pass."""
+        verdict = determine_verdict(
+            [
+                AgentResult(agent="general", findings=[]),
+                AgentError(
+                    agent="security", error_type="throttled", message="m",
+                ),
+            ],
+            [self._scored("high", 90)],
+            self._score(95),
             blocker_confidence=80,
             min_passing_score=70,
         )
@@ -356,7 +374,7 @@ class TestChunkedOutcomesDoNotOverCap:
             outcomes, self._blocker(), self._score(),
         ) == ReviewVerdict.REQUEST_CHANGES
 
-    def test_an_agent_failing_in_every_chunk_still_never_approves(
+    def test_an_agent_failing_on_the_only_chunk_still_never_approves(
         self,
     ) -> None:
         outcomes = [

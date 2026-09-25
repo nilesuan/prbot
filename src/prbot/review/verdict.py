@@ -1,6 +1,6 @@
 """Verdict state machine (story-5-2).
 
-Deterministic verdict determination covering 8 scenarios.
+Deterministic verdict determination covering 7 scenarios.
 Agent failure never approves: incomplete data can show a problem, never
 its absence.
 """
@@ -79,10 +79,12 @@ def determine_verdict(
 
     Incomplete data can show a problem but not its absence (SEC-DESIGN-04).
     A blocker, or a score already below the passing mark, stands however many
-    agent passes failed, because the missing passes could only have added
-    findings. Only a review every agent completed can be approved.
+    agent passes failed. That errs toward blocking: completing a failed pass
+    could have merged two findings into one and raised the score
+    (SEC-DESIGN-10). Only a review every agent completed can be approved.
 
-    Scenarios:
+    Scenarios, numbered as ids; they are checked in the order 3, 4, 5, 6, 2,
+    then 1 or 7:
     1. No findings, every agent completed every pass → APPROVE
     2. No findings, an agent pass failed → COMMENT (files it did not review
        were reviewed by fewer agents, or by none)

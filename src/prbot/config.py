@@ -298,8 +298,7 @@ class PrBotConfig(BaseModel, frozen=True):
     # method - for the large majority of real files, which is the unit a
     # reviewer needs to judge whether a change is correct. It is a starting
     # point to be measured, not a tuned constant: the cost is roughly linear
-    # in it, and the docstring in review/context.py is right that this is a
-    # question for measurement rather than argument.
+    # in it.
     context_lines: int = Field(default=40, ge=0, le=200)
     budget_limit_usd: float = Field(default=5.00, gt=0)
     timeout_seconds: int = Field(default=300, gt=0)
