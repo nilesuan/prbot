@@ -1491,7 +1491,8 @@ class TestReadingBeyondTheDiff:
 
 
 class TestVerificationPass:
-    """With PRBOT_VERIFY on, each finding's confidence is the verifier's."""
+    """With PRBOT_VERIFY on, a confirmed finding can gain confidence, and
+    no finding loses any."""
 
     @staticmethod
     def _stub(finding: dict[str, Any], verdict: str, confidence: int):
@@ -1531,7 +1532,7 @@ class TestVerificationPass:
         assert "1 confirmed" in body
 
     @pytest.mark.asyncio
-    async def test_a_refuted_finding_is_demoted_not_deleted(self) -> None:
+    async def test_a_refuted_finding_is_recorded_not_demoted(self) -> None:
         adapter = FakeVCSAdapter()
         bedrock, _ = self._stub(_finding(confidence=90), "refuted", 10)
 
@@ -1539,9 +1540,55 @@ class TestVerificationPass:
             await run_pipeline(_config(verify=True, budget_limit_usd=100.0))
 
         body = adapter.posted_comments[0]
-        assert "### Issues" not in body
-        assert "Low-confidence findings (1)" in body
+        assert "### Issues" in body
+        assert "90%" in body
         assert "1 refuted" in body
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("verdict", "confidence"), [("confirmed", 50), ("refuted", 10)],
+    )
+    async def test_no_verdict_lifts_a_failing_score(
+        self, verdict: str, confidence: int,
+    ) -> None:
+        """SEC-SUPPRESS-SCORE-01: four medium findings at 95 fail the score.
+        Verdicts at 50 moved them out of the reported band and the review
+        passed, because only critical and high findings had a floor."""
+        findings = [
+            _finding(check_id=check, title=title, confidence=95)
+            for check, title in (
+                ("Q-ERR-01", "Bare except swallows the error"),
+                ("Q-ERR-02", "Retry loop never gives up"),
+                ("Q-MAINT-01", "Timeout is ignored by the caller"),
+                ("Q-API-01", "Log line leaks the request body"),
+            )
+        ]
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            tools = (kwargs.get("tool_config") or {}).get("tools") or []
+            if any(t["toolSpec"]["name"] == "report_verdicts" for t in tools):
+                return {
+                    "usage": {"inputTokens": 5000, "outputTokens": 100},
+                    "output": {"message": {"content": [{"toolUse": {
+                        "name": "report_verdicts",
+                        "input": {"verdicts": [
+                            {"index": i, "verdict": verdict,
+                             "confidence": confidence, "reason": "line 2"}
+                            for i in range(1, len(findings) + 1)
+                        ]},
+                    }}]}},
+                }
+            if _is_security(kwargs["system_prompt"]):
+                return _bedrock_response([])
+            return _bedrock_response(findings)
+
+        codes = []
+        for verify in (False, True):
+            with _pipeline(FakeVCSAdapter(), bedrock):
+                codes.append(await run_pipeline(
+                    _config(verify=verify, budget_limit_usd=100.0),
+                ))
+        assert codes == [EXIT_BLOCKERS, EXIT_BLOCKERS]
 
     @pytest.mark.asyncio
     async def test_the_verifier_is_recorded_in_the_audit(

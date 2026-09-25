@@ -4,7 +4,8 @@ A single call's confidence is noise-level: two identical runs on
 infrastructure-core MR 209 scored 87 and 96, and one finding came back high in
 one and medium in the other. A verified review re-checks every claim against
 the code before it scores anything. This pass does that with one further call
-per chunk, and replaces each finding's confidence with the verifier's.
+per chunk. A confirmed verdict can raise a finding's confidence; no verdict
+lowers one.
 """
 
 from __future__ import annotations
@@ -150,18 +151,38 @@ class TestParsingVerdicts:
 
 
 class TestApplyingVerdicts:
-    def test_a_confirmed_finding_takes_the_verifiers_confidence(self) -> None:
+    def test_a_confirmed_finding_takes_the_verifiers_higher_confidence(
+        self,
+    ) -> None:
         [out], stats = apply_verdicts([_finding()], {1: ("confirmed", 92)})
         assert out.confidence == 92
         assert out.verification == "confirmed"
         assert stats.confirmed == 1
 
-    def test_a_refuted_finding_is_kept_at_the_verifiers_confidence(self) -> None:
-        """Nothing is deleted: the scorer decides what a low number means."""
+    def test_a_confirmed_verdict_below_the_agents_number_leaves_it(
+        self,
+    ) -> None:
+        """SEC-SUPPRESS-SCORE-01: confirmed at 50 moved medium findings at 95
+        out of the reported band, and a failing score passed."""
+        [out], _ = apply_verdicts(
+            [_finding(confidence=95)], {1: ("confirmed", 50)},
+        )
+        assert out.confidence == 95
+        assert out.verification == "confirmed"
+
+    def test_a_refuted_finding_is_recorded_not_demoted(self) -> None:
+        """No verdict lowers a finding: one that could let a review pass
+        that would otherwise fail (SEC-SUPPRESS-01, SEC-SUPPRESS-SCORE-01)."""
         [out], stats = apply_verdicts([_finding()], {1: ("refuted", 5)})
-        assert out.confidence == 5
+        assert out.confidence == 40
         assert out.verification == "refuted"
         assert stats.refuted == 1
+
+    def test_a_refuted_verdict_never_raises_a_finding(self) -> None:
+        [out], _ = apply_verdicts(
+            [_finding(confidence=30)], {1: ("refuted", 50)},
+        )
+        assert out.confidence == 30
 
     def test_a_finding_without_a_verdict_is_unchanged(self) -> None:
         """A verifier that skips one must not silently rescore it."""
@@ -176,11 +197,13 @@ class TestApplyingVerdicts:
         assert [f.title for f in out] == ["a", "b"]
         assert [f.confidence for f in out] == [40, 80]
 
-    @pytest.mark.parametrize("severity", ["critical", "high"])
-    def test_a_blocking_severity_is_never_lowered(self, severity: str) -> None:
+    @pytest.mark.parametrize(
+        "severity", ["critical", "high", "medium", "low", "info"],
+    )
+    def test_no_severity_is_lowered(self, severity: str) -> None:
         """SEC-SUPPRESS-01: one refuted verdict turned a critical finding at
-        95 from exit 1 into exit 0. The verifier can raise a critical or high
-        finding's confidence, not lower it."""
+        95 from exit 1 into exit 0. SEC-SUPPRESS-SCORE-01: lower severities
+        reach the exit code through the score."""
         [down], _ = apply_verdicts(
             [_finding(severity=severity, confidence=95)],
             {1: ("refuted", 10)},
@@ -205,8 +228,10 @@ class TestApplyingVerdicts:
 
     def test_the_confidence_before_verification_is_kept(self) -> None:
         """SEC-LOG-01: the audit showed only the new number."""
-        [out], _ = apply_verdicts([_finding(confidence=40)], {1: ("refuted", 5)})
-        assert out.confidence == 5
+        [out], _ = apply_verdicts(
+            [_finding(confidence=40)], {1: ("confirmed", 92)},
+        )
+        assert out.confidence == 92
         assert out.confidence_before_verification == 40
 
 

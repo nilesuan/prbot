@@ -642,8 +642,9 @@ async def run_pipeline(config: PrBotConfig) -> int:
             logger.info("findings.suppressed count=%d", suppressed_count)
 
         # A second opinion on each finding, against the chunk it was
-        # reported on. Its verdict replaces the agent's own confidence,
-        # which on its own does not separate true findings from false ones.
+        # reported on. A confirmed verdict can raise the agent's own
+        # confidence, which on its own does not separate true findings from
+        # false ones. No verdict lowers it.
         verification = None
         if verify and kept:
             from prbot.review.runner import run_verifier

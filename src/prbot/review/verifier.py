@@ -7,15 +7,15 @@ number sits at 30-60 for findings a verified review confirmed at 85-97.
 
 This pass shows the verifier the same datamarked diff an agent saw and the
 findings reported against it, and asks for a verdict on each: confirmed,
-refuted or uncertain, with a confidence and a reason. A confirmed or refuted
-verdict replaces the agent's confidence, with two exceptions. A critical or
-high finding's confidence can rise but never fall, because one refuted verdict
-used to turn a blocking finding into a pass (SEC-SUPPRESS-01). An uncertain
-verdict leaves the agent's number alone, because "could not check" is not
-evidence either way (SEC-SUPPRESS-02). Nothing is deleted: a refuted finding
-keeps its place at the lower confidence, so the scorer decides what the
-number means. A finding the verifier gives no verdict on, or one whose chunk
-could not be verified, is left exactly as the agent reported it.
+refuted or uncertain, with a confidence and a reason. A confirmed verdict can
+raise a finding's confidence to the verifier's, and nothing lowers one.
+Lowering let a verdict pass a review that should have failed: one refuted
+critical finding stopped blocking (SEC-SUPPRESS-01), and medium findings
+moved out of the reported band lifted a failing score (SEC-SUPPRESS-SCORE-01).
+A refuted or uncertain verdict is recorded and changes nothing, since a
+refutation at 50 would otherwise raise a finding the agent put lower. A
+finding the verifier gives no verdict on, or one whose chunk could not be
+verified, is left exactly as the agent reported it.
 """
 
 from __future__ import annotations
@@ -34,9 +34,6 @@ logger = logging.getLogger(__name__)
 VERIFY_TOOL_NAME = "report_verdicts"
 
 _VERDICTS = ("confirmed", "refuted", "uncertain")
-
-# The severities that can block a merge. The verifier may not lower them.
-_BLOCKING_SEVERITIES = ("critical", "high")
 
 VERDICT_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -74,7 +71,7 @@ does what the finding says, and that the stated consequence follows.
 - uncertain: the deciding fact is not in what you were shown.
 
 confidence is your probability that the finding is real, 0-100, after
-checking. It replaces the reviewer's own number, so do not copy it: a claim
+checking. It may replace the reviewer's own number, so do not copy it: a claim
 you confirmed by reading the lines should be high, one you could not check
 should sit near the middle, and one you refuted should be low. Give a short
 reason naming the line that decided it. Return a verdict for every finding
@@ -192,11 +189,11 @@ def parse_verdicts(
 def apply_verdicts(
     findings: list[Finding], verdicts: dict[int, tuple[str, int]],
 ) -> tuple[list[Finding], VerificationStats]:
-    """Replace each verified finding's confidence with the verifier's.
+    """Raise each confirmed finding's confidence to the verifier's, if higher.
 
-    Except where the module docstring says: a critical or high finding's
-    confidence only rises, and an uncertain verdict changes nothing. The
-    confidence before verification is kept either way (SEC-LOG-01).
+    No verdict lowers a finding, and a refuted or uncertain one changes
+    nothing (module docstring). The confidence before verification is kept
+    on every finding with a verdict (SEC-LOG-01).
     """
     out: list[Finding] = []
     counts = {v: 0 for v in _VERDICTS}
@@ -208,10 +205,10 @@ def apply_verdicts(
             continue
         verdict, confidence = verdicts[i]
         counts[verdict] += 1
-        if verdict == "uncertain":
-            confidence = f.confidence
-        elif f.severity in _BLOCKING_SEVERITIES:
+        if verdict == "confirmed":
             confidence = max(confidence, f.confidence)
+        else:
+            confidence = f.confidence
         out.append(dataclasses.replace(
             f, confidence=confidence, verification=verdict,
             confidence_before_verification=f.confidence,

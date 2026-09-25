@@ -257,7 +257,7 @@ All configuration can be set via `PRBOT_`-prefixed environment variables in the 
 | `PRBOT_MAX_OUTPUT_TOKENS` | `8192` | Max tokens in a single agent response |
 | `PRBOT_TEMPERATURE` | unset | Sampling temperature, sent only when set. The default model rejects it; set `0` for a model that accepts it |
 | `PRBOT_TOOL_TURNS` | `0` | Turns an agent may spend reading other files of the repository (`read_file`) before it must report. Off by default: measured so far to add cost without adding findings |
-| `PRBOT_VERIFY` | `false` | A second call per chunk that checks each finding against the code. A confirmed or refuted verdict replaces the finding's confidence, except that a critical or high finding's can only rise. Given up before the review when the budget cannot cover it |
+| `PRBOT_VERIFY` | `false` | A second call per chunk that checks each finding against the code. A confirmed verdict can raise a finding's confidence; nothing lowers it. Given up before the review when the budget cannot cover it |
 | `PRBOT_BOT_LOGIN` | unset | The login prbot posts as, used when the token cannot read it. Set `github-actions[bot]` with `GITHUB_TOKEN`, or prbot cannot tell its own threads from anyone else's. Never a person's login |
 | `PRBOT_DATAMARK_DIFF` | `true` | Whether patch content is datamarked (metadata always is) |
 | `PRBOT_ALLOWED_REGIONS` | `ap-southeast-2` | Comma-separated regions the review may run in |
