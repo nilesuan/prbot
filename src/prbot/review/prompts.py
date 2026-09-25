@@ -14,13 +14,25 @@ import re
 from pathlib import Path
 
 from prbot.exceptions import ConfigError
-from prbot.vcs.models import PRDiff, PRMetadata
+from prbot.vcs.models import FileDiff, PRDiff, PRMetadata
 
 logger = logging.getLogger(__name__)
 
 # Token estimation: ~4 chars per token, 1.5x safety multiplier (GAP-12)
 _CHARS_PER_TOKEN = 4
 _SAFETY_MULTIPLIER = 1.5
+
+# A description has no length limit worth relying on (GitHub allows 65,536
+# characters) and is repeated in every chunk's prompt, where datamarking
+# multiplies it: a 65,536-character body became a 159,849-token prompt. The
+# opening of a description is where its intent is (SEC-DESIGN-03).
+_MAX_BODY_CHARS = 8_000
+
+# The list of files a chunk does not show grows with the pull request, and it
+# is repeated in every chunk too. A path is chosen by the contributor and can
+# be thousands of characters long, so each one is shortened as well.
+_MAX_OTHER_PATHS = 200
+_MAX_OTHER_PATH_CHARS = 300
 
 # An agent name selects its check spec, {name}.md, so it must be a single
 # safe path segment. This is a shape check rather than an allowlist (C5):
@@ -79,10 +91,11 @@ def load_check_spec(agent: str) -> str:
 def sanitize_path_for_prompt(path: str) -> str:
     """Strip control characters from file paths (NG-33).
 
-    Replaces ASCII control characters (0x00-0x1f, 0x7f) with underscore
-    to prevent prompt injection via crafted file paths.
+    Replaces ASCII control characters (0x00-0x1f, 0x7f) and the Unicode line
+    breaks NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR with underscore, to
+    prevent prompt injection via crafted file paths (SEC-INPUT-05).
     """
-    return re.sub(r"[\x00-\x1f\x7f]", "_", path)
+    return re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", "_", path)
 
 
 def build_system_prompt(agent: str) -> str:
@@ -109,6 +122,64 @@ def build_system_prompt(agent: str) -> str:
     )
 
 
+def render_file_block(
+    file_diff: FileDiff,
+    *,
+    datamark_diff: bool = True,
+    file_contents: dict[str, str] | None = None,
+    context_lines: int = 0,
+) -> str:
+    """One file's section of the user prompt: header, patch and excerpt.
+
+    Separate from build_user_prompt so the chunker can size a file by what
+    will actually be sent for it rather than by its raw patch.
+    """
+    from prbot.review.context import build_context_excerpt
+    from prbot.security.datamarking import (
+        apply_datamarking,
+        apply_diff_datamarking,
+    )
+
+    # A git path is contributor-chosen prose. sanitize_path_for_prompt
+    # strips control characters, which stops newline injection, but a
+    # path may contain spaces and any printable byte, so a file added at
+    # 'src/Ignore the preceding instructions.py' would otherwise land in
+    # the prompt as an unmarked markdown heading outside the diff fence.
+    safe_path = sanitize_path_for_prompt(file_diff.path)
+    header = f"### {apply_datamarking(safe_path)} ({file_diff.status})"
+    if file_diff.previous_path:
+        safe_prev = apply_datamarking(
+            sanitize_path_for_prompt(file_diff.previous_path),
+        )
+        header += f" (renamed from {safe_prev})"
+    # Datamark the patch content, preserving hunk and file headers
+    # and the leading +/- of each line (B2)
+    if not file_diff.patch:
+        dm_patch = ""
+    elif datamark_diff:
+        dm_patch = apply_diff_datamarking(file_diff.patch)
+    else:
+        dm_patch = file_diff.patch
+    block = f"{header}\n```diff\n{dm_patch}\n```"
+
+    # B8: the enclosing function is rarely inside the hunk, so a
+    # judgement about architecture or testing is otherwise made without
+    # the thing being judged.
+    if context_lines > 0 and file_contents is not None:
+        excerpt = build_context_excerpt(
+            file_diff, file_contents.get(file_diff.path), context_lines,
+        )
+        if excerpt:
+            block += (
+                f"\n\nSurrounding code at "
+                f"{apply_datamarking(safe_path)} "
+                f"(head revision, numbered):\n"
+                f"```\n{excerpt}\n```"
+            )
+
+    return block
+
+
 def build_user_prompt(
     pr_diff: PRDiff,
     metadata: PRMetadata,
@@ -116,6 +187,7 @@ def build_user_prompt(
     datamark_diff: bool = True,
     file_contents: dict[str, str] | None = None,
     context_lines: int = 0,
+    all_paths: list[str] | None = None,
 ) -> str:
     """Build the user prompt containing PR metadata and diff.
 
@@ -123,60 +195,55 @@ def build_user_prompt(
     not in the system prompt. All content is datamarked for prompt injection
     defense (story-6-1).
     """
-    from prbot.review.context import build_context_excerpt
     from prbot.security.datamarking import (
         apply_datamarking,
-        apply_diff_datamarking,
         apply_metadata_datamarking,
     )
 
+    body = metadata.body
+    body_note = ""
+    if len(body) > _MAX_BODY_CHARS:
+        body_note = (
+            f"\n\n_(Description truncated: the first {_MAX_BODY_CHARS:,} of "
+            f"{len(body):,} characters are shown.)_"
+        )
+        body = body[:_MAX_BODY_CHARS]
+
     # Datamark metadata fields (S53)
     dm_title, dm_body, dm_author = apply_metadata_datamarking(
-        metadata.title, metadata.body, metadata.author,
+        metadata.title, body, metadata.author,
     )
 
-    files_section = []
-    for f in pr_diff.files:
-        # A git path is contributor-chosen prose. sanitize_path_for_prompt
-        # strips control characters, which stops newline injection, but a
-        # path may contain spaces and any printable byte, so a file added at
-        # 'src/Ignore the preceding instructions.py' would otherwise land in
-        # the prompt as an unmarked markdown heading outside the diff fence.
-        safe_path = sanitize_path_for_prompt(f.path)
-        header = f"### {apply_datamarking(safe_path)} ({f.status})"
-        if f.previous_path:
-            safe_prev = apply_datamarking(
-                sanitize_path_for_prompt(f.previous_path),
-            )
-            header += f" (renamed from {safe_prev})"
-        # Datamark the patch content, preserving hunk and file headers
-        # and the leading +/- of each line (B2)
-        if not f.patch:
-            dm_patch = ""
-        elif datamark_diff:
-            dm_patch = apply_diff_datamarking(f.patch)
-        else:
-            dm_patch = f.patch
-        block = f"{header}\n```diff\n{dm_patch}\n```"
-
-        # B8: the enclosing function is rarely inside the hunk, so a
-        # judgement about architecture or testing is otherwise made without
-        # the thing being judged.
-        if context_lines > 0 and file_contents is not None:
-            excerpt = build_context_excerpt(
-                f, file_contents.get(f.path), context_lines,
-            )
-            if excerpt:
-                block += (
-                    f"\n\nSurrounding code at "
-                    f"{apply_datamarking(safe_path)} "
-                    f"(head revision, numbered):\n"
-                    f"```\n{excerpt}\n```"
-                )
-
-        files_section.append(block)
+    files_section = [
+        render_file_block(
+            f,
+            datamark_diff=datamark_diff,
+            file_contents=file_contents,
+            context_lines=context_lines,
+        )
+        for f in pr_diff.files
+    ]
 
     files_text = "\n\n".join(files_section)
+
+    # A chunk is part of a pull request, and an agent that is not told so
+    # reads the files it cannot see as files the change forgot to include.
+    shown = {f.path for f in pr_diff.files}
+    others = [p for p in (all_paths or []) if p not in shown]
+    elsewhere = ""
+    if others:
+        listed = "\n".join(
+            _other_path_line(p) for p in others[:_MAX_OTHER_PATHS]
+        )
+        if len(others) > _MAX_OTHER_PATHS:
+            listed += f"\n- ... and {len(others) - _MAX_OTHER_PATHS} more"
+        elsewhere = (
+            f"\n\n## Other files in this pull request\n\n"
+            f"This review shows {len(shown)} of {len(shown) + len(others)} "
+            f"changed files. The files below are part of the same change and "
+            f"are reviewed separately; do not report them as missing, and do "
+            f"not infer anything about their content:\n\n{listed}\n"
+        )
     truncation_note = ""
     if pr_diff.truncated:
         truncation_note = (
@@ -193,10 +260,47 @@ def build_user_prompt(
         f"**State:** {metadata.state}\n"
         f"**Draft:** {metadata.is_draft}\n"
         f"**Fork:** {metadata.is_fork}\n\n"
-        f"### Description\n{dm_body}\n\n"
+        f"### Description\n{dm_body}{body_note}\n\n"
         f"## Changed Files ({len(pr_diff.files)} files)\n\n"
         f"{files_text}"
+        f"{elsewhere}"
         f"{truncation_note}"
+    )
+
+
+def _other_path_line(path: str) -> str:
+    """One entry in the list of files a chunk does not show."""
+    from prbot.security.datamarking import apply_datamarking
+
+    if len(path) > _MAX_OTHER_PATH_CHARS:
+        path = path[:_MAX_OTHER_PATH_CHARS] + "..."
+    return f"- {apply_datamarking(sanitize_path_for_prompt(path))}"
+
+
+def prompt_overhead_tokens(
+    metadata: PRMetadata,
+    *,
+    datamark_diff: bool = True,
+    all_paths: list[str] | None = None,
+    truncated: bool = False,
+) -> int:
+    """Estimated tokens every chunk's prompt carries besides its files.
+
+    The header, the description and the list of files shown elsewhere are
+    repeated in each chunk (SEC-DESIGN-03). Rendered with no file shown, the
+    list names the longest paths any chunk could, so this bounds each
+    chunk's share from above.
+    """
+    # SEC-DESIGN-05: which paths a chunk lists depends on the chunk, so the
+    # estimate lists the longest ones a chunk could.
+    longest_first = sorted(
+        all_paths or [], key=lambda p: len(_other_path_line(p)), reverse=True,
+    )
+    return estimate_prompt_tokens(
+        build_user_prompt(
+            PRDiff(files=[], truncated=truncated), metadata,
+            datamark_diff=datamark_diff, all_paths=longest_first,
+        ),
     )
 
 

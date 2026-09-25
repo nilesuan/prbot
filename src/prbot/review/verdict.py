@@ -79,6 +79,8 @@ def determine_verdict(
 
     Scenarios:
     1. No findings, all agents OK → APPROVE
+    1a. No findings, but an agent failed on at least one chunk → COMMENT
+       (its files were not reviewed by that agent)
     2. An agent produced no result in any chunk → COMMENT (never approve
        or reject on partial data)
     3. Both agents failed → COMMENT (G-28)
@@ -109,8 +111,19 @@ def determine_verdict(
         )
         return ReviewVerdict.COMMENT
 
-    # No agent failures from here on
+    # Every agent has a result somewhere from here on, though it may have
+    # failed on some chunks.
     if not reported and score.finding_count == 0:
+        # SEC-DESIGN-02: an agent that failed on a chunk never saw that
+        # chunk's files, so a clean result says nothing about them. Only
+        # approval is held back: a blocker another chunk found still blocks.
+        failed = sum(1 for o in outcomes if not isinstance(o, AgentResult))
+        if failed:
+            logger.info(
+                "%d agent pass(es) failed on part of the diff, so a clean "
+                "review is a COMMENT, not an APPROVE", failed,
+            )
+            return ReviewVerdict.COMMENT
         # Scenario 1: Clean review
         return ReviewVerdict.APPROVE
 

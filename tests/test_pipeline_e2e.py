@@ -61,6 +61,12 @@ def _finding(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def _shown(user_prompt: str) -> str:
+    """The part of a prompt that shows the diff, before the list of files
+    the chunk does not show."""
+    return user_prompt.split("## Other files in this pull request")[0]
+
+
 def _is_security(system_prompt: str) -> bool:
     """Which agent the stub is answering for.
 
@@ -221,6 +227,93 @@ class TestVerdictsReachTheExitCode:
 
         assert exit_code == EXIT_INFRA_ERROR
         assert "Review Incomplete" in adapter.posted_comments[0]
+
+    @staticmethod
+    def _two_passes() -> tuple[FakeVCSAdapter, PrBotConfig]:
+        """Two files a 3,000-token limit reviews in two passes."""
+        from prbot.vcs.models import FileDiff, PRDiff
+
+        head = "abcdef1234567890abcdef1234567890abcdef12"
+        base = "1234567890abcdef1234567890abcdef12345678"
+        patch = "@@ -1,1 +1,2 @@\n a\n+b\n@@ -1990,1 +1991,2 @@\n c\n+d\n"
+        source = "\n".join(f"resource line {i} padding" for i in range(1, 2001))
+        adapter = FakeVCSAdapter(
+            diff=PRDiff(
+                files=[
+                    FileDiff(path="m1/main.tf", status="modified", patch=patch),
+                    FileDiff(path="m2/main.tf", status="modified", patch=patch),
+                ],
+                head_sha=head, base_sha=base,
+            ),
+            file_contents={"m1/main.tf": source, "m2/main.tf": source},
+        )
+        config = _config(
+            context_lines=40, max_diff_tokens=3_000, budget_limit_usd=100.0,
+            timeout_seconds=5,
+        )
+        return adapter, config
+
+    @pytest.mark.asyncio
+    async def test_a_pass_no_agent_completed_fails_the_job(self) -> None:
+        """SEC-DESIGN-02: its files were reviewed by nobody.
+
+        The verdict already stops short of APPROVE. The job now fails too,
+        as it does when every agent fails, so a review with an unreviewed
+        pass is not a green check.
+        """
+        adapter, config = self._two_passes()
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            if "m2/main.tf" in _shown(kwargs["user_prompt"]):
+                raise BedrockError("Bedrock API error (AccessDeniedException)")
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(config)
+
+        assert exit_code == EXIT_INFRA_ERROR
+
+    @pytest.mark.asyncio
+    async def test_a_blocker_exits_one_though_a_pass_went_unreviewed(
+        self,
+    ) -> None:
+        """XV-OWN-02: a blocker found on one pass still exits 1 when another
+        pass was completed by no agent. Nothing pinned that precedence
+        through the whole exit-code path."""
+        adapter, config = self._two_passes()
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            if "m2/main.tf" in _shown(kwargs["user_prompt"]):
+                raise BedrockError("Bedrock API error (AccessDeniedException)")
+            if _is_security(kwargs["system_prompt"]):
+                return _bedrock_response([])
+            return _bedrock_response([_finding(
+                severity="critical", confidence=95,
+                file_path="m1/main.tf", line_start=1, line_end=2,
+            )])
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(config)
+
+        assert exit_code == EXIT_BLOCKERS
+
+    @pytest.mark.asyncio
+    async def test_a_pass_one_agent_completed_still_passes(self) -> None:
+        """Every file was read by at least one agent, so it is a COMMENT."""
+        adapter, config = self._two_passes()
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            if "m2/main.tf" in _shown(kwargs["user_prompt"]) and _is_security(
+                kwargs["system_prompt"],
+            ):
+                raise BedrockError("Bedrock API error (AccessDeniedException)")
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(config)
+
+        assert exit_code == EXIT_PASS
+        assert "COMMENT" in adapter.posted_comments[0]
 
 
 class TestSafetyLayersRunInOrder:
@@ -664,6 +757,143 @@ class TestExpandedContext:
         assert "Surrounding code" in seen[0]
 
     @pytest.mark.asyncio
+    async def test_the_excerpt_counts_towards_the_chunk_limit(self) -> None:
+        """Two tiny patches in large files are split when their context is.
+
+        The chunker used to size the raw patch only, so any amount of
+        surrounding code rode along in a single call.
+        """
+        from prbot.vcs.models import FileDiff, PRDiff
+
+        head = "abcdef1234567890abcdef1234567890abcdef12"
+        base = "1234567890abcdef1234567890abcdef12345678"
+        patch = "@@ -1,1 +1,2 @@\n a\n+b\n@@ -1990,1 +1991,2 @@\n c\n+d\n"
+        source = "\n".join(f"resource line {i} padding" for i in range(1, 2001))
+        adapter = FakeVCSAdapter(
+            diff=PRDiff(
+                files=[
+                    FileDiff(path="m1/main.tf", status="modified", patch=patch),
+                    FileDiff(path="m2/main.tf", status="modified", patch=patch),
+                ],
+                head_sha=head, base_sha=base,
+            ),
+            file_contents={"m1/main.tf": source, "m2/main.tf": source},
+        )
+        prompts: list[str] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            prompts.append(kwargs["user_prompt"])
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(
+                _config(
+                    context_lines=40, max_diff_tokens=3_000,
+                    budget_limit_usd=100.0,
+                ),
+            )
+
+        # Two agents per chunk; four calls means the two files were split.
+        assert len(prompts) == 4
+        shown = [_shown(p) for p in prompts]
+        assert not any("m1/main" in p and "m2/main" in p for p in shown)
+
+    @pytest.mark.asyncio
+    async def test_each_chunk_is_told_about_the_others(self) -> None:
+        from prbot.vcs.models import FileDiff, PRDiff
+
+        head = "abcdef1234567890abcdef1234567890abcdef12"
+        base = "1234567890abcdef1234567890abcdef12345678"
+        patch = "@@ -1,1 +1,2 @@\n a\n+b\n@@ -1990,1 +1991,2 @@\n c\n+d\n"
+        source = "\n".join(f"resource line {i} padding" for i in range(1, 2001))
+        adapter = FakeVCSAdapter(
+            diff=PRDiff(
+                files=[
+                    FileDiff(path="m1/main.tf", status="modified", patch=patch),
+                    FileDiff(path="m2/main.tf", status="modified", patch=patch),
+                ],
+                head_sha=head, base_sha=base,
+            ),
+            file_contents={"m1/main.tf": source, "m2/main.tf": source},
+        )
+        prompts: list[str] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            prompts.append(kwargs["user_prompt"])
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(
+                _config(
+                    context_lines=40, max_diff_tokens=3_000,
+                    budget_limit_usd=100.0,
+                ),
+            )
+
+        assert len(prompts) == 4
+        assert all("reviewed separately" in p for p in prompts)
+        assert all("m1/main.tf" in p and "m2/main.tf" in p for p in prompts)
+
+    @pytest.mark.asyncio
+    async def test_each_prompt_fits_the_limit_with_its_header(self) -> None:
+        """The description every chunk repeats counts towards the limit.
+
+        Two files that fit max_diff_tokens together are split once the
+        header and description each chunk carries are counted
+        (SEC-DESIGN-03).
+        """
+        from prbot.review.chunking import rendered_file_tokens
+        from prbot.review.prompts import (
+            estimate_prompt_tokens,
+            prompt_overhead_tokens,
+        )
+        from prbot.vcs.models import FileDiff, PRDiff, PRMetadata
+
+        head = "abcdef1234567890abcdef1234567890abcdef12"
+        base = "1234567890abcdef1234567890abcdef12345678"
+        patch = "@@ -1,1 +1,200 @@\n" + "\n".join(
+            f"+value_{i} = {i}" for i in range(200)
+        ) + "\n"
+        files = [
+            FileDiff(path=p, status="modified", patch=patch)
+            for p in ("a.tf", "b.tf")
+        ]
+        meta = PRMetadata(
+            title="t",
+            body="\n".join(f"step {i}: explain the change" for i in range(60)),
+            state="open", head_sha=head, base_sha=base,
+            head_ref="f", base_ref="main", author="x", number=42,
+        )
+        paths = [f.path for f in files]
+        one = rendered_file_tokens(
+            files[0], datamark_diff=True, file_contents=None, context_lines=0,
+        )
+        limit = 2 * one + prompt_overhead_tokens(
+            meta, datamark_diff=True, all_paths=paths,
+        ) // 2
+        adapter = FakeVCSAdapter(
+            metadata=meta,
+            diff=PRDiff(files=files, head_sha=head, base_sha=base),
+        )
+        prompts: list[str] = []
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            prompts.append(kwargs["user_prompt"])
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            await run_pipeline(
+                _config(
+                    context_lines=0, max_diff_tokens=limit,
+                    budget_limit_usd=100.0,
+                ),
+            )
+
+        # Two agents per chunk; four calls means the two files were split.
+        assert len(prompts) == 4
+        assert all(estimate_prompt_tokens(p) <= limit for p in prompts)
+
+    @pytest.mark.asyncio
     async def test_an_unfetchable_file_does_not_stop_the_review(self) -> None:
         adapter = FakeVCSAdapter(file_contents={})
         bedrock = lambda **_: _bedrock_response([_finding()])  # noqa: E731
@@ -918,7 +1148,7 @@ class TestChunkScopedValidation:
         def bedrock(**kwargs: Any) -> dict[str, Any]:
             # Whichever chunk this is, claim a defect in the OTHER file.
             other = (
-                "src/second.py" if "first.py" in kwargs["user_prompt"]
+                "src/second.py" if "first.py" in _shown(kwargs["user_prompt"])
                 else "src/first.py"
             )
             return _bedrock_response([
@@ -939,7 +1169,7 @@ class TestChunkScopedValidation:
 
         def bedrock(**kwargs: Any) -> dict[str, Any]:
             own = (
-                "src/first.py" if "first.py" in kwargs["user_prompt"]
+                "src/first.py" if "first.py" in _shown(kwargs["user_prompt"])
                 else "src/second.py"
             )
             return _bedrock_response([

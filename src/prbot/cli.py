@@ -319,7 +319,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
         validate_data_residency,
     )
     from prbot.review.budget import TimeoutBudget, estimate_cost
-    from prbot.review.chunking import chunk_diff
+    from prbot.review.chunking import chunk_for_prompt
     from prbot.review.formatter import (
         build_inline_comments,
         format_review_comment,
@@ -477,13 +477,26 @@ async def run_pipeline(config: PrBotConfig) -> int:
                 config.context_lines,
             )
 
-        chunks = chunk_diff(filtered_diff, config.max_diff_tokens)
+        # Sized by what each chunk's prompt will be: every file with its
+        # excerpt and datamarking, plus the header, description and list of
+        # other files each chunk repeats. Sizing the raw patch let a diff
+        # estimated at 23k tokens reach the model as 635k.
+        all_paths = [f.path for f in filtered_diff.files]
+        chunks = chunk_for_prompt(
+            filtered_diff, config.max_diff_tokens,
+            datamark_diff=config.datamark_diff,
+            file_contents=file_contents,
+            context_lines=config.context_lines,
+            metadata=metadata,
+            all_paths=all_paths,
+        )
         chunk_texts = [
             build_user_prompt(
                 chunk, metadata,
                 datamark_diff=config.datamark_diff,
                 file_contents=file_contents,
                 context_lines=config.context_lines,
+                all_paths=all_paths,
             )
             for chunk in chunks
         ]
@@ -517,6 +530,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
                     datamark_diff=config.datamark_diff,
                     file_contents=file_contents,
                     context_lines=config.context_lines,
+                    all_paths=all_paths,
                 ),
             )
 
@@ -781,10 +795,27 @@ async def run_pipeline(config: PrBotConfig) -> int:
         has_results = any(
             isinstance(o, AgentResult) for o in outcomes
         )
+        # SEC-DESIGN-02: a pass no agent completed was reviewed by nobody, so
+        # the job fails as it does when every agent fails, unless a blocker
+        # found elsewhere already fails it. run_review emits one outcome per
+        # agent per chunk, in chunk order.
+        unreviewed = sum(
+            1 for k in range(len(chunks))
+            if not any(
+                isinstance(o, AgentResult)
+                for o in outcomes[k * len(agents):(k + 1) * len(agents)]
+            )
+        )
         if not has_results:
             exit_code = EXIT_INFRA_ERROR
         elif verdict == ReviewVerdict.REQUEST_CHANGES:
             exit_code = EXIT_BLOCKERS
+        elif unreviewed:
+            logger.warning(
+                "%d of %d review passes were completed by no agent",
+                unreviewed, len(chunks),
+            )
+            exit_code = EXIT_INFRA_ERROR
         else:
             exit_code = EXIT_PASS
 

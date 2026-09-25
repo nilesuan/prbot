@@ -19,9 +19,10 @@ splits them.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from prbot.review.prompts import estimate_prompt_tokens
-from prbot.vcs.models import FileDiff, PRDiff
+from prbot.vcs.models import FileDiff, PRDiff, PRMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,11 @@ def needs_chunking(diff: PRDiff, max_tokens: int) -> bool:
     return sum(_file_tokens(f) for f in diff.files) > max_tokens
 
 
-def chunk_diff(diff: PRDiff, max_tokens: int) -> list[PRDiff]:
+def chunk_diff(
+    diff: PRDiff,
+    max_tokens: int,
+    size_of: Callable[[FileDiff], int] = _file_tokens,
+) -> list[PRDiff]:
     """Split a diff into pieces, each at or under max_tokens where possible.
 
     A file larger than the limit on its own gets a chunk to itself rather
@@ -54,7 +59,7 @@ def chunk_diff(diff: PRDiff, max_tokens: int) -> list[PRDiff]:
     current_tokens = 0
 
     for file_diff in diff.files:
-        tokens = _file_tokens(file_diff)
+        tokens = size_of(file_diff)
         if current and current_tokens + tokens > max_tokens:
             chunks.append(current)
             current = []
@@ -80,3 +85,73 @@ def chunk_diff(diff: PRDiff, max_tokens: int) -> list[PRDiff]:
         )
         for files in chunks
     ]
+
+
+def rendered_file_tokens(
+    file_diff: FileDiff,
+    *,
+    datamark_diff: bool,
+    file_contents: dict[str, str] | None,
+    context_lines: int,
+) -> int:
+    """Estimated tokens for one file as it will appear in the prompt.
+
+    The raw patch is not what is sent. Datamarking roughly doubles its
+    length, and the surrounding-code excerpt can be many times larger than
+    the patch it surrounds, so a limit applied to the patch alone is a limit
+    on the wrong thing.
+    """
+    from prbot.review.prompts import render_file_block
+
+    return estimate_prompt_tokens(
+        render_file_block(
+            file_diff,
+            datamark_diff=datamark_diff,
+            file_contents=file_contents,
+            context_lines=context_lines,
+        ),
+    )
+
+
+def chunk_for_prompt(
+    diff: PRDiff,
+    max_tokens: int,
+    *,
+    datamark_diff: bool,
+    file_contents: dict[str, str] | None,
+    context_lines: int,
+    metadata: PRMetadata | None = None,
+    all_paths: list[str] | None = None,
+) -> list[PRDiff]:
+    """Chunk a diff so each piece's prompt fits under max_tokens.
+
+    Given the pull request's metadata, what every chunk repeats is taken off
+    the limit first: the header, the description and the list of files shown
+    elsewhere (SEC-DESIGN-03). Counting the files alone let each call run
+    over the limit by all of that. If it leaves nothing, each file gets a
+    chunk of its own.
+    """
+    limit = max_tokens
+    if metadata is not None:
+        from prbot.review.prompts import prompt_overhead_tokens
+
+        header = prompt_overhead_tokens(
+            metadata, datamark_diff=datamark_diff,
+            all_paths=all_paths, truncated=diff.truncated,
+        )
+        if header >= max_tokens:
+            logger.warning(
+                "chunk.header tokens=%d leaves nothing of the %d limit; "
+                "one file per chunk", header, max_tokens,
+            )
+        limit = max(1, max_tokens - header)
+    return chunk_diff(
+        diff,
+        limit,
+        size_of=lambda f: rendered_file_tokens(
+            f,
+            datamark_diff=datamark_diff,
+            file_contents=file_contents,
+            context_lines=context_lines,
+        ),
+    )

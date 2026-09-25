@@ -67,6 +67,7 @@ async def run_review(
     datamark_diff: bool = True,
     file_contents: dict[str, str] | None = None,
     context_lines: int = 0,
+    all_paths: list[str] | None = None,
 ) -> list[AgentOutcome]:
     """Run review agents concurrently (S1, S88).
 
@@ -85,6 +86,7 @@ async def run_review(
         datamark_diff=datamark_diff,
         file_contents=file_contents,
         context_lines=context_lines,
+        all_paths=all_paths,
     )
 
     tasks = [

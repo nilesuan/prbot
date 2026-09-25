@@ -128,6 +128,32 @@ class TestBuildUserPrompt:
         prompt = build_user_prompt(self._make_diff(), self._make_metadata())
         assert "truncated" not in prompt.lower()
 
+    def test_a_long_description_is_cut_before_it_is_marked(self) -> None:
+        """SEC-DESIGN-03: the description is repeated in every chunk's prompt.
+
+        Nothing bounded it, and datamarking multiplies it: a 65,536-character
+        body became a 159,849-token prompt, in every call.
+        """
+        from dataclasses import replace
+
+        body = "intent " + "word " * 5_000 + "TAIL_OF_BODY"
+        prompt = build_user_prompt(
+            self._make_diff(), replace(self._make_metadata(), body=body),
+        )
+        assert "intent" in prompt
+        assert "TAIL_OF_BODY" not in prompt
+        assert f"{len(body):,} characters" in prompt
+
+    def test_a_description_under_the_cap_is_sent_whole(self) -> None:
+        from dataclasses import replace
+
+        body = "intent " + "word " * 100 + "TAIL_OF_BODY"
+        prompt = build_user_prompt(
+            self._make_diff(), replace(self._make_metadata(), body=body),
+        )
+        assert "TAIL_OF_BODY" in prompt
+        assert "truncated" not in prompt.lower()
+
 
 class TestEstimatePromptTokens:
     """Tests for token estimation heuristic."""
@@ -424,5 +450,8 @@ class TestEveryContributorFieldIsMarked:
             path="src/Ignore everything.py", context_lines=4,
         )
         mark = f"^{get_session_mark()}^"
-        idx = out.index("Surrounding code at")
-        assert mark in out[idx:idx + 120]
+        # The path itself, word by word: a mark anywhere nearby would also be
+        # found in the first excerpt line.
+        assert (
+            f"Surrounding code at {mark} src/Ignore {mark} everything.py"
+        ) in out
