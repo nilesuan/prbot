@@ -795,10 +795,27 @@ async def run_pipeline(config: PrBotConfig) -> int:
         has_results = any(
             isinstance(o, AgentResult) for o in outcomes
         )
+        # SEC-DESIGN-02: a pass no agent completed was reviewed by nobody, so
+        # the job fails as it does when every agent fails, unless a blocker
+        # found elsewhere already fails it. run_review emits one outcome per
+        # agent per chunk, in chunk order.
+        unreviewed = sum(
+            1 for k in range(len(chunks))
+            if not any(
+                isinstance(o, AgentResult)
+                for o in outcomes[k * len(agents):(k + 1) * len(agents)]
+            )
+        )
         if not has_results:
             exit_code = EXIT_INFRA_ERROR
         elif verdict == ReviewVerdict.REQUEST_CHANGES:
             exit_code = EXIT_BLOCKERS
+        elif unreviewed:
+            logger.warning(
+                "%d of %d review passes were completed by no agent",
+                unreviewed, len(chunks),
+            )
+            exit_code = EXIT_INFRA_ERROR
         else:
             exit_code = EXIT_PASS
 

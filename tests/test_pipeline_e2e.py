@@ -228,6 +228,69 @@ class TestVerdictsReachTheExitCode:
         assert exit_code == EXIT_INFRA_ERROR
         assert "Review Incomplete" in adapter.posted_comments[0]
 
+    @staticmethod
+    def _two_passes() -> tuple[FakeVCSAdapter, PrBotConfig]:
+        """Two files a 3,000-token limit reviews in two passes."""
+        from prbot.vcs.models import FileDiff, PRDiff
+
+        head = "abcdef1234567890abcdef1234567890abcdef12"
+        base = "1234567890abcdef1234567890abcdef12345678"
+        patch = "@@ -1,1 +1,2 @@\n a\n+b\n@@ -1990,1 +1991,2 @@\n c\n+d\n"
+        source = "\n".join(f"resource line {i} padding" for i in range(1, 2001))
+        adapter = FakeVCSAdapter(
+            diff=PRDiff(
+                files=[
+                    FileDiff(path="m1/main.tf", status="modified", patch=patch),
+                    FileDiff(path="m2/main.tf", status="modified", patch=patch),
+                ],
+                head_sha=head, base_sha=base,
+            ),
+            file_contents={"m1/main.tf": source, "m2/main.tf": source},
+        )
+        config = _config(
+            context_lines=40, max_diff_tokens=3_000, budget_limit_usd=100.0,
+            timeout_seconds=5,
+        )
+        return adapter, config
+
+    @pytest.mark.asyncio
+    async def test_a_pass_no_agent_completed_fails_the_job(self) -> None:
+        """SEC-DESIGN-02: its files were reviewed by nobody.
+
+        The verdict already stops short of APPROVE. The job now fails too,
+        as it does when every agent fails, so a review with an unreviewed
+        pass is not a green check.
+        """
+        adapter, config = self._two_passes()
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            if "m2/main.tf" in _shown(kwargs["user_prompt"]):
+                raise BedrockError("Bedrock API error (AccessDeniedException)")
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(config)
+
+        assert exit_code == EXIT_INFRA_ERROR
+
+    @pytest.mark.asyncio
+    async def test_a_pass_one_agent_completed_still_passes(self) -> None:
+        """Every file was read by at least one agent, so it is a COMMENT."""
+        adapter, config = self._two_passes()
+
+        def bedrock(**kwargs: Any) -> dict[str, Any]:
+            if "m2/main.tf" in _shown(kwargs["user_prompt"]) and _is_security(
+                kwargs["system_prompt"],
+            ):
+                raise BedrockError("Bedrock API error (AccessDeniedException)")
+            return _bedrock_response([])
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(config)
+
+        assert exit_code == EXIT_PASS
+        assert "COMMENT" in adapter.posted_comments[0]
+
 
 class TestSafetyLayersRunInOrder:
     """Each stage between Bedrock and the comment must actually fire."""
