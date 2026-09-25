@@ -1002,12 +1002,16 @@ class TestReadingBeyondTheDiff:
 
         return (lambda: FileReader(fetch)), read
 
-    async def _run(self, responses: list[dict[str, Any]], factory, turns=3):
+    async def _run(self, responses: list[Any], factory, turns=3):
+        """Answer each call with the next response, raising any exception."""
         calls: list[dict[str, Any]] = []
 
         def invoke(**kwargs: Any) -> dict[str, Any]:
             calls.append(kwargs)
-            return responses[min(len(calls), len(responses)) - 1]
+            answer = responses[min(len(calls), len(responses)) - 1]
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
 
         with patch("prbot.review.runner._invoke_bedrock", side_effect=invoke):
             outcomes = await run_review(
@@ -1090,6 +1094,130 @@ class TestReadingBeyondTheDiff:
         # 100 + 5000 written, then 200 + 5000 read.
         assert usage.input_tokens == 100 + 5000 + 200 + 5000
         assert usage.output_tokens == 70
+
+    @pytest.mark.asyncio
+    async def test_a_bedrock_error_mid_loop_keeps_what_was_spent(self) -> None:
+        """QA-COV-01, SEC-LOG-01: a turn that fails after a read has been
+        answered is an AgentError of the right type, and it carries the
+        tokens the earlier turn was billed for rather than $0."""
+        from prbot.exceptions import BedrockError
+
+        factory, _ = self._factory({"a.tf": "x"})
+        outcomes, calls = await self._run(
+            [
+                self._tool_call("read_file", {"path": "a.tf"}),
+                BedrockError("Bedrock API error (ValidationException): bad"),
+            ],
+            factory,
+        )
+        [result] = outcomes
+        assert isinstance(result, AgentError)
+        assert result.error_type == "validation_error"
+        assert result.retryable is False
+        assert len(calls) == 2
+        assert result.token_usage.input_tokens == 100 + 5000
+        assert result.token_usage.estimated_cost_usd > 0
+
+    @pytest.mark.asyncio
+    async def test_a_throttled_turn_is_retried(self) -> None:
+        from prbot.exceptions import BedrockError
+
+        factory, _ = self._factory({"a.tf": "x"})
+        with patch("prbot.review.runner._backoff_seconds", return_value=0):
+            outcomes, calls = await self._run(
+                [
+                    self._tool_call("read_file", {"path": "a.tf"}),
+                    BedrockError("Bedrock API error (ThrottlingException)"),
+                    self._report([]),
+                ],
+                factory,
+            )
+        assert isinstance(outcomes[0], AgentResult)
+        assert len(calls) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_mid_loop_is_a_timeout(self) -> None:
+        factory, _ = self._factory({"a.tf": "x"})
+        outcomes, _ = await self._run(
+            [self._tool_call("read_file", {"path": "a.tf"}), TimeoutError()],
+            factory,
+        )
+        assert isinstance(outcomes[0], AgentError)
+        assert outcomes[0].error_type == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_prose_instead_of_a_report_is_an_invalid_response(
+        self,
+    ) -> None:
+        factory, _ = self._factory({"a.tf": "x"})
+        prose = {
+            "output": {"message": {"role": "assistant", "content": [
+                {"text": "It all looks fine to me."},
+            ]}},
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        outcomes, _ = await self._run(
+            [self._tool_call("read_file", {"path": "a.tf"}), prose], factory,
+        )
+        assert isinstance(outcomes[0], AgentError)
+        assert outcomes[0].error_type == "invalid_response"
+
+    @pytest.mark.asyncio
+    async def test_a_model_that_ignores_the_forced_report_fails(self) -> None:
+        """QA-COV-05: the last turn forces report_findings. A model that
+        reads anyway has produced no findings, which is a failure."""
+        factory, _ = self._factory({"a.tf": "x"})
+        outcomes, calls = await self._run(
+            [self._tool_call("read_file", {"path": "a.tf"})] * 5,
+            factory, turns=2,
+        )
+        assert len(calls) == 3
+        assert isinstance(outcomes[0], AgentError)
+        assert outcomes[0].error_type == "invalid_response"
+
+    @pytest.mark.asyncio
+    async def test_only_a_few_reads_are_answered_per_turn(self) -> None:
+        """SEC-DESIGN-05: one turn could ask for any number of reads."""
+        from prbot.review.runner import MAX_READS_PER_TURN
+
+        factory, read = self._factory({f"f{i}.tf": "x" for i in range(10)})
+        many = {
+            "output": {"message": {"role": "assistant", "content": [
+                {"toolUse": {"toolUseId": f"t{i}", "name": "read_file",
+                             "input": {"path": f"f{i}.tf"}}}
+                for i in range(10)
+            ]}},
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        _, calls = await self._run([many, self._report([])], factory)
+        results = calls[1]["messages"][2]["content"]
+        # Every request gets an answer, or the next call is rejected.
+        assert len(results) == 10
+        assert len(read) == MAX_READS_PER_TURN
+        assert sum(
+            r["toolResult"].get("status") == "error" for r in results
+        ) == 10 - MAX_READS_PER_TURN
+
+    @pytest.mark.asyncio
+    async def test_a_slow_read_is_bounded_by_the_time_budget(self) -> None:
+        """SEC-DESIGN-05: reads ran outside the review's time budget."""
+        import asyncio
+
+        from prbot.review.tools import FileReader
+
+        async def slow(path: str) -> str | None:
+            await asyncio.sleep(1)
+            return "x"
+
+        with patch("prbot.review.runner.READ_TIMEOUT_SECONDS", 0.05):
+            _, calls = await self._run(
+                [self._tool_call("read_file", {"path": "a.tf"}),
+                 self._report([])],
+                lambda: FileReader(slow),
+            )
+        result = calls[1]["messages"][2]["content"][0]["toolResult"]
+        assert result["status"] == "error"
+        assert "time" in result["content"][0]["text"]
 
     @pytest.mark.asyncio
     async def test_an_unknown_tool_gets_an_error_result(self) -> None:

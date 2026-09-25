@@ -149,9 +149,11 @@ def _summarise_agents(
                 model_id=a_cfg["model_id"],
                 status=f"error:{type(outcome).__name__}",
                 finding_count=0,
-                input_tokens=0,
-                output_tokens=0,
+                # SEC-LOG-01: what it was billed for before it failed.
+                input_tokens=outcome.token_usage.input_tokens,
+                output_tokens=outcome.token_usage.output_tokens,
                 latency_ms=0,
+                cost_usd=outcome.token_usage.estimated_cost_usd,
             ))
 
     total_cost = sum(info.cost_usd for info in agent_infos)
@@ -563,7 +565,7 @@ async def run_pipeline(config: PrBotConfig) -> int:
 
         # One cache for every agent's reader, seeded with the files already
         # fetched for context: three agents reading one file is one fetch.
-        read_cache: dict[str, str | None] = dict(file_contents)
+        read_cache: dict[str, str] = dict(file_contents)
 
         async def _fetch(path: str) -> str | None:
             return await adapter.get_file_content(path, metadata.head_sha)

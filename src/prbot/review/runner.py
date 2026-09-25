@@ -13,10 +13,15 @@ import random
 import re
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from prbot.exceptions import BedrockError
-from prbot.review.budget import TimeoutBudget, get_model_pricing
+from prbot.exceptions import BedrockError, TimeoutBudgetExhausted
+from prbot.review.budget import (
+    CACHE_READ_MULTIPLIER,
+    CACHE_WRITE_MULTIPLIER,
+    TimeoutBudget,
+    get_model_pricing,
+)
 from prbot.review.models import (
     FINDING_JSON_SCHEMA,
     AgentError,
@@ -26,10 +31,8 @@ from prbot.review.models import (
     TokenUsage,
 )
 from prbot.review.prompts import build_system_prompt, build_user_prompt
+from prbot.review.tools import READ_FILE_TOOL_NAME, FileReader
 from prbot.vcs.models import PRDiff, PRMetadata
-
-if TYPE_CHECKING:
-    from prbot.review.tools import FileReader
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +43,11 @@ _CHECK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 # is a decision rather than a Bedrock default the cost estimate cannot see.
 _DEFAULT_MAX_OUTPUT_TOKENS = 8192
 
-# Prompt caching prices, as multiples of the model's input price: writing a
-# five-minute cache entry costs 1.25 times the input rate and reading one
-# 0.1 times. These are Anthropic's published ratios for Claude, which
-# Bedrock's per-model cache pricing follows; they are not read from any API.
-CACHE_WRITE_MULTIPLIER = 1.25
-CACHE_READ_MULTIPLIER = 0.1
+
+# SEC-DESIGN-05: one turn could ask for any number of reads, and reads ran
+# outside the review's time budget.
+MAX_READS_PER_TURN = 5
+READ_TIMEOUT_SECONDS = 30.0
 
 # Retry config for throttled requests
 _MAX_RETRIES = 3
@@ -151,6 +153,7 @@ def _fail(
     message: str,
     *,
     retryable: bool = False,
+    token_usage: TokenUsage | None = None,
 ) -> AgentError:
     """Record an agent failure and say why in the log.
 
@@ -166,6 +169,38 @@ def _fail(
         error_type=error_type,
         message=message,
         retryable=retryable,
+        token_usage=token_usage or TokenUsage(0, 0, 0.0),
+    )
+
+
+def _failure(
+    agent_name: str,
+    error: Exception,
+    start_time: float,
+    usage: TokenUsage | None = None,
+) -> AgentError:
+    """The AgentError for an exception raised while an agent ran."""
+    if isinstance(error, ValueError):
+        logger.error(str(error))
+        return _fail(
+            agent_name, "invalid_response", str(error), token_usage=usage,
+        )
+    if isinstance(error, (TimeoutError, TimeoutBudgetExhausted)):
+        return _fail(
+            agent_name, "timeout",
+            f"Agent {agent_name} timed out after "
+            f"{time.monotonic() - start_time:.1f}s",
+            token_usage=usage,
+        )
+    if isinstance(error, BedrockError):
+        error_type = _classify_error(error)
+        return _fail(
+            agent_name, error_type, str(error),
+            retryable=_is_retryable(error_type), token_usage=usage,
+        )
+    return _fail(
+        agent_name, "unhandled", f"{type(error).__name__}: {error}",
+        token_usage=usage,
     )
 
 
@@ -194,78 +229,28 @@ async def _run_single_agent(
             reader=reader, tool_turns=tool_turns,
         )
 
-    system_prompt = build_system_prompt(agent_name)
     start_time = time.monotonic()
-
-    for attempt in range(_MAX_RETRIES + 1):
-        try:
-            timeout = budget.allocate(120.0)
-
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _invoke_bedrock,
-                    model_id=model_id,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    aws_region=aws_region,
-                    max_output_tokens=max_output_tokens,
-                    temperature=temperature,
-                ),
-                timeout=timeout,
-            )
-
-            token_usage = _extract_token_usage(response, model_id)
-            findings = _parse_findings(response, agent_name, check_prefix)
-            latency_ms = int((time.monotonic() - start_time) * 1000)
-
-            return AgentResult(
-                agent=agent_name,
-                findings=findings,
-                token_usage=token_usage,
-                latency_ms=latency_ms,
-                model_id=model_id,
-            )
-
-        except ValueError as e:
-            logger.error(str(e))
-            return _fail(agent_name, "invalid_response", str(e))
-
-        except TimeoutError:
-            return _fail(
-                agent_name,
-                "timeout",
-                f"Agent {agent_name} timed out after "
-                f"{time.monotonic() - start_time:.1f}s",
-            )
-
-        except BedrockError as e:
-            error_type = _classify_error(e)
-            if _is_retryable(error_type) and attempt < _MAX_RETRIES:
-                wait = _backoff_seconds(attempt)
-                logger.warning(
-                    "Agent %s got %s (attempt %d/%d), retrying in %.1fs",
-                    agent_name, error_type, attempt + 1,
-                    _MAX_RETRIES, wait,
-                )
-                await asyncio.sleep(wait)
-                continue
-
-            return _fail(
-                agent_name, error_type, str(e),
-                retryable=_is_retryable(error_type),
-            )
-
-        except Exception as e:
-            return _fail(
-                agent_name, "unhandled", f"{type(e).__name__}: {e}",
-            )
-
-    # Should not reach here, but just in case
-    return _fail(
-        agent_name,
-        "max_retries_exceeded",
-        f"Agent {agent_name} failed after {_MAX_RETRIES} retries",
-    )
+    try:
+        response = await _converse_with_retry(
+            agent_name,
+            budget,
+            model_id=model_id,
+            system_prompt=build_system_prompt(agent_name),
+            user_prompt=user_prompt,
+            aws_region=aws_region,
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+        )
+        token_usage = _extract_token_usage(response, model_id)
+        return AgentResult(
+            agent=agent_name,
+            findings=_parse_findings(response, agent_name, check_prefix),
+            token_usage=token_usage,
+            latency_ms=int((time.monotonic() - start_time) * 1000),
+            model_id=model_id,
+        )
+    except Exception as e:
+        return _failure(agent_name, e, start_time)
 
 
 async def _run_agent_with_tools(
@@ -288,8 +273,6 @@ async def _run_agent_with_tools(
     later turn reads them at a fraction of the input price. The final turn
     forces report_findings, so a model that keeps reading still reports.
     """
-    from prbot.review.tools import READ_FILE_TOOL_NAME
-
     system_prompt = build_system_prompt(agent_name, tools_enabled=True)
     start_time = time.monotonic()
     messages: list[dict[str, Any]] = [
@@ -301,7 +284,6 @@ async def _run_agent_with_tools(
 
     try:
         for turn in range(tool_turns + 1):
-            final = turn == tool_turns
             response = await _converse_with_retry(
                 agent_name,
                 budget,
@@ -312,92 +294,116 @@ async def _run_agent_with_tools(
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 messages=messages,
-                tool_config=_review_tool_config(read_allowed=not final),
+                tool_config=_review_tool_config(
+                    read_allowed=turn < tool_turns,
+                ),
                 cache=True,
             )
             usage = _add_usage(usage, _extract_token_usage(response, model_id))
-            message = (response.get("output") or {}).get("message") or {}
-            blocks = [
-                b for b in message.get("content") or [] if isinstance(b, dict)
-            ]
+            blocks = _content_blocks(response)
             uses = [b["toolUse"] for b in blocks if isinstance(
                 b.get("toolUse"), dict,
             )]
-
             report = next(
                 (u for u in uses if u.get("name") == FINDINGS_TOOL_NAME),
                 None,
             )
             if report is not None or not uses:
-                # A report, or an answer with no tool call at all, which the
-                # text fallback in _parse_findings still understands.
-                parsed_from = (
-                    {"output": {"message": {"content": [{"toolUse": report}]}}}
-                    if report is not None else response
-                )
-                findings = _parse_findings(
-                    parsed_from, agent_name, check_prefix,
-                )
                 logger.info(
                     "agent.tools name=%s turns=%d lines_read=%d",
                     agent_name, turn + 1, reader.lines_read,
                 )
                 return AgentResult(
                     agent=agent_name,
-                    findings=findings,
+                    findings=_reported_findings(
+                        report, response, agent_name, check_prefix,
+                    ),
                     token_usage=usage,
                     latency_ms=int((time.monotonic() - start_time) * 1000),
                     model_id=model_id,
                 )
 
-            results = []
-            for use in uses:
-                results.append(await _answer_tool_use(
-                    use, reader, READ_FILE_TOOL_NAME,
-                ))
             messages.append({"role": "assistant", "content": blocks})
-            messages.append({"role": "user", "content": results})
-
-    except ValueError as e:
-        logger.error(str(e))
-        return _fail(agent_name, "invalid_response", str(e))
-    except TimeoutError:
-        return _fail(
-            agent_name, "timeout",
-            f"Agent {agent_name} timed out after "
-            f"{time.monotonic() - start_time:.1f}s",
-        )
-    except BedrockError as e:
-        error_type = _classify_error(e)
-        return _fail(
-            agent_name, error_type, str(e),
-            retryable=_is_retryable(error_type),
-        )
+            messages.append({
+                "role": "user",
+                "content": await _answer_tool_uses(uses, reader, budget),
+            })
     except Exception as e:
-        return _fail(agent_name, "unhandled", f"{type(e).__name__}: {e}")
+        return _failure(agent_name, e, start_time, usage)
 
-    # The final turn forces report_findings, so this is unreachable unless
+    # The final turn forces report_findings, so this is reached only when
     # the model ignores toolChoice.
     return _fail(
         agent_name, "invalid_response",
         f"Agent {agent_name} did not report after {tool_turns + 1} turns",
+        token_usage=usage,
     )
+
+
+def _reported_findings(
+    report: dict[str, Any] | None,
+    response: dict[str, Any],
+    agent_name: str,
+    check_prefix: str,
+) -> list[Finding]:
+    """The findings a turn reported.
+
+    A report_findings call, or an answer with no tool call at all, which the
+    text fallback in _parse_findings still understands.
+    """
+    parsed_from = (
+        {"output": {"message": {"content": [{"toolUse": report}]}}}
+        if report is not None else response
+    )
+    return _parse_findings(parsed_from, agent_name, check_prefix)
+
+
+def _content_blocks(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """The content blocks of a Converse response's message."""
+    message = (response.get("output") or {}).get("message") or {}
+    return [b for b in message.get("content") or [] if isinstance(b, dict)]
+
+
+async def _answer_tool_uses(
+    uses: list[dict[str, Any]],
+    reader: FileReader,
+    budget: TimeoutBudget,
+) -> list[dict[str, Any]]:
+    """A toolResult for every toolUse, which the next call requires.
+
+    SEC-DESIGN-05: at most MAX_READS_PER_TURN are carried out, each inside
+    the review's time budget. The rest are answered with an error the model
+    can act on.
+    """
+    results = []
+    for i, use in enumerate(uses):
+        if i >= MAX_READS_PER_TURN:
+            results.append(_tool_error(
+                use,
+                f"Only {MAX_READS_PER_TURN} reads are answered per turn; "
+                f"ask for this one again next turn.",
+            ))
+            continue
+        try:
+            results.append(await asyncio.wait_for(
+                _answer_tool_use(use, reader),
+                timeout=budget.allocate(READ_TIMEOUT_SECONDS),
+            ))
+        except (TimeoutError, TimeoutBudgetExhausted):
+            results.append(_tool_error(
+                use, "The read ran out of time; report with what you have.",
+            ))
+    return results
 
 
 async def _answer_tool_use(
     use: dict[str, Any],
     reader: FileReader,
-    read_tool_name: str,
 ) -> dict[str, Any]:
     """A toolResult block answering one toolUse request."""
-    tool_use_id = use.get("toolUseId", "")
+    if use.get("name") != READ_FILE_TOOL_NAME:
+        return _tool_error(use, f"Unknown tool {use.get('name')!r}.")
     args = use.get("input") if isinstance(use.get("input"), dict) else {}
-    if use.get("name") != read_tool_name:
-        return {"toolResult": {
-            "toolUseId": tool_use_id,
-            "content": [{"text": f"Unknown tool {use.get('name')!r}."}],
-            "status": "error",
-        }}
 
     def _int(value: Any) -> int | None:
         return value if isinstance(value, int) else None
@@ -408,7 +414,16 @@ async def _answer_tool_use(
         _int(args.get("end_line")),
     )
     return {"toolResult": {
-        "toolUseId": tool_use_id, "content": [{"text": text}],
+        "toolUseId": use.get("toolUseId", ""), "content": [{"text": text}],
+    }}
+
+
+def _tool_error(use: dict[str, Any], text: str) -> dict[str, Any]:
+    """An error toolResult for one toolUse request."""
+    return {"toolResult": {
+        "toolUseId": use.get("toolUseId", ""),
+        "content": [{"text": text}],
+        "status": "error",
     }}
 
 

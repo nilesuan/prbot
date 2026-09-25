@@ -72,6 +72,11 @@ class AgentError:
     error_type: str
     message: str
     retryable: bool = False
+    # What the agent was billed for before it failed: a tool loop can spend
+    # several turns before one fails (SEC-LOG-01).
+    token_usage: TokenUsage = field(
+        default_factory=lambda: TokenUsage(0, 0, 0.0),
+    )
 
 
 # Type alias for agent outcomes — supports partial failure

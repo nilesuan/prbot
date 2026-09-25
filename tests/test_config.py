@@ -398,6 +398,16 @@ class TestBuildConfig:
         )
         assert config.temperature is None
 
+    @pytest.mark.parametrize("value", ["11", "-1", "abc"])
+    def test_tool_turns_outside_its_bounds_raises(self, value: str) -> None:
+        """SEC-CONFIG-02: the 0-10 bound held, but nothing tested it."""
+        with pytest.raises(ConfigError):
+            build_config(
+                cli_args={"platform": "github", "repo": "o/r", "config": None},
+                env_vars={"PRBOT_PR_NUMBER": "1", "PRBOT_TOOL_TURNS": value},
+                toml_config={},
+            )
+
     def test_env_temperature_parsing(self) -> None:
         config = build_config(
             cli_args={"platform": "github", "repo": "o/r", "config": None},
