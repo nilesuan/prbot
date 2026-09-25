@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It is now a COMMENT, and a pass that no agent completed fails the job
   with exit code 3, as every agent failing does. A blocker found in another
   chunk still requests changes.
+- **A blocker blocks even when another agent failed.** A critical or high
+  finding one agent confirmed, or a score below the passing mark, became a
+  COMMENT with exit 0 whenever another agent produced no result at all, so
+  making one agent fail waved the other's finding through. Incomplete data
+  still never approves, but what it found now blocks, with exit 1.
 
 The evidence is in `research/mrr-comparison-0.6/`.
 
