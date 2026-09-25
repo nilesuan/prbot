@@ -31,7 +31,11 @@ from prbot.review.models import (
     TokenUsage,
 )
 from prbot.review.prompts import build_system_prompt, build_user_prompt
-from prbot.review.tools import READ_FILE_TOOL_NAME, FileReader
+from prbot.review.tools import (
+    READ_FILE_TOOL_NAME,
+    FileReader,
+    read_file_tool_spec,
+)
 from prbot.vcs.models import PRDiff, PRMetadata
 
 logger = logging.getLogger(__name__)
@@ -173,7 +177,7 @@ def _fail(
     )
 
 
-def _failure(
+def _error_for_exception(
     agent_name: str,
     error: Exception,
     start_time: float,
@@ -250,7 +254,7 @@ async def _run_single_agent(
             model_id=model_id,
         )
     except Exception as e:
-        return _failure(agent_name, e, start_time)
+        return _error_for_exception(agent_name, e, start_time)
 
 
 async def _run_agent_with_tools(
@@ -329,7 +333,7 @@ async def _run_agent_with_tools(
                 "content": await _answer_tool_uses(uses, reader, budget),
             })
     except Exception as e:
-        return _failure(agent_name, e, start_time, usage)
+        return _error_for_exception(agent_name, e, start_time, usage)
 
     # The final turn forces report_findings, so this is reached only when
     # the model ignores toolChoice.
@@ -493,8 +497,6 @@ def _findings_tool_config() -> dict[str, Any]:
 
 def _review_tool_config(*, read_allowed: bool) -> dict[str, Any]:
     """Both tools, with a free choice while reading is still allowed."""
-    from prbot.review.tools import read_file_tool_spec
-
     config = _findings_tool_config()
     config["tools"] = [*config["tools"], read_file_tool_spec()]
     if read_allowed:
