@@ -18,9 +18,17 @@ from prbot.vcs.models import FileDiff, PRDiff, PRMetadata
 
 logger = logging.getLogger(__name__)
 
-# Token estimation: ~4 chars per token, 1.5x safety multiplier (GAP-12)
-_CHARS_PER_TOKEN = 4
-_SAFETY_MULTIPLIER = 1.5
+# Token estimation (GAP-12). The text estimated is the rendered prompt, where
+# datamarking puts an eight-hex-digit marker beside every word, and hex
+# tokenises at far fewer characters per token than prose: against Bedrock's
+# billed inputTokens the rendered prompt runs at 1.27-1.91 characters per
+# token, median 1.57, over the 126 calls in tests/fixtures/billed_tokens.json.
+# 1.5 with a 1.2 multiplier overestimates every one of them, by a median of
+# 1.26 times and at most 1.53, which the tests hold. The multiplier also
+# absorbs the random marker, which bills identical prompts up to about 17%
+# apart.
+_CHARS_PER_TOKEN = 1.5
+_SAFETY_MULTIPLIER = 1.2
 
 # A description has no length limit worth relying on (GitHub allows 65,536
 # characters) and is repeated in every chunk's prompt, where datamarking
@@ -307,8 +315,10 @@ def prompt_overhead_tokens(
 def estimate_prompt_tokens(text: str) -> int:
     """Estimate token count for a text string (GAP-12).
 
-    Uses a simple heuristic: len(text) / 4 chars per token,
-    multiplied by 1.5x safety factor.
+    len(text) / 1.5 characters per token, times a 1.2 safety factor. The
+    constants are for datamarked prompt text, which is what every caller
+    estimates; unmarked text is overestimated, which errs towards smaller
+    chunks and a stricter budget rather than an overrun.
     """
     raw_estimate = len(text) / _CHARS_PER_TOKEN
     return int(raw_estimate * _SAFETY_MULTIPLIER)

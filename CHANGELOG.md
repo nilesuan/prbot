@@ -76,6 +76,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logged whole. The redactor now walks nested values, every string in an
   entry is capped at 256 characters, and a check id that is not a short code
   drops its finding.
+- **The token estimate is calibrated against billed tokens.** It assumed 4
+  characters per token; datamarked prompts measure 1.27-1.91 against
+  Bedrock's billed `inputTokens` on 129 production calls, so it undercounted
+  every one, by a median of 1.69 times. It is now 1.5 with a 1.2 multiplier,
+  which overestimates all 126 distinct measured calls, by a median of 1.26
+  times. The measurements are committed as a test fixture, and tests fail if
+  the estimate undercounts any of them, overestimates the median by 1.5 times
+  or any by 2, or refuses the largest of them at the default budget. Budget
+  checks are correspondingly stricter.
 
 The evidence is in `research/mrr-comparison-0.6/`.
 

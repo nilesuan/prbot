@@ -162,14 +162,76 @@ class TestEstimatePromptTokens:
         assert estimate_prompt_tokens("") == 0
 
     def test_known_length(self) -> None:
-        # 400 chars / 4 chars_per_token * 1.5 safety = 150
-        text = "x" * 400
-        assert estimate_prompt_tokens(text) == 150
+        # 450 chars / 1.5 chars_per_token * 1.2 safety = 360
+        text = "x" * 450
+        assert estimate_prompt_tokens(text) == 360
 
     def test_proportional(self) -> None:
         short = estimate_prompt_tokens("a" * 100)
         long = estimate_prompt_tokens("a" * 1000)
         assert long > short
+
+
+class TestTheEstimateBoundsWhatIsBilled:
+    """The estimate is used as an upper bound, so it must not undercount.
+
+    A rendered prompt is datamarked: an eight-hex-digit marker sits beside
+    every word, and hex strings tokenise at far fewer characters per token
+    than prose or code. At 4 characters per token the estimate undercounted
+    all 129 measured calls, by a median of 1.69 times and at worst 2.10, so
+    neither the chunk limit nor the budget bound what they claimed to.
+    """
+
+    @staticmethod
+    def _pairs() -> list[list[int]]:
+        import json
+        from pathlib import Path
+
+        path = Path(__file__).parent.parent / "fixtures" / "billed_tokens.json"
+        return json.loads(path.read_text())["pairs"]
+
+    def test_no_measured_call_was_billed_more_than_estimated(self) -> None:
+        under = [
+            (chars, billed) for chars, billed in self._pairs()
+            if estimate_prompt_tokens("x" * chars) < billed
+        ]
+        assert under == []
+
+    def test_the_estimate_is_not_wildly_high_either(self) -> None:
+        """An upper bound that is too loose refuses reviews it should run.
+
+        The median and the worst case are both held (QA-COV-02).
+        """
+        ratios = sorted(
+            estimate_prompt_tokens("x" * chars) / billed
+            for chars, billed in self._pairs()
+        )
+        assert ratios[len(ratios) // 2] < 1.5
+        assert ratios[-1] < 2.0
+
+    def test_the_largest_measured_call_fits_the_default_budget(self) -> None:
+        """QA-COV-03: the estimate is about twice as strict as it was.
+
+        The largest call measured, 1.2 million characters, sent to both
+        default agents with their whole output allowance, has to stay
+        reviewable at the default budget, or the stricter estimate refuses
+        reviews that ran.
+        """
+        from prbot.config import PrBotConfig
+        from prbot.review.budget import estimate_cost
+
+        defaults = PrBotConfig.model_fields
+        largest = max(chars for chars, _ in self._pairs())
+        estimate = estimate_cost(
+            "x" * largest,
+            [
+                defaults["general_model_id"].default,
+                defaults["security_model_id"].default,
+            ],
+            defaults["budget_limit_usd"].default,
+            estimated_output_tokens=defaults["max_output_tokens"].default,
+        )
+        assert estimate.within_budget
 
 
 class TestCheckSpecsExistOnce:
