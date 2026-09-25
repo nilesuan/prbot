@@ -98,9 +98,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`read_file`, an opt-in tool for reading beyond the diff
   (`PRBOT_TOOL_TURNS`, default 0).** An agent may read other files of the
-  repository at the head revision before reporting, bounded to 200 lines per
-  read and 600 per agent, with binary, generated and excluded paths refused
-  and content datamarked. Turns reuse a Bedrock prompt cache, token usage now
+  repository at the head revision before reporting, bounded to 200 lines and
+  20,000 characters per read and 600 lines and 60,000 characters per agent,
+  which is what the budget check prices, with binary, generated and excluded
+  paths refused and content datamarked. Only a path's canonical spelling is
+  read, so `config/./prod.env` cannot reach an excluded `config/prod.env`. At
+  most five reads are answered per turn, each inside the review's time budget,
+  and a read that fails is reported as unreadable rather than cached as
+  absent. An agent that fails after reading keeps what it was billed for in
+  the audit record. Turns reuse a Bedrock prompt cache, token usage now
   counts and prices cache reads and writes, and the budget check prices the
   worst case and drops the reads rather than the review when they do not fit.
   Off by default: on terraform-modules MR 269 the agents read 129-286 lines

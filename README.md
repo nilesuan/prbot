@@ -117,11 +117,13 @@ With `PRBOT_TOOL_TURNS` above 0, each agent may call `read_file` to read other
 files of the repository at the head revision before it reports: a definition
 the diff references, or the CI file that decides whether a changed test runs.
 Reads go through the same VCS API as the diff, refuse binary, generated and
-excluded paths, return datamarked numbered lines, and are capped at 200 lines
-per read and 600 per agent. The system prompt and diff are sent as a Bedrock
-cache prefix, so later turns pay the cache-read rate for them. The pre-flight
-budget check prices every turn being used, and a review whose reads would
-exceed the budget runs without them rather than not at all.
+excluded paths and any path not written in canonical form, return datamarked
+numbered lines, and are capped at 200 lines and 20,000 characters per read and
+600 lines and 60,000 characters per agent. At most five reads are answered per
+turn, each inside the review's time budget. The system prompt and diff are sent
+as a Bedrock cache prefix, so later turns pay the cache-read rate for them. The
+pre-flight budget check prices every turn being used, and a review whose reads
+would exceed the budget runs without them rather than not at all.
 
 It is off by default because the first measurement did not justify it: on a
 six-file Terraform change the agents used their reads but found nothing a run
