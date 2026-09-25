@@ -29,8 +29,10 @@ _SAFETY_MULTIPLIER = 1.5
 _MAX_BODY_CHARS = 8_000
 
 # The list of files a chunk does not show grows with the pull request, and it
-# is repeated in every chunk too.
+# is repeated in every chunk too. A path is chosen by the contributor and can
+# be thousands of characters long, so each one is shortened as well.
 _MAX_OTHER_PATHS = 200
+_MAX_OTHER_PATH_CHARS = 300
 
 # An agent name selects its check spec, {name}.md, so it must be a single
 # safe path segment. This is a shape check rather than an allowlist (C5):
@@ -230,8 +232,7 @@ def build_user_prompt(
     elsewhere = ""
     if others:
         listed = "\n".join(
-            f"- {apply_datamarking(sanitize_path_for_prompt(p))}"
-            for p in others[:_MAX_OTHER_PATHS]
+            _other_path_line(p) for p in others[:_MAX_OTHER_PATHS]
         )
         if len(others) > _MAX_OTHER_PATHS:
             listed += f"\n- ... and {len(others) - _MAX_OTHER_PATHS} more"
@@ -266,6 +267,15 @@ def build_user_prompt(
     )
 
 
+def _other_path_line(path: str) -> str:
+    """One entry in the list of files a chunk does not show."""
+    from prbot.security.datamarking import apply_datamarking
+
+    if len(path) > _MAX_OTHER_PATH_CHARS:
+        path = path[:_MAX_OTHER_PATH_CHARS] + "..."
+    return f"- {apply_datamarking(sanitize_path_for_prompt(path))}"
+
+
 def prompt_overhead_tokens(
     metadata: PRMetadata,
     *,
@@ -277,13 +287,18 @@ def prompt_overhead_tokens(
 
     The header, the description and the list of files shown elsewhere are
     repeated in each chunk (SEC-DESIGN-03). Rendered with no file shown, the
-    list names every other path, so this bounds each chunk's share from
-    above.
+    list names the longest paths any chunk could, so this bounds each
+    chunk's share from above.
     """
+    # SEC-DESIGN-05: which paths a chunk lists depends on the chunk, so the
+    # estimate lists the longest ones a chunk could.
+    longest_first = sorted(
+        all_paths or [], key=lambda p: len(_other_path_line(p)), reverse=True,
+    )
     return estimate_prompt_tokens(
         build_user_prompt(
             PRDiff(files=[], truncated=truncated), metadata,
-            datamark_diff=datamark_diff, all_paths=all_paths,
+            datamark_diff=datamark_diff, all_paths=longest_first,
         ),
     )
 
