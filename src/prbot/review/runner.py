@@ -435,9 +435,11 @@ async def _converse_with_retry(
     """One Converse call with the same timeout and retry as a single review."""
     for attempt in range(_MAX_RETRIES + 1):
         try:
+            # Allocated first: an exhausted budget raising after to_thread
+            # has been called leaves its coroutine never awaited.
+            timeout = budget.allocate(120.0)
             return await asyncio.wait_for(
-                asyncio.to_thread(_invoke_bedrock, **kwargs),
-                timeout=budget.allocate(120.0),
+                asyncio.to_thread(_invoke_bedrock, **kwargs), timeout=timeout,
             )
         except BedrockError as e:
             error_type = _classify_error(e)

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from prbot.exceptions import BedrockError
+from prbot.exceptions import BedrockError, TimeoutBudgetExhausted
 from prbot.review.budget import TimeoutBudget
 from prbot.review.models import AgentError, AgentResult
 from prbot.review.runner import (
@@ -95,6 +95,19 @@ def _make_finding_dict(
         "confidence": confidence,
         "suggestion": "Fix it",
     }
+
+
+class _BudgetSpentAfter:
+    """A time budget that runs out after a given number of allocations."""
+
+    def __init__(self, allocations: int) -> None:
+        self._left = allocations
+
+    def allocate(self, requested_seconds: float) -> float:
+        if self._left == 0:
+            raise TimeoutBudgetExhausted("The review's time budget is spent")
+        self._left -= 1
+        return requested_seconds
 
 
 class TestRunReview:
@@ -258,6 +271,21 @@ class TestRunSingleAgent:
             )
         assert isinstance(outcomes[0], AgentResult)
         assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_a_spent_budget_is_a_timeout(self) -> None:
+        """QA-NEW-03: a spent budget raises TimeoutBudgetExhausted, not
+        TimeoutError, and no test raised it. Bedrock is never called."""
+        agents = [{"name": "general", "model_id": "m", "check_prefix": "Q-"}]
+        with patch("prbot.review.runner._invoke_bedrock") as invoke:
+            outcomes = await run_review(
+                _make_diff(), _make_metadata(), agents,
+                _BudgetSpentAfter(0), "us-east-1",
+            )
+        [result] = outcomes
+        assert isinstance(result, AgentError)
+        assert result.error_type == "timeout"
+        invoke.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_retry_on_validation_error(self) -> None:
@@ -1002,7 +1030,7 @@ class TestReadingBeyondTheDiff:
 
         return (lambda: FileReader(fetch)), read
 
-    async def _run(self, responses: list[Any], factory, turns=3):
+    async def _run(self, responses: list[Any], factory, turns=3, budget=None):
         """Answer each call with the next response, raising any exception."""
         calls: list[dict[str, Any]] = []
 
@@ -1016,7 +1044,7 @@ class TestReadingBeyondTheDiff:
         with patch("prbot.review.runner._invoke_bedrock", side_effect=invoke):
             outcomes = await run_review(
                 _make_diff(), _make_metadata(), self._AGENT,
-                TimeoutBudget(300.0), "ap-southeast-2",
+                budget or TimeoutBudget(300.0), "ap-southeast-2",
                 reader_factory=factory, tool_turns=turns,
             )
         return outcomes, calls
@@ -1144,6 +1172,21 @@ class TestReadingBeyondTheDiff:
         )
         assert isinstance(outcomes[0], AgentError)
         assert outcomes[0].error_type == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_a_budget_spent_between_turns_is_a_timeout(self) -> None:
+        """QA-NEW-03: the first turn and its read take the two allocations
+        left, so the second turn finds the budget spent."""
+        factory, _ = self._factory({"a.tf": "x"})
+        outcomes, calls = await self._run(
+            [self._tool_call("read_file", {"path": "a.tf"}), self._report([])],
+            factory, budget=_BudgetSpentAfter(2),
+        )
+        [result] = outcomes
+        assert isinstance(result, AgentError)
+        assert result.error_type == "timeout"
+        assert len(calls) == 1
+        assert result.token_usage.input_tokens == 100 + 5000
 
     @pytest.mark.asyncio
     async def test_prose_instead_of_a_report_is_an_invalid_response(
