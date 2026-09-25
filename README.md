@@ -122,7 +122,7 @@ severity, confidence, band, location and fingerprint, but no model prose.
 - **Path traversal rejection** -- findings with `..` or absolute paths in `file_path` are dropped
 - **PII redaction** -- personal data patterns removed from review comments before posting
 - **Secret redaction** -- GitHub PATs, GitLab PATs, AWS long-lived and temporary keys, Bearer tokens caught and replaced, with the label kept so the reader can see what was found
-- **Structured output** -- findings come back through a forced tool carrying a JSON schema, with an explicit output token cap and temperature 0 where the model accepts it (`PRBOT_TEMPERATURE`)
+- **Structured output** -- findings come back through a forced tool carrying a JSON schema, with an explicit output token cap. Temperature is sent only when `PRBOT_TEMPERATURE` is set; it is unset by default because the default model rejects it
 
 ### Completeness Checks
 

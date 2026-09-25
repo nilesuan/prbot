@@ -86,6 +86,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or any by 2, or refuses the largest of them at the default budget. Budget
   checks are correspondingly stricter.
 
+### Changed
+
+- **`temperature` is sent only when configured (`PRBOT_TEMPERATURE`).** The
+  default model rejects it, so every review made one failed call per agent
+  before the real one. It is unset by default; set `0` for a model that
+  accepts it. A repository pinned to an older model that relied on
+  temperature 0 should set it explicitly.
+
 The evidence is in `research/mrr-comparison-0.6/`.
 
 ## [0.6.0] - 2026-09-16
