@@ -360,12 +360,15 @@ The first row that applies decides the verdict:
 | Condition | Verdict |
 |-----------|---------|
 | Every agent failed on every pass | COMMENT, with the errors |
-| An agent failed on every pass | COMMENT (never approve or reject on incomplete data) |
-| Critical or high finding at or above `PRBOT_BLOCKER_THRESHOLD` | REQUEST_CHANGES |
-| Score below `PRBOT_MIN_PASSING_SCORE` | REQUEST_CHANGES |
-| An agent failed on some pass | COMMENT (its files were not reviewed by it) |
+| Critical or high finding at or above `PRBOT_BLOCKER_THRESHOLD`, whichever agents failed | REQUEST_CHANGES |
+| Score below `PRBOT_MIN_PASSING_SCORE`, whichever agents failed | REQUEST_CHANGES |
+| An agent failed on any pass | COMMENT (incomplete data never approves) |
 | No findings | APPROVE |
 | Findings, none blocking | COMMENT |
+
+What the agents that ran found counts, whatever the others did: the passes
+that failed could only have added findings, so a blocker or a failing score
+found in incomplete data stands.
 
 The exit code is 3 when every agent failed; otherwise 1 for REQUEST_CHANGES;
 otherwise 3 when some pass was completed by no agent, since its files were

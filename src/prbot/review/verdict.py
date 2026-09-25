@@ -1,8 +1,8 @@
 """Verdict state machine (story-5-2).
 
 Deterministic verdict determination covering 8 scenarios.
-Agent failure always downgrades — never APPROVE or REQUEST_CHANGES
-with incomplete data.
+Agent failure never approves: incomplete data can show a problem, never
+its absence.
 """
 
 from __future__ import annotations
@@ -77,55 +77,35 @@ def determine_verdict(
     has_blocker_findings was written, tested and never called, so the
     documented "no blockers" condition checked nothing.
 
+    Incomplete data can show a problem but not its absence (SEC-DESIGN-04).
+    A blocker, or a score already below the passing mark, stands however many
+    agent passes failed, because the missing passes could only have added
+    findings. Only a review every agent completed can be approved.
+
     Scenarios:
-    1. No findings, all agents OK → APPROVE
-    1a. No findings, but an agent failed on at least one chunk → COMMENT
-       (its files were not reviewed by that agent)
-    2. An agent produced no result in any chunk → COMMENT (never approve
-       or reject on partial data)
+    1. No findings, every agent completed every pass → APPROVE
+    2. No findings, an agent pass failed → COMMENT (files it did not review
+       were reviewed by fewer agents, or by none)
     3. Both agents failed → COMMENT (G-28)
-    4. Critical finding at or above blocker confidence → REQUEST_CHANGES
+    4. Critical finding at or above blocker confidence → REQUEST_CHANGES,
+       whatever failed
     5. Critical or high finding at or above blocker confidence →
-       REQUEST_CHANGES
-    6. Score below the passing mark → REQUEST_CHANGES
-    7. Findings present, no blocker, score passes → COMMENT
+       REQUEST_CHANGES, whatever failed
+    6. Score below the passing mark → REQUEST_CHANGES, whatever failed
+    7. Findings present, nothing blocking → COMMENT
     """
-    # GEN-ARCH-01: cap on an agent that produced nothing anywhere, not on
-    # any single failed attempt. With N chunks one throttled call used to
-    # discard blocker-grade findings the other chunks had already produced.
-    uncovered = agents_without_coverage(outcomes)
-    has_errors = bool(uncovered)
     has_results = any(isinstance(o, AgentResult) for o in outcomes)
     all_failed = not has_results
 
     # Scenario 3: Both agents failed (G-28)
     if all_failed:
-        logger.warning("Both agents failed — verdict COMMENT (G-28)")
+        logger.warning("Both agents failed; verdict COMMENT (G-28)")
         return ReviewVerdict.COMMENT
 
-    # Agent failure safety: never APPROVE or REQUEST_CHANGES
-    if has_errors:
-        logger.info(
-            "Agents with no successful pass (%s) — capping verdict at "
-            "COMMENT", ", ".join(sorted(uncovered)),
-        )
-        return ReviewVerdict.COMMENT
-
-    # Every agent has a result somewhere from here on, though it may have
-    # failed on some chunks.
-    if not reported and score.finding_count == 0:
-        # SEC-DESIGN-02: an agent that failed on a chunk never saw that
-        # chunk's files, so a clean result says nothing about them. Only
-        # approval is held back: a blocker another chunk found still blocks.
-        failed = sum(1 for o in outcomes if not isinstance(o, AgentResult))
-        if failed:
-            logger.info(
-                "%d agent pass(es) failed on part of the diff, so a clean "
-                "review is a COMMENT, not an APPROVE", failed,
-            )
-            return ReviewVerdict.COMMENT
-        # Scenario 1: Clean review
-        return ReviewVerdict.APPROVE
+    # SEC-DESIGN-04: what was found is checked first. A cap for an agent
+    # with no result used to come before these, so a critical finding the
+    # other agent confirmed became a COMMENT, exit 0, whenever one agent
+    # failed.
 
     # Scenario 4: Critical override
     if score.critical_override:
@@ -146,6 +126,24 @@ def determine_verdict(
             score.clamped_score, min_passing_score,
         )
         return ReviewVerdict.REQUEST_CHANGES
+
+    # Scenario 2: only a complete review approves. A failed pass, on one
+    # chunk (SEC-DESIGN-02) or on all of an agent's (GEN-ARCH-01), left files
+    # that agent never saw.
+    failed = sum(1 for o in outcomes if not isinstance(o, AgentResult))
+    if failed:
+        uncovered = agents_without_coverage(outcomes)
+        logger.info(
+            "%d agent pass(es) failed%s, so the verdict is at most COMMENT",
+            failed,
+            f" ({', '.join(sorted(uncovered))} on every pass)"
+            if uncovered else "",
+        )
+        return ReviewVerdict.COMMENT
+
+    # Scenario 1: Clean review
+    if not reported and score.finding_count == 0:
+        return ReviewVerdict.APPROVE
 
     # Scenario 7: Findings present, nothing blocking
     return ReviewVerdict.COMMENT
