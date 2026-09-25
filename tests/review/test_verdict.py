@@ -111,8 +111,8 @@ class TestDetermineVerdict:
         """Agent failed + a blocker → REQUEST_CHANGES.
 
         SEC-DESIGN-04: a critical finding the working agent confirmed was
-        downgraded to COMMENT, exit 0, whenever another agent failed. More
-        data could only add findings, so what was found still counts.
+        downgraded to COMMENT, exit 0, whenever another agent failed. What
+        was found still counts.
         """
         finding = _make_finding(severity="critical", confidence=90)
         outcomes = [_make_result([finding]), _make_error()]
