@@ -741,12 +741,12 @@ def _format_footer(
 
     if reconciliation:
         lines.append(reconciliation)
-    if verification:
-        lines.append(verification)
     elif hidden_count > 0:
         lines.append(
             f"_{hidden_count} low-confidence findings listed, not scored._",
         )
+    if verification:
+        lines.append(verification)
 
     if suppressed_count > 0:
         # Always stated. A suppression list nobody can see stops being a
