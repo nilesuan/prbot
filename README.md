@@ -125,8 +125,8 @@ nothing. The footer says what the pass concluded, and the audit record has
 each finding's verdict, its confidence before the verdict, and the pass's
 totals.
 
-It is off by default until a labelled evaluation shows its verdicts are
-right.
+It is off by default until a labelled evaluation shows its verdicts are right
+([#49](https://github.com/nilesuan/prbot/issues/49)).
 
 On a six-file Terraform change it moved the finding behind a verified review's
 high from 45% to 75%, into the reported band, for 38% more cost. When the

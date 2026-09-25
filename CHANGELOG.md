@@ -106,8 +106,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   datamarks the paths and check ids it quotes. On terraform-modules MR 269 it
   moved a true finding from 45% to 75%, into the reported band, for 38% more
   cost. Two merge requests are not an evaluation, so it stays off until a
-  labelled one exists. When the worst case exceeds the budget it is dropped,
-  after reads and before the review.
+  labelled one exists (#49). When the worst case exceeds the budget it is
+  dropped, after reads and before the review.
 - **`read_file`, an opt-in tool for reading beyond the diff
   (`PRBOT_TOOL_TURNS`, default 0).** An agent may read other files of the
   repository at the head revision before reporting, bounded to 200 lines and

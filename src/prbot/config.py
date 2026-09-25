@@ -273,8 +273,9 @@ class PrBotConfig(BaseModel, frozen=True):
     # onto a NACL before its rules exist) from 45% to 75%, into the reported
     # band, for 38% more cost; on infrastructure-core MR 208 it confirmed the
     # one finding produced for 19% more. Two merge requests is not an
-    # evaluation, and it has no labelled corpus yet (QA-EVAL-01). It is the
-    # first extra the budget check gives up after reads.
+    # evaluation, and it has no labelled corpus yet (QA-EVAL-01): issue #49
+    # says what would decide the default. It is the first extra the budget
+    # check gives up after reads.
     verify: bool = False
     # SEC-DESIGN-04: the login prbot posts as, used when the token cannot
     # read it. secrets.GITHUB_TOKEN cannot call GET /user, so without this
