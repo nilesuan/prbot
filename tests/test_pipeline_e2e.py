@@ -1562,6 +1562,27 @@ class TestVerificationPass:
         )
         assert "verifier" in [a["name"] for a in audit["agents"]]
         assert audit["findings"][0]["verification"] == "confirmed"
+        # SEC-LOG-01: what it was before, and what the pass concluded.
+        assert audit["findings"][0]["confidence_before_verification"] == 40
+        assert audit["verification"]["confirmed"] == 1
+        assert audit["verification"]["failed_chunks"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_refuted_critical_still_blocks(self) -> None:
+        """SEC-SUPPRESS-01: one refuted verdict turned a critical finding at
+        95 from exit 1 into exit 0."""
+        adapter = FakeVCSAdapter()
+        bedrock, _ = self._stub(
+            _finding(severity="critical", confidence=95), "refuted", 10,
+        )
+
+        with _pipeline(adapter, bedrock):
+            exit_code = await run_pipeline(
+                _config(verify=True, budget_limit_usd=100.0),
+            )
+
+        assert exit_code == EXIT_BLOCKERS
+        assert "1 refuted" in adapter.posted_comments[0]
 
     @pytest.mark.asyncio
     async def test_off_means_no_verifier_call(self) -> None:

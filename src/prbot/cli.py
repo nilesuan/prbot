@@ -188,6 +188,9 @@ def _finding_audit_entries(findings: Any) -> list[Any]:
             line_start=scored.finding.line_start,
             line_end=scored.finding.line_end,
             verification=scored.finding.verification,
+            confidence_before_verification=(
+                scored.finding.confidence_before_verification
+            ),
         )
         for scored in findings
     ]
@@ -555,6 +558,8 @@ async def run_pipeline(config: PrBotConfig) -> int:
         # before the run is: reads first, having shown no benefit when
         # measured, then verification. Only the plain review can refuse.
         plans = [(tool_turns, verify), (0, verify), (0, False)]
+        # dict.fromkeys drops repeated plans and keeps their order, so a
+        # review with nothing to give up is estimated once.
         for turns, with_verifier in dict.fromkeys(plans):
             try:
                 _estimate(turns, with_verifier)
@@ -995,6 +1000,9 @@ async def run_pipeline(config: PrBotConfig) -> int:
             exit_code=exit_code,
             dry_run=config.dry_run,
             cost_usd=total_cost,
+            verification=(
+                dataclasses.asdict(verification) if verification else None
+            ),
             outcome_counts=outcome_counts,
             findings=_finding_audit_entries(
                 (*reported, *borderline, *score.hidden),

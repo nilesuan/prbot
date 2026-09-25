@@ -52,6 +52,9 @@ class Finding:
     # What the verification pass concluded: "confirmed", "refuted",
     # "uncertain", or empty when it did not run or gave no verdict.
     verification: str = ""
+    # The agent's own confidence, kept when a verdict replaced it, so the
+    # audit shows what a finding was before it moved (SEC-LOG-01).
+    confidence_before_verification: int | None = None
 
 
 @dataclass(frozen=True)

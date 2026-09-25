@@ -7,12 +7,15 @@ number sits at 30-60 for findings a verified review confirmed at 85-97.
 
 This pass shows the verifier the same datamarked diff an agent saw and the
 findings reported against it, and asks for a verdict on each: confirmed,
-refuted or uncertain, with a confidence and a reason. The verdict replaces the
-agent's confidence. Nothing is deleted: a refuted finding keeps its place at
-the verifier's confidence, so the scorer decides what a low number means, and
-a critical or high one stays visible however low it goes. A finding the
-verifier gives no verdict on, or one whose chunk could not be verified, is
-left exactly as the agent reported it.
+refuted or uncertain, with a confidence and a reason. A confirmed or refuted
+verdict replaces the agent's confidence, with two exceptions. A critical or
+high finding's confidence can rise but never fall, because one refuted verdict
+used to turn a blocking finding into a pass (SEC-SUPPRESS-01). An uncertain
+verdict leaves the agent's number alone, because "could not check" is not
+evidence either way (SEC-SUPPRESS-02). Nothing is deleted: a refuted finding
+keeps its place at the lower confidence, so the scorer decides what the
+number means. A finding the verifier gives no verdict on, or one whose chunk
+could not be verified, is left exactly as the agent reported it.
 """
 
 from __future__ import annotations
@@ -31,6 +34,9 @@ logger = logging.getLogger(__name__)
 VERIFY_TOOL_NAME = "report_verdicts"
 
 _VERDICTS = ("confirmed", "refuted", "uncertain")
+
+# The severities that can block a merge. The verifier may not lower them.
+_BLOCKING_SEVERITIES = ("critical", "high")
 
 VERDICT_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -118,13 +124,17 @@ def build_verification_prompt(user_prompt: str, findings: list[Finding]) -> str:
     datamarked like the diff: a finding can quote the diff, and the diff can
     carry instructions.
     """
+    from prbot.review.prompts import sanitize_path_for_prompt
     from prbot.security.datamarking import apply_datamarking
 
     blocks = []
     for i, f in enumerate(findings, start=1):
+        # SEC-INJECT-01: the path is chosen by the contributor and marked
+        # word by word in the agents' prompt, so it is marked here too.
+        location = apply_datamarking(sanitize_path_for_prompt(f.file_path))
         blocks.append(
-            f"[{i}] {f.check_id} · {f.severity} · "
-            f"{f.file_path}:{f.line_start}-{f.line_end}\n"
+            f"[{i}] {apply_datamarking(f.check_id)} · {f.severity} · "
+            f"{location}:{f.line_start}-{f.line_end}\n"
             f"Title: {apply_datamarking(f.title)}\n"
             f"Claim: {apply_datamarking(f.description)}\n"
             f"Consequence: {apply_datamarking(f.failure_scenario or '-')}"
@@ -138,7 +148,13 @@ def build_verification_prompt(user_prompt: str, findings: list[Finding]) -> str:
 def parse_verdicts(
     response: dict[str, Any], count: int,
 ) -> dict[int, tuple[str, int]]:
-    """Index to (verdict, confidence), keeping only well-formed entries."""
+    """Index to (verdict, confidence), keeping only well-formed entries.
+
+    SEC-VERIFY-01: a boolean is not a confidence, though Python counts it as
+    an int; the first verdict for an index stands; and a verdict its own
+    confidence contradicts, confirmed below 50 or refuted above it, is not
+    a verdict at all.
+    """
     content = (
         ((response.get("output") or {}).get("message") or {}).get("content")
         or []
@@ -160,16 +176,28 @@ def parse_verdicts(
         confidence = item.get("confidence")
         if not isinstance(index, int) or not 1 <= index <= count:
             continue
-        if verdict not in _VERDICTS or not isinstance(confidence, int):
+        if index in out or verdict not in _VERDICTS:
             continue
-        out[index] = (verdict, max(0, min(100, confidence)))
+        if not isinstance(confidence, int) or isinstance(confidence, bool):
+            continue
+        confidence = max(0, min(100, confidence))
+        if (verdict == "confirmed" and confidence < 50) or (
+            verdict == "refuted" and confidence > 50
+        ):
+            continue
+        out[index] = (verdict, confidence)
     return out
 
 
 def apply_verdicts(
     findings: list[Finding], verdicts: dict[int, tuple[str, int]],
 ) -> tuple[list[Finding], VerificationStats]:
-    """Replace each verified finding's confidence with the verifier's."""
+    """Replace each verified finding's confidence with the verifier's.
+
+    Except where the module docstring says: a critical or high finding's
+    confidence only rises, and an uncertain verdict changes nothing. The
+    confidence before verification is kept either way (SEC-LOG-01).
+    """
     out: list[Finding] = []
     counts = {v: 0 for v in _VERDICTS}
     unverified = 0
@@ -180,8 +208,13 @@ def apply_verdicts(
             continue
         verdict, confidence = verdicts[i]
         counts[verdict] += 1
+        if verdict == "uncertain":
+            confidence = f.confidence
+        elif f.severity in _BLOCKING_SEVERITIES:
+            confidence = max(confidence, f.confidence)
         out.append(dataclasses.replace(
             f, confidence=confidence, verification=verdict,
+            confidence_before_verification=f.confidence,
         ))
     return out, VerificationStats(
         confirmed=counts["confirmed"],
