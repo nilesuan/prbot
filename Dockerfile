@@ -4,7 +4,7 @@
 # S86: No build tools in final image
 
 # --- Builder stage ---
-FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS builder
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS builder
 
 # Install uv — pinned by version + digest (G-12)
 COPY --from=ghcr.io/astral-sh/uv:0.10.9@sha256:10902f58a1606787602f303954cea099626a4adb02acbac4c69920fe9d278f82 /uv /usr/local/bin/uv
@@ -24,7 +24,7 @@ COPY src/ src/
 RUN uv sync --frozen --no-dev --no-editable
 
 # --- Runtime stage ---
-FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
 # Apply Debian security updates on top of the pinned base. The digest pin
 # fixes what is built from; it does not stop the packages inside it ageing,
